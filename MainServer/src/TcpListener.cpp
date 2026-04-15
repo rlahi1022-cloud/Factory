@@ -4,6 +4,7 @@
 //       함수/변수 명명은 동일하게 유지.
 
 #include "TcpListener.h"
+#include "ConnectionRegistry.h"
 #include "Protocol.h"
 
 #include <iostream>
@@ -97,7 +98,9 @@ void TcpListener::run_accept_loop() {
         }
         char ip_buf[64] = {0};
         inet_ntop(AF_INET, &client_addr.sin_addr, ip_buf, sizeof(ip_buf));
-        std::string remote_addr = ip_buf;
+        // sender_addr 형식: "IP:PORT" (ACK 라우팅 키)
+        std::string remote_addr = std::string(ip_buf) + ":" +
+                                  std::to_string(ntohs(client_addr.sin_port));
 
         // 클라이언트당 1 스레드 (간단 구조). 추후 thread pool 가능.
         std::thread(&TcpListener::handle_client, this, client_fd, remote_addr).detach();
@@ -105,6 +108,7 @@ void TcpListener::run_accept_loop() {
 }
 
 void TcpListener::handle_client(int client_fd, const std::string& remote_addr) {
+    ConnectionRegistry::instance().register_connection(remote_addr, client_fd);
     while (is_running_.load()) {
         std::string          json_payload;
         std::vector<uint8_t> image_bytes;
@@ -118,6 +122,7 @@ void TcpListener::handle_client(int client_fd, const std::string& remote_addr) {
         ev.remote_addr  = remote_addr;
         event_bus_.publish(EventType::PACKET_RECEIVED, ev);
     }
+    ConnectionRegistry::instance().unregister_connection(remote_addr);
     CLOSE_SOCK(client_fd);
 }
 

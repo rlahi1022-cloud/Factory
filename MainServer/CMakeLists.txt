@@ -27,6 +27,8 @@ set(SRC_FILES
     src/ImageStorage.cpp
     src/GuiNotifier.cpp
     src/HealthChecker.cpp
+    src/AckSender.cpp
+    src/ConnectionRegistry.cpp
 )
 
 add_executable(factory_main_server ${SRC_FILES})

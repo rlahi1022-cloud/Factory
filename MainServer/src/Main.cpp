@@ -11,6 +11,7 @@
 #include "ImageStorage.h"
 #include "GuiNotifier.h"
 #include "HealthChecker.h"
+#include "AckSender.h"
 #include "Protocol.h"
 
 #include <chrono>
@@ -52,6 +53,9 @@ int main() {
 
     GuiNotifier gui_notifier(event_bus);
     gui_notifier.register_handlers();
+
+    AckSender ack_sender(event_bus);
+    ack_sender.register_handlers();
 
     // 3) TCP 리스너 시작 (추론 서버로부터 패킷 수신)
     TcpListener tcp_listener(event_bus, MAIN_SERVER_PORT);

@@ -3,12 +3,14 @@ AI 추론 서버의 비동기 큐 파이프라인 베이스.
 
 파이프라인:
   [Pylon Grab Producer] -> grab_queue -> [Inference Worker(s)] -> result_queue -> [Sender Worker(s)] -> 메인 서버
+  [OK Stat Reporter] (별도 코루틴) -> 주기적 STATION_OK_COUNT(1004) 송신
+  [Inference Worker] -> INSPECT_META(1006) 송신 (OK/NG 공통)
 
 설계 원칙:
 - 모든 단계는 asyncio.Queue로 분리 → 단계별 백프레셔/병렬도 독립 조정.
 - 추론은 CPU/GPU 바운드이므로 loop.run_in_executor 로 별도 스레드에서 실행.
-- 송신은 NG 시에만 수행. OK는 큐에 넣지 않거나 폐기.
-- 본 골격은 모델/카메라 실제 구현은 placeholder. 인터페이스만 정의.
+- NG는 ACK 기반 송신, OK는 카운터만 누적 후 주기 송신.
+- inspection_id는 'stationN-YYYYMMDDHHMMSSmmm-seq' 형식으로 추론서버에서 발급.
 """
 
 from __future__ import annotations
@@ -22,11 +24,16 @@ from typing import Any, Optional
 from Common.Config import StationConfig
 from Common.Inferencer import BaseInferencer
 from Common.Packet import PacketBuilder
+from Common.Protocol import ProtocolNo
 from Common.SerialCtrl import SerialCtrl
 from Common.TcpClient import TcpClient
 
 
 logger = logging.getLogger(__name__)
+
+
+# OK 카운트 주기 송신 간격
+OK_COUNT_REPORT_INTERVAL_SEC = 5.0
 
 
 class GrabItem:
@@ -41,13 +48,13 @@ class GrabItem:
 
 
 class ResultItem:
-    """추론 1건 결과."""
+    """추론 1건 결과 (NG만 큐에 들어감)."""
 
-    __slots__ = ("frame_id", "result_dict", "image_bytes", "latency_ms")
+    __slots__ = ("inspection_id", "result_dict", "image_bytes", "latency_ms")
 
-    def __init__(self, frame_id: int, result_dict: dict,
+    def __init__(self, inspection_id: str, result_dict: dict,
                  image_bytes: Optional[bytes], latency_ms: int):
-        self.frame_id = frame_id
+        self.inspection_id = inspection_id
         self.result_dict = result_dict
         self.image_bytes = image_bytes
         self.latency_ms = latency_ms
@@ -56,7 +63,6 @@ class ResultItem:
 class StationRunner:
     """비동기 큐 파이프라인 실행기."""
 
-    # 종료 신호용 sentinel
     _SENTINEL = object()
 
     def __init__(self,
@@ -72,30 +78,38 @@ class StationRunner:
 
         self._tasks: list[asyncio.Task] = []
         self._is_running = False
+
         self._frame_seq = 0
+        self._inspection_seq = 0  # inspection_id 발급용
+
+        # OK/NG 카운터 (주기 송신 후 reset)
+        self._ok_count = 0
+        self._ng_count = 0
+        self._latency_sum_ms = 0
+        self._latency_count = 0
+
+        # NG 송신용 protocol_no 미리 결정
+        if config.station_id == 1:
+            self._ng_protocol_no = int(ProtocolNo.STATION1_NG)
+        else:
+            self._ng_protocol_no = int(ProtocolNo.STATION2_NG)
 
     # ---------- 외부 진입점 ----------
 
     async def run(self) -> None:
-        """파이프라인 실행. Ctrl+C 등 외부 종료까지 블록."""
         self._is_running = True
 
         self._inferencer.load_model()
         self._serial_ctrl.open()
-        # 초기 연결은 굳이 시도하지 않음 (sender_worker가 ensure_connected)
 
         loop = asyncio.get_running_loop()
 
-        # 1) Producer: 카메라 grab
         self._tasks.append(loop.create_task(self._run_grab_producer()))
-
-        # 2) Inference workers
         for i in range(self._config.inference_workers):
             self._tasks.append(loop.create_task(self._run_inference_worker(i)))
-
-        # 3) Sender workers
         for i in range(self._config.sender_workers):
             self._tasks.append(loop.create_task(self._run_sender_worker(i)))
+        self._tasks.append(loop.create_task(self._run_ok_count_reporter()))
 
         try:
             await asyncio.gather(*self._tasks)
@@ -105,9 +119,7 @@ class StationRunner:
             await self._teardown()
 
     async def stop(self) -> None:
-        """우아한 종료 — sentinel 주입 후 task 취소."""
         self._is_running = False
-        # Sentinel을 큐에 넣어 워커가 자연스럽게 빠져나오게
         await self._grab_queue.put(self._SENTINEL)
         await self._result_queue.put(self._SENTINEL)
         for task in self._tasks:
@@ -116,13 +128,6 @@ class StationRunner:
     # ---------- Producer ----------
 
     async def _run_grab_producer(self) -> None:
-        """Pylon 카메라에서 프레임을 grab해 grab_queue에 적재.
-
-        본 골격에서는 실제 카메라 대신 0.5초 주기 더미 프레임 생성.
-        실제 구현 시 pypylon 사용:
-          camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-          camera.StartGrabbing(); ...
-        """
         try:
             while self._is_running:
                 # TODO: pylon grab → BGR ndarray
@@ -141,36 +146,51 @@ class StationRunner:
         while True:
             item = await self._grab_queue.get()
             if item is self._SENTINEL:
-                # 다른 inference worker도 종료시키기 위해 다시 주입
                 await self._grab_queue.put(self._SENTINEL)
                 break
 
             try:
                 t0 = time.perf_counter()
-                # 추론은 별도 스레드에서 (블로킹 가능)
                 result_dict = await loop.run_in_executor(
                     None, self._inferencer.infer, item.image
                 )
                 latency_ms = int((time.perf_counter() - t0) * 1000)
 
-                # 메타 정보 보강
-                result_dict.setdefault("station", self._config.station_id)
-                result_dict.setdefault("type", "inspect")
-                result_dict["timestamp"] = self._make_iso_timestamp()
-                result_dict["latency_ms"] = latency_ms
-                result_dict["frame_id"] = item.frame_id
+                inspection_id = self._issue_inspection_id()
+                timestamp = self._make_iso_timestamp()
 
-                # NG 만 result_queue로 (OK는 폐기 — 필요 시 통계 카운터만 증가)
-                if result_dict.get("result") == "NG":
+                # 통계 누적
+                self._latency_sum_ms += latency_ms
+                self._latency_count += 1
+                is_ng = result_dict.get("result") == "NG"
+                if is_ng:
+                    self._ng_count += 1
+                else:
+                    self._ok_count += 1
+
+                # 1006 INSPECT_META — OK/NG 공통 송신 (DB inspections 기록용)
+                await self._send_inspect_meta(
+                    inspection_id=inspection_id,
+                    timestamp=timestamp,
+                    latency_ms=latency_ms,
+                    result="ng" if is_ng else "ok",
+                )
+
+                if is_ng:
+                    # NG 본문 보강
+                    result_dict["station_id"] = self._config.station_id
+                    result_dict["timestamp"]  = timestamp
+                    result_dict["latency_ms"] = latency_ms
+
                     image_bytes = self._encode_image(item.image)
                     await self._result_queue.put(
-                        ResultItem(item.frame_id, result_dict, image_bytes, latency_ms)
+                        ResultItem(inspection_id, result_dict, image_bytes, latency_ms)
                     )
                     self._handle_arduino_action(result_dict)
             except Exception as exc:
                 logger.exception("inference worker %d error: %s", worker_index, exc)
 
-    # ---------- Sender Worker ----------
+    # ---------- Sender Worker (NG 전용, ACK 기반) ----------
 
     async def _run_sender_worker(self, worker_index: int) -> None:
         while True:
@@ -179,26 +199,85 @@ class StationRunner:
                 await self._result_queue.put(self._SENTINEL)
                 break
             try:
-                packet = PacketBuilder.build_packet(item.result_dict, item.image_bytes)
-                ok = await self._tcp_client.send_packet(packet)
+                packet = PacketBuilder.build_packet(
+                    protocol_no=self._ng_protocol_no,
+                    body_dict=item.result_dict,
+                    inspection_id=item.inspection_id,
+                    image_bytes=item.image_bytes,
+                )
+                ok = await self._tcp_client.send_with_ack(
+                    packet,
+                    protocol_no=self._ng_protocol_no,
+                    inspection_id=item.inspection_id,
+                )
                 if not ok:
-                    # 재시도 정책: 1회 한정 재투입 (간단 구현)
-                    logger.warning("sender %d: requeue frame %d", worker_index, item.frame_id)
-                    await asyncio.sleep(1.0)
-                    await self._result_queue.put(item)
+                    logger.error("sender %d: NG send giveup inspection_id=%s",
+                                 worker_index, item.inspection_id)
             except Exception as exc:
                 logger.exception("sender worker %d error: %s", worker_index, exc)
 
+    # ---------- OK 카운트 주기 송신 (1004) ----------
+
+    async def _run_ok_count_reporter(self) -> None:
+        try:
+            while self._is_running:
+                await asyncio.sleep(OK_COUNT_REPORT_INTERVAL_SEC)
+                if self._latency_count == 0:
+                    continue
+                latency_avg = self._latency_sum_ms / self._latency_count
+                body = {
+                    "station_id":  self._config.station_id,
+                    "ok_count":    self._ok_count,
+                    "ng_count":    self._ng_count,
+                    "latency_avg": round(latency_avg, 2),
+                    "period":      f"{int(OK_COUNT_REPORT_INTERVAL_SEC)}s",
+                }
+                # 통계 reset (송신 전에 스냅샷 떠두는 게 안전하지만 단일 코루틴이라 무방)
+                self._ok_count = 0
+                self._ng_count = 0
+                self._latency_sum_ms = 0
+                self._latency_count = 0
+
+                packet = PacketBuilder.build_packet(
+                    protocol_no=int(ProtocolNo.STATION_OK_COUNT),
+                    body_dict=body,
+                )
+                await self._tcp_client.send_fire_and_forget(packet)
+        except asyncio.CancelledError:
+            pass
+
+    # ---------- INSPECT_META (1006) — OK/NG 공통 ----------
+
+    async def _send_inspect_meta(self, inspection_id: str, timestamp: str,
+                                 latency_ms: int, result: str) -> None:
+        body = {
+            "station_id": self._config.station_id,
+            "timestamp":  timestamp,
+            "latency_ms": latency_ms,
+            "model_id":   0,    # TODO: 추론기에서 활성 모델 id 받아오기
+            "result":     result,
+        }
+        packet = PacketBuilder.build_packet(
+            protocol_no=int(ProtocolNo.INSPECT_META),
+            body_dict=body,
+            inspection_id=inspection_id,
+        )
+        await self._tcp_client.send_fire_and_forget(packet)
+
     # ---------- Helpers ----------
 
+    def _issue_inspection_id(self) -> str:
+        """stationN-YYYYMMDDHHMMSSmmm-seq 형식으로 발급."""
+        self._inspection_seq += 1
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")[:-3]
+        return f"station{self._config.station_id}-{ts}-{self._inspection_seq:06d}"
+
     def _handle_arduino_action(self, result_dict: dict) -> None:
-        """NG 시 Arduino 명령 송신. 스테이션별 로직은 서브클래스에서 override 권장."""
         defect = result_dict.get("defect", "")
         self._serial_ctrl.send_command(f"NG:{defect}\n")
 
     @staticmethod
     def _encode_image(image: Any) -> Optional[bytes]:
-        """ndarray -> jpg bytes. 실제 구현 시 cv2.imencode 사용. 골격에서는 None."""
         # TODO: import cv2; ok, buf = cv2.imencode(".jpg", image); return buf.tobytes()
         if image is None:
             return None

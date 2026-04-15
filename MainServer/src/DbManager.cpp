@@ -39,11 +39,23 @@ void DbManager::on_db_write(const std::any& payload) {
     long long inspection_id = 0;
     if (!insert_inspection(ev, inspection_id)) {
         std::cerr << "[DbManager] insert_inspection failed" << std::endl;
+        // NACK 송신 트리거
+        AckSendEvent nack{};
+        nack.protocol_no   = static_cast<int>(
+            ack_no_for(static_cast<ProtocolNo>(ev.protocol_no)));
+        nack.inspection_id = ev.inspection_id;
+        nack.sender_addr   = ev.sender_addr;
+        nack.ack_ok        = false;
+        nack.error_message = "db_insert_failed";
+        event_bus_.publish(EventType::ACK_SEND_REQUESTED, nack);
         return;
     }
     if (ev.station_id == static_cast<int>(StationId::ASSEMBLY)) {
         insert_assembly(ev, inspection_id);
     }
+
+    // 정상 INSERT 완료 → ACK 송신 트리거
+    event_bus_.publish(EventType::DB_WRITE_COMPLETED, ev);
 }
 
 bool DbManager::insert_inspection(const InspectionEvent& ev, long long& out_inspection_id) {
