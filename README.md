@@ -8,6 +8,11 @@ CNN 기반 머신비전 기술을 활용하여
 Edge AI 추론 서버와 이벤트 기반 Main Server를 통해
 데이터를 수집·처리·저장·시각화하는 공정 모니터링 시스템이다.
 
+## 👥 프로젝트 정보
+- 팀원: 김혜윤, 심동주, 정지훈, 임완, 오인효
+- 기간: 2026.04.13 ~ 2026.04.25 (12일)
+- 장소: 광주인력개발원
+
 ---
 
 ## 🧩 시스템 구성
@@ -97,21 +102,18 @@ Factory/
 
 ### Main Server
 
-```
 cd MainServer
 mkdir build && cd build
 cmake ..
 cmake --build .
 ./factory_main_server
-```
+
 
 ### AI Server
 
-```
 cd AiServer
 python -m Station1.Station1Main
 python -m Station2.Station2Main
-```
 
 ---
 
