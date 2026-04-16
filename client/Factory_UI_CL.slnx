@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Factory_UI_CL/Factory_UI_CL.vcxproj" />
+</Solution>

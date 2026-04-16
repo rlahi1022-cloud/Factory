@@ -1,0 +1,296 @@
+﻿// Microsoft Visual C++에서 생성한 리소스 스크립트입니다.
+#include "resource.h"
+
+#define APSTUDIO_READONLY_SYMBOLS
+#ifndef APSTUDIO_INVOKED
+#include "targetver.h"
+#endif
+#include "afxres.h"
+#include "verrsrc.h"
+#undef APSTUDIO_READONLY_SYMBOLS
+
+/////////////////////////////////////////////////////////////////////////////
+// 아이콘
+IDR_MAINFRAME           ICON         "res\\Factory_UI_CL.ico"
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_KOR)
+LANGUAGE 18, 1
+
+/////////////////////////////////////////////////////////////////////////////
+// 메뉴
+IDR_MAINMENU MENU
+BEGIN
+    POPUP "파일(&F)"
+    BEGIN
+        MENUITEM "로그아웃(&L)",         ID_FILE_LOGOUT
+        MENUITEM SEPARATOR
+        MENUITEM "종료(&X)",            ID_FILE_EXIT
+    END
+    POPUP "보기(&V)"
+    BEGIN
+        MENUITEM "새로고침(&R)\tF5",    ID_VIEW_REFRESH
+    END
+    POPUP "검사(&I)"
+    BEGIN
+        MENUITEM "검사 시작(&S)",        ID_INSPECT_START
+        MENUITEM "검사 중지(&T)",        ID_INSPECT_STOP
+    END
+    POPUP "도움말(&H)"
+    BEGIN
+        MENUITEM "정보(&A)...",          ID_HELP_ABOUT
+    END
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 기존 About/Main 다이얼로그 (VS 자동생성 유지)
+IDD_ABOUTBOX DIALOGEX 0, 0, 170, 62
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Factory_UI_CL 정보"
+FONT 9, "MS Shell Dlg"
+BEGIN
+    ICON            IDR_MAINFRAME,IDC_STATIC,14,14,21,20
+    LTEXT           "Factory QC v0.12",IDC_STATIC,42,14,114,8,SS_NOPREFIX
+    LTEXT           "Copyright (C) 2026",IDC_STATIC,42,26,114,8
+    DEFPUSHBUTTON   "확인",IDOK,113,41,50,14,WS_GROUP
+END
+
+IDD_FACTORY_UI_CL_DIALOG DIALOGEX 0, 0, 320, 200
+STYLE DS_SHELLFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU
+EXSTYLE WS_EX_APPWINDOW
+CAPTION "Factory QC"
+FONT 9, "MS Shell Dlg"
+BEGIN
+    DEFPUSHBUTTON   "확인",IDOK,209,179,50,14
+    PUSHBUTTON      "취소",IDCANCEL,263,179,50,14
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 로그인 다이얼로그
+IDD_LOGIN_DLG DIALOGEX 0, 0, 260, 210
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Factory QC - Login"
+FONT 9, "Tahoma", 0, 0, 0x1
+BEGIN
+    // ── 사원 ID (회원가입 모드에서만 표시) ──
+    LTEXT           "사원 ID:",         1008,               14, 36, 52, 10
+    EDITTEXT                            IDC_EDIT_EMPID,     70, 34,174, 14, ES_AUTOHSCROLL
+
+    // ── 사용자 이름 (공통) ──
+    LTEXT           "사용자(&U):",      IDC_STATIC,         14, 56, 52, 10
+    EDITTEXT                            IDC_EDIT_USERNAME,  70, 54,174, 14, ES_AUTOHSCROLL
+
+    // ── 암 호 (공통) ──
+    LTEXT           "암 호(&P):",       IDC_STATIC,         14, 76, 52, 10
+    EDITTEXT                            IDC_EDIT_PASSWORD,  70, 74,174, 14, ES_AUTOHSCROLL | ES_PASSWORD
+
+    // ── 암호 확인 (회원가입 모드에서만 표시) ──
+    LTEXT           "암호 확인:",       1009,               14, 96, 52, 10
+    EDITTEXT                            IDC_EDIT_PASS_CONFIRM, 70, 94,174, 14, ES_AUTOHSCROLL | ES_PASSWORD
+
+    // ── 권한 등급 (회원가입 모드에서만 표시) ──
+    LTEXT           "권한 등급:",       1010,               14,116, 52, 10
+    COMBOBOX                            IDC_COMBO_ROLE,     70,114,174, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    // ── 에러 메시지 ──
+    LTEXT           "",                 IDC_STATIC_ERROR,   14,138,210, 10, SS_LEFT
+
+    // ── 하단 버튼 ──
+    PUSHBUTTON      "회원가입 →",       IDC_BTN_SWITCH_MODE, 14,160, 70, 14
+    DEFPUSHBUTTON   "확인",             IDOK,               168,160, 40, 14
+    PUSHBUTTON      "취소",             IDCANCEL,           212,160, 40, 14
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 메인 다이얼로그
+IDD_MAIN_DLG DIALOGEX 0, 0, 900, 600
+STYLE DS_SETFONT | WS_OVERLAPPEDWINDOW | WS_VISIBLE
+CAPTION "Factory QC"
+FONT 9, "Tahoma", 0, 0, 0x1
+BEGIN
+    CONTROL "", IDC_MAIN_TAB, "SysTabControl32",
+            TCS_TABS | WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            0, 46, 900, 26
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 홈 페이지
+IDD_PAGE_HOME DIALOGEX 0, 0, 900, 490
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Tahoma", 0, 0, 0x1
+BEGIN
+    GROUPBOX        "Summary",             IDC_STATIC,       4,  4,890, 58
+    LTEXT           "Total",               IDC_STATIC,       14, 16, 60,  9
+    LTEXT           "0",                   IDC_STATIC_TOTAL, 14, 26, 60, 18, SS_CENTER
+    LTEXT           "OK",                  IDC_STATIC,       90, 16, 60,  9
+    LTEXT           "0",                   IDC_STATIC_OK,    90, 26, 60, 18, SS_CENTER
+    LTEXT           "NG",                  IDC_STATIC,      165, 16, 60,  9
+    LTEXT           "0",                   IDC_STATIC_NG,   165, 26, 60, 18, SS_CENTER
+    LTEXT           "Defect Rate",         IDC_STATIC,      240, 16, 60,  9
+    LTEXT           "0.00%",               IDC_STATIC_DEFECT_RATE, 240, 26, 60, 18, SS_CENTER
+    LTEXT           "Uptime",              IDC_STATIC,      315, 16, 60,  9
+    LTEXT           "98.7%",               IDC_STATIC_UPTIME,315, 26, 60, 18, SS_CENTER
+    GROUPBOX        "NG History",          IDC_STATIC,        4, 66,890,200
+    CONTROL         "", IDC_LIST_NG, "SysListView32",
+                    LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+                    10, 78,876,182
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 스테이션 1
+IDD_PAGE_STATION1 DIALOGEX 0, 0, 900, 490
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Tahoma", 0, 0, 0x1
+BEGIN
+    GROUPBOX "Station 1 - Incoming (PatchCore)", IDC_STATIC, 4, 4, 890, 310
+    LTEXT    "Pylon Camera #1",     IDC_STATIC,          10, 18,140,  9
+    CONTROL  "", IDC_CAM1_VIEW,    "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE, 10, 28,155,215
+    LTEXT    "PatchCore Heatmap",   IDC_STATIC,         172, 18, 90,  9
+    CONTROL  "", IDC_HEATMAP1_VIEW,"STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,172, 28, 95,215
+    GROUPBOX "Result",              IDC_STATIC,         274, 18,210, 80
+    LTEXT    "OK",                  IDC_STATIC_S1_RESULT, 284, 28,190, 42, SS_CENTER
+    LTEXT    "Score: 0.00 / Thresh: 0.50", IDC_STATIC_S1_SCORE, 282, 72,196, 10
+    GROUPBOX "Settings",            IDC_STATIC,         274,102,210, 74
+    LTEXT    "Model:  PatchCore v1.2.0", IDC_STATIC,    282,114,196, 10
+    LTEXT    "Input:  224x224",     IDC_STATIC,         282,126,196, 10
+    LTEXT    "Thresh: 0.50",        IDC_STATIC,         282,138,196, 10
+    LTEXT    "Backbone: ResNet-18", IDC_STATIC,         282,150,196, 10
+    PUSHBUTTON "Manual: OK",        IDC_BTN_S1_OK,      274,184, 66, 14
+    PUSHBUTTON "Manual: NG",        IDC_BTN_S1_NG,      344,184, 66, 14
+    PUSHBUTTON "Arduino Test",      IDC_BTN_S1_ARDUINO, 414,184, 60, 14
+    GROUPBOX "Arduino - Station1",  IDC_STATIC,           4,318,890, 36
+    LTEXT    "Serial OK (COM3)",    IDC_STATIC,          12,330,110, 10
+    LTEXT    "Standby",             IDC_STATIC_S1_LED,  130,330,220, 10
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 스테이션 2
+IDD_PAGE_STATION2 DIALOGEX 0, 0, 900, 490
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Tahoma", 0, 0, 0x1
+BEGIN
+    GROUPBOX "Station 2 - Assembly (YOLO11 + PatchCore)", IDC_STATIC, 4, 4, 890, 310
+    LTEXT    "Pylon Camera #2",     IDC_STATIC,          10, 18,150,  9
+    CONTROL  "", IDC_CAM2_VIEW,    "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE, 10, 28,155,215
+    LTEXT    "Label Heatmap",       IDC_STATIC,          172, 18, 90,  9
+    CONTROL  "", IDC_HEATMAP2_VIEW,"STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,172, 28, 95,215
+    GROUPBOX "YOLO11 Detections",   IDC_STATIC,         274, 18,210, 80
+    CONTROL  "", IDC_LIST_YOLO,  "SysListView32",
+             LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_CHILD | WS_VISIBLE,
+             278, 28,202, 64
+    GROUPBOX "PatchCore Label",     IDC_STATIC,         274,102,210, 26
+    LTEXT    "Score: 0.00",         IDC_STATIC_S2_SCORE, 282,112,196, 10
+    GROUPBOX "Final Result",        IDC_STATIC,         274,132,210, 52
+    LTEXT    "OK",                  IDC_STATIC_S2_RESULT, 284,142,190, 36, SS_CENTER
+    PUSHBUTTON "Select Defect",     IDC_BTN_S2_DEFECT,  274,192, 80, 14
+    PUSHBUTTON "Rework",            IDC_BTN_S2_REWORK,  358,192, 60, 14
+    GROUPBOX "Arduino - Station2",  IDC_STATIC,           4,318,890, 36
+    LTEXT    "Serial OK (COM5)",    IDC_STATIC,          12,330,110, 10
+    LTEXT    "Standby",             IDC_STATIC_S2_LED,  130,330,220, 10
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 통계 페이지
+IDD_PAGE_STATS DIALOGEX 0, 0, 900, 490
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Tahoma", 0, 0, 0x1
+BEGIN
+    GROUPBOX    "Filter",           IDC_STATIC,   4,  4,890, 28
+    LTEXT       "From:",            IDC_STATIC,   12, 16, 24, 10
+    CONTROL     "", IDC_DATE_FROM, "SysDateTimePick32",
+                DTS_SHORTDATEFORMAT | WS_CHILD | WS_VISIBLE | WS_TABSTOP, 38, 14, 84, 14
+    LTEXT       "~",                IDC_STATIC,  124, 16,  8, 10
+    CONTROL     "", IDC_DATE_TO,   "SysDateTimePick32",
+                DTS_SHORTDATEFORMAT | WS_CHILD | WS_VISIBLE | WS_TABSTOP,134, 14, 84, 14
+    COMBOBOX                        IDC_COMBO_STATION_FILTER, 224, 14, 90, 60,
+                CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON  "Query",            IDC_BTN_QUERY,      320, 14, 36, 14
+    PUSHBUTTON  "Export CSV",       IDC_BTN_EXPORT_CSV, 360, 14, 60, 14
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 모델 페이지
+IDD_PAGE_MODEL DIALOGEX 0, 0, 900, 490
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 9, "Tahoma", 0, 0, 0x1
+BEGIN
+    GROUPBOX "Model Versions",      IDC_STATIC,   4,  4,890,112
+    CONTROL  "", IDC_LIST_MODELS, "SysListView32",
+             LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+             10, 16,876, 94
+    GROUPBOX "Retrain",             IDC_STATIC,   4,120,890,164
+    LTEXT    "Target:",             IDC_STATIC,   12,132, 30, 10
+    COMBOBOX                        IDC_COMBO_TARGET, 46,130,180, 60,
+             CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT    "Product:",            IDC_STATIC,  234,132, 36, 10
+    EDITTEXT                        IDC_EDIT_PRODUCT_NAME, 274,130,110, 14, ES_AUTOHSCROLL
+    PUSHBUTTON "Select Folder...",  IDC_BTN_SELECT_FOLDER,  12,162, 80, 14
+    PUSHBUTTON "Clear",             IDC_BTN_CLEAR_FILES,    96,162, 40, 14
+    CONTROL  "", IDC_LIST_UPLOADED,"SysListView32",
+             LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_CHILD | WS_VISIBLE,
+             12,180,490, 44
+    PUSHBUTTON "Start Retrain",     IDC_BTN_RETRAIN,        12,230, 70, 14
+    CONTROL  "", IDC_PROGRESS_TRAINING, "msctls_progress32",
+             WS_CHILD | WS_VISIBLE, 88,232,340, 12
+    LTEXT    "",                    IDC_STATIC_TRAIN_STATUS, 88,248,400, 10
+    GROUPBOX "Server Info",         IDC_STATIC,   4,288,890, 58
+    LTEXT    "Server:    Ubuntu 24.04 + CUDA 12.x",  IDC_STATIC, 12,300,400, 10
+    LTEXT    "GPU:       NVIDIA RTX Series",          IDC_STATIC, 12,312,400, 10
+    LTEXT    "Framework: PyTorch + Anomalib / YOLO11",IDC_STATIC, 12,324,400, 10
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 버전 정보
+VS_VERSION_INFO VERSIONINFO
+  FILEVERSION    0,12,0,0
+  PRODUCTVERSION 0,12,0,0
+  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+  FILEFLAGS VS_FF_DEBUG
+#else
+  FILEFLAGS 0x0L
+#endif
+  FILEOS VOS_NT_WINDOWS32
+  FILETYPE VFT_APP
+  FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041204B0"
+        BEGIN
+            VALUE "FileDescription", "Factory QC Vision System"
+            VALUE "FileVersion",     "0.12.0.0"
+            VALUE "ProductName",     "FactoryQC"
+            VALUE "ProductVersion",  "0.12.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0412, 1200
+    END
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 문자열 테이블
+STRINGTABLE
+BEGIN
+    IDS_ABOUTBOX    "Factory QC 정보(&A)..."
+END
+
+#endif
+
+#ifndef APSTUDIO_INVOKED
+#define _AFX_NO_SPLITTER_RESOURCES
+#define _AFX_NO_OLE_RESOURCES
+#define _AFX_NO_TRACKER_RESOURCES
+#define _AFX_NO_PROPERTY_RESOURCES
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_KOR)
+LANGUAGE 18, 1
+#include "res\\FactoryUICL.rc2"
+#include "l.KOR\\afxres.rc"
+#if !defined(_AFXDLL)
+#include "l.KOR\\afxribbon.rc"
+#endif
+#endif
+#endif
+

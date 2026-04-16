@@ -1,0 +1,178 @@
+# MFC Client — Factory QC 모니터링 클라이언트
+
+## 개요
+
+MFC(Microsoft Foundation Class) 기반 Windows 데스크탑 애플리케이션.
+메인서버(포트 9010)에 TCP 접속하여 실시간 검사 결과를 수신하고,
+검사 이력/통계 조회 및 모델 관리 기능을 제공한다.
+
+## 접속 정보
+
+| 항목 | 값 |
+|------|-----|
+| 서버 IP | `10.10.10.130` |
+| 포트 | `9010` (GuiTcpListener) |
+| 패킷 포맷 | `[4byte BE length] + [JSON UTF-8]` |
+| 프로토콜 버전 | `1.0` |
+
+## 계정 (로컬 인증)
+
+| username | password | role | employee_id |
+|----------|----------|------|-------------|
+| admin01 | 1234 | admin | EMP-001 |
+| oper01 | 1234 | operator | EMP-002 |
+| viewer | 1234 | viewer | EMP-003 |
+
+## 화면 구성 (5개 탭)
+
+| 탭 | 클래스 | 기능 |
+|----|--------|------|
+| 종합 현황 | CPageHome | OK/NG 누적, 불량률, 스테이션별 현황, NG 이력 리스트 |
+| 입고 검사 | CPageStation1 | PatchCore 결과 (카메라뷰 + 히트맵 + 이상점수) |
+| 조립 검사 | CPageStation2 | YOLO11 결과 (카메라뷰 + 디텍션 + 히트맵) |
+| 통계/이력 | CPageStats | 시간대별 추세, 파레토 차트, 레이턴시 분포 |
+| 모델 관리 | CPageModel | 배포 모델 목록, 재학습 요청/진행률 |
+
+## 디렉터리 구조
+
+```
+client/
+├── Factory_UI_CL.slnx                # Visual Studio 솔루션
+├── Factory_UI_CL/
+│   ├── ClientProtocol.h              # 프로토콜 번호 정의 (100~199)
+│   ├── PacketBuilder.h/cpp           # 패킷 조립/파싱, 각 요청별 JSON 빌더
+│   ├── NetworkClient.h/cpp           # TCP 클라이언트 (비동기 수신 스레드, 자동 재접속)
+│   ├── InspectionData.h/cpp          # 데이터 구조체 (InspectionRecord, UserSession)
+│   ├── LoginDlg.h/cpp                # 로그인/회원가입 다이얼로그
+│   ├── MainTabDlg.h/cpp              # 메인 윈도우 (5개 탭, 네트워크 핸들러, 타이머)
+│   ├── PageHome.h/cpp                # 종합 현황 페이지
+│   ├── PageStation1.h/cpp            # 입고 검사 페이지
+│   ├── PageStation2.h/cpp            # 조립 검사 페이지
+│   ├── PageStats.h/cpp               # 통계/이력 페이지
+│   ├── PageModel.h/cpp               # 모델 관리 페이지
+│   ├── CameraView.h/cpp              # 카메라/히트맵 커스텀 뷰
+│   ├── Factory_UI_CL.h/cpp           # MFC 앱 클래스
+│   ├── Factory_UI_CLDlg.h/cpp        # 앱 진입점 다이얼로그
+│   ├── Resource.h                    # 리소스 ID 정의
+│   ├── FactoryUICL.rc                # 리소스 파일 (다이얼로그, 아이콘)
+│   └── res/                          # 아이콘 등 리소스
+└── tests/
+    ├── TestPacketBuilder.cpp          # 패킷 빌더 단위 테스트 (콘솔)
+    └── TestPacketBuilder.exe          # 빌드된 테스트 실행파일
+```
+
+## 통신 흐름
+
+### 로그인
+
+```
+클라이언트                          메인서버 (9010)
+    │                                   │
+    │── LOGIN_REQ(100) ────────────────>│
+    │   {username, password,            │
+    │    request_id, timestamp}         │
+    │                                   │
+    │<──────────────── LOGIN_RES(101) ──│
+    │   {success, role, employee_id,    │
+    │    message, timestamp}            │
+```
+
+### 실시간 NG 수신 (서버 → 클라이언트 push)
+
+```
+클라이언트                          메인서버
+    │                                   │
+    │<────── INSPECT_NG_PUSH(110) ──────│
+    │   {inspection_id, station_id,     │
+    │    result, defect_type, score,    │
+    │    latency_ms, timestamp}         │
+    │                                   │
+    │── INSPECT_NG_ACK_EXT(111) ───────>│
+    │   {inspection_id}                 │
+```
+
+### 서버 상태 수신
+
+```
+클라이언트                          메인서버
+    │                                   │
+    │<──── SERVER_HEALTH_PUSH(170) ─────│
+    │   {server_name, ip, port, status} │
+    │                                   │
+    │  → 툴바 LED 업데이트              │
+```
+
+## 프로토콜 메시지 (클라이언트 ↔ 메인서버)
+
+### 클라이언트 → 서버 (요청)
+
+| protocol_no | 이름 | JSON 필드 | 서버 구현 |
+|-------------|------|-----------|----------|
+| 100 | LOGIN_REQ | username, password, request_id, timestamp | 완성 |
+| 102 | LOGOUT_REQ | username, timestamp | 완성 |
+| 114 | INSPECT_HISTORY_REQ | station_filter, date_from, date_to, limit, request_id | 미구현 |
+| 130 | STATS_REQ | station_filter, date_from, date_to, request_id | 미구현 |
+| 150 | MODEL_LIST_REQ | request_id, timestamp | 미구현 |
+| 152 | RETRAIN_REQ | station_id, model_type, product_name, image_count, request_id | 미구현 |
+
+### 서버 → 클라이언트 (응답/push)
+
+| protocol_no | 이름 | 수신 핸들러 | 서버 구현 |
+|-------------|------|-----------|----------|
+| 101 | LOGIN_RES | OnNetResponse() | 완성 |
+| 103 | LOGOUT_RES | OnNetResponse() | 완성 |
+| 110 | INSPECT_NG_PUSH | OnNetNgPush() | 완성 |
+| 112 | INSPECT_OK_COUNT_PUSH | OnNetOkCountPush() | 미구현 |
+| 115 | INSPECT_HISTORY_RES | OnNetResponse() | 미구현 |
+| 131 | STATS_RES | OnNetResponse() | 미구현 |
+| 151 | MODEL_LIST_RES | OnNetResponse() | 미구현 |
+| 170 | SERVER_HEALTH_PUSH | OnNetHealthPush() | 완성 |
+
+## NetworkClient 설계
+
+```
+┌──────────────────┐   PostMessage    ┌──────────────────┐
+│  수신 스레드       │  ──────────────> │  UI 스레드        │
+│  (RecvLoop)       │  WM_NET_xxx     │  (MainTabDlg)    │
+└──────────────────┘                   └──────────────────┘
+     ↑ recv()                              ↓ SendJson()
+┌──────────────────────────────────────────────────────────┐
+│              메인 서버 (포트 9010)                         │
+└──────────────────────────────────────────────────────────┘
+```
+
+- 수신 타임아웃 5초: 타임아웃 시 EXT_ACK(190) heartbeat 전송
+- 서버 미연결 시 10초마다 재접속 시도 (IDT_RECONNECT 타이머)
+- ACK 필요 메시지(110, 156) 수신 시 자동 ACK 응답
+
+## 빌드
+
+Visual Studio 2022에서 `Factory_UI_CL.slnx` 열기 → 빌드 (Debug/Release).
+
+### 테스트 실행
+
+```
+cd client/tests
+TestPacketBuilder.exe
+```
+
+## 구현 상태
+
+### 완성
+
+- TCP 접속/수신/재접속 (NetworkClient)
+- 패킷 조립/파싱 (PacketBuilder)
+- 로그인 UI (로컬 인증)
+- 5개 탭 UI 레이아웃 및 렌더링
+- NG 결과 실시간 수신 + 표시
+- 서버 헬스 LED 표시
+- 시뮬레이션 모드 (서버 미연결 시 더미 데이터)
+
+### 미완성
+
+- 서버 로그인 인증 (현재 로컬 + 서버 동시 인증)
+- 검사 이력 조회 (INSPECT_HISTORY_REQ 114)
+- 통계 조회 (STATS_REQ 130)
+- 모델 목록 조회 (MODEL_LIST_REQ 150)
+- 재학습 요청/진행률 (RETRAIN_REQ 152, RETRAIN_PROGRESS 154)
+- CSV 내보내기
