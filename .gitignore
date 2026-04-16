@@ -1,5 +1,10 @@
 __pycache__/
 *.pyc
+*.o
+*.o.d
+*.a
+*.so
+*.out
 venv/
 .venv/
 AiServer/data/
