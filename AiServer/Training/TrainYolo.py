@@ -136,6 +136,18 @@ class YoloTrainer:
             save_dir = self._output_dir / model_name
             save_dir.mkdir(parents=True, exist_ok=True)  # 중간 폴더까지 자동 생성
 
+            # YOLO device 변환: Ultralytics는 "auto"를 인식 못 함
+            # "auto" → GPU 있으면 "0"(첫번째 GPU), 없으면 "cpu"
+            # "cuda" → "0" (Ultralytics는 "cuda" 대신 GPU 번호를 받음)
+            # "cpu" → "cpu" (그대로)
+            import torch as _torch
+            if self._device == "auto":
+                yolo_device = "0" if _torch.cuda.is_available() else "cpu"
+            elif self._device == "cuda":
+                yolo_device = "0"
+            else:
+                yolo_device = self._device
+
             # model.train(): YOLO11 학습을 실행한다.
             # 내부적으로 PyTorch 기반 학습 루프가 돌아간다.
             results = model.train(
@@ -144,7 +156,7 @@ class YoloTrainer:
                 imgsz=self._input_size,     # 입력 이미지 크기 (640x640)
                 batch=self._batch_size,     # 배치 크기 (16장씩 묶어서 처리)
                 patience=self._patience,    # 조기 종료: 20 epoch 연속 개선 없으면 중단
-                device=self._device,        # GPU 또는 CPU 선택
+                device=yolo_device,         # GPU 번호("0") 또는 "cpu"
                 project=str(save_dir),      # 결과 저장 프로젝트 폴더
                 name="train",              # 결과 저장 서브 폴더 이름
                 exist_ok=True,             # 같은 이름 폴더가 있어도 에러 안 남
