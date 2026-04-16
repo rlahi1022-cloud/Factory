@@ -18,17 +18,17 @@ include_directories(
 )
 
 set(SRC_FILES
-    src/Main.cpp
-    src/EventBus.cpp
-    src/TcpListener.cpp
-    src/Router.cpp
-    src/StationHandler.cpp
-    src/DbManager.cpp
-    src/ImageStorage.cpp
-    src/GuiNotifier.cpp
-    src/HealthChecker.cpp
-    src/AckSender.cpp
-    src/ConnectionRegistry.cpp
+    src/main.cpp
+    src/event_bus.cpp
+    src/tcp_listener.cpp
+    src/router.cpp
+    src/station_handler.cpp
+    src/db_manager.cpp
+    src/image_storage.cpp
+    src/gui_notifier.cpp
+    src/health_checker.cpp
+    src/ack_sender.cpp
+    src/connection_registry.cpp
 )
 
 add_executable(factory_main_server ${SRC_FILES})

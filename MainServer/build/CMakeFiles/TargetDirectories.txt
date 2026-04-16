@@ -1,0 +1,3 @@
+/home/lms/Desktop/Factory/MainServer/build/CMakeFiles/factory_main_server.dir
+/home/lms/Desktop/Factory/MainServer/build/CMakeFiles/edit_cache.dir
+/home/lms/Desktop/Factory/MainServer/build/CMakeFiles/rebuild_cache.dir
