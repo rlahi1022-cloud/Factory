@@ -53,7 +53,7 @@
   3. 더미 데이터 생성
 =====================================
 
-  python tests/generate_dummy_data.py
+  python tests/GenerateDummyData.py
 
   생성 결과:
     data/station1/normal/       — 빈 용기 정상 이미지 20장
@@ -70,13 +70,13 @@
   ※ GPU 드라이버 문제 시 앞에 CUDA_VISIBLE_DEVICES="" 붙이기
 
   # Station1 PatchCore 학습 (입고검사)
-  CUDA_VISIBLE_DEVICES="" python tests/test_training.py --type patchcore --station 1 --device cpu
+  CUDA_VISIBLE_DEVICES="" python tests/TestTraining.py --type patchcore --station 1 --device cpu
 
   # Station2 YOLO11 학습 (조립검사 - 객체탐지)
-  CUDA_VISIBLE_DEVICES="" python tests/test_training.py --type yolo --device cpu --epochs 5
+  CUDA_VISIBLE_DEVICES="" python tests/TestTraining.py --type yolo --device cpu --epochs 5
 
   # Station2 PatchCore 학습 (조립검사 - 라벨 표면)
-  CUDA_VISIBLE_DEVICES="" python tests/test_training.py --type patchcore --station 2 --device cpu
+  CUDA_VISIBLE_DEVICES="" python tests/TestTraining.py --type patchcore --station 2 --device cpu
 
   학습 결과:
     models/station1_patchcore_v날짜_시간.ckpt
@@ -94,13 +94,13 @@
   cp models/station2_patchcore_v*.ckpt models/station2_patchcore.ckpt
 
   # Station1 추론 테스트
-  CUDA_VISIBLE_DEVICES="" python tests/test_inference.py --station 1 --image data/station1/test/dummy_ng_000.jpg --device cpu
+  CUDA_VISIBLE_DEVICES="" python tests/TestInference.py --station 1 --image data/station1/test/dummy_ng_000.jpg --device cpu
 
   # Station2 추론 테스트
-  CUDA_VISIBLE_DEVICES="" python tests/test_inference.py --station 2 --image data/station2/test/dummy_ng_cap_000.jpg --device cpu
+  CUDA_VISIBLE_DEVICES="" python tests/TestInference.py --station 2 --image data/station2/test/dummy_ng_cap_000.jpg --device cpu
 
   # 더미 이미지로 빠른 테스트 (모델 없이 동작 확인)
-  CUDA_VISIBLE_DEVICES="" python tests/test_inference.py --station 1 --dummy --device cpu
+  CUDA_VISIBLE_DEVICES="" python tests/TestInference.py --station 1 --dummy --device cpu
 
 
 =====================================
