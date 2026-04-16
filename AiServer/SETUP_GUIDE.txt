@@ -1,0 +1,181 @@
+=====================================
+  AI 서버 설치 및 실행 가이드
+=====================================
+
+■ 프로젝트 구조
+  AiServer/
+  ├── Common/          — 공통 모듈 (Config, Protocol, TCP, 추론기 등)
+  ├── Station1/        — 추론서버 #1 (입고검사, PatchCore)
+  ├── Station2/        — 추론서버 #2 (조립검사, YOLO11+PatchCore)
+  ├── Training/        — 학습서버 (PatchCore, YOLO11 학습)
+  ├── tests/           — 테스트 스크립트
+  ├── data/            — 학습/테스트 데이터 (git 제외)
+  ├── models/          — 학습된 모델 파일 (git 제외)
+  └── requirements.txt — Python 패키지 목록
+
+
+=====================================
+  1. 코드 받기
+=====================================
+
+[이미 클론한 상태]
+  git fetch origin
+  git merge origin/feat/dj
+
+[새로 클론]
+  git clone https://github.com/rlahi1022-cloud/Factory.git
+  cd Factory
+  git switch feat/dj
+
+
+=====================================
+  2. 가상환경 생성 + 패키지 설치
+=====================================
+
+  cd AiServer
+
+  # 가상환경 생성
+  python3 -m venv venv
+
+  # 가상환경 활성화
+  source venv/bin/activate          # Linux/Mac
+  venv\Scripts\activate             # Windows
+
+  # 패키지 설치 (전체)
+  pip install -r requirements.txt
+
+  # CPU 전용 설치 (GPU 없는 환경, 용량 절약)
+  pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+  pip install anomalib ultralytics opencv-python numpy pyserial Pillow albumentations
+
+
+=====================================
+  3. 더미 데이터 생성
+=====================================
+
+  python tests/generate_dummy_data.py
+
+  생성 결과:
+    data/station1/normal/       — 빈 용기 정상 이미지 20장
+    data/station1/test/         — 테스트 이미지 5장
+    data/station2/yolo/         — YOLO 데이터셋 (이미지+라벨)
+    data/station2/patchcore/    — 라벨 표면 정상 이미지 20장
+    data/station2/test/         — 조립 테스트 이미지 5장
+
+
+=====================================
+  4. 학습 테스트
+=====================================
+
+  ※ GPU 드라이버 문제 시 앞에 CUDA_VISIBLE_DEVICES="" 붙이기
+
+  # Station1 PatchCore 학습 (입고검사)
+  CUDA_VISIBLE_DEVICES="" python tests/test_training.py --type patchcore --station 1 --device cpu
+
+  # Station2 YOLO11 학습 (조립검사 - 객체탐지)
+  CUDA_VISIBLE_DEVICES="" python tests/test_training.py --type yolo --device cpu --epochs 5
+
+  # Station2 PatchCore 학습 (조립검사 - 라벨 표면)
+  CUDA_VISIBLE_DEVICES="" python tests/test_training.py --type patchcore --station 2 --device cpu
+
+  학습 결과:
+    models/station1_patchcore_v날짜_시간.ckpt
+    models/station2_yolo11_v날짜_시간.pt
+    models/station2_patchcore_v날짜_시간.ckpt
+
+
+=====================================
+  5. 추론 테스트
+=====================================
+
+  ※ 학습된 모델 파일을 기본 이름으로 복사
+  cp models/station1_patchcore_v*.ckpt models/station1_patchcore.ckpt
+  cp models/station2_yolo11_v*.pt models/station2_yolo11.pt
+  cp models/station2_patchcore_v*.ckpt models/station2_patchcore.ckpt
+
+  # Station1 추론 테스트
+  CUDA_VISIBLE_DEVICES="" python tests/test_inference.py --station 1 --image data/station1/test/dummy_ng_000.jpg --device cpu
+
+  # Station2 추론 테스트
+  CUDA_VISIBLE_DEVICES="" python tests/test_inference.py --station 2 --image data/station2/test/dummy_ng_cap_000.jpg --device cpu
+
+  # 더미 이미지로 빠른 테스트 (모델 없이 동작 확인)
+  CUDA_VISIBLE_DEVICES="" python tests/test_inference.py --station 1 --dummy --device cpu
+
+
+=====================================
+  6. 추론서버 실행 (메인서버 연결)
+=====================================
+
+  ※ 운용서버(C++)가 10.10.10.130:9000에서 실행 중이어야 함
+
+  # Station1 추론서버 실행 (입고검사)
+  CUDA_VISIBLE_DEVICES="" python -m Station1.Station1Main
+
+  # Station2 추론서버 실행 (조립검사)
+  CUDA_VISIBLE_DEVICES="" python -m Station2.Station2Main
+
+  # 학습서버 실행
+  CUDA_VISIBLE_DEVICES="" python -m Training.TrainingMain
+
+  종료: Ctrl+C
+
+
+=====================================
+  7. 네트워크 설정
+=====================================
+
+  운용서버 (C++)     : 10.10.10.130:9000
+  MariaDB            : 10.10.10.130:3306
+  학습서버 리슨 포트  : 9201
+  추론서버 #1 포트    : 9101
+  추론서버 #2 포트    : 9102
+
+
+=====================================
+  8. 디바이스 옵션 설명
+=====================================
+
+  --device auto   : GPU 있으면 GPU, 없으면 CPU (기본값)
+  --device cuda   : GPU 강제 사용
+  --device cpu    : CPU 강제 사용
+
+  CUDA_VISIBLE_DEVICES="" : GPU를 아예 숨김 (드라이버 문제 우회)
+
+
+=====================================
+  9. 데이터 폴더 구조
+=====================================
+
+  data/
+  ├── station1/
+  │   ├── normal/          ← 정상 빈 용기 사진 (PatchCore 학습용)
+  │   └── test/            ← 테스트용 사진
+  └── station2/
+      ├── yolo/
+      │   ├── images/
+      │   │   ├── train/   ← 학습 이미지
+      │   │   └── val/     ← 검증 이미지
+      │   └── labels/
+      │       ├── train/   ← YOLO 라벨 (class cx cy w h)
+      │       └── val/     ←   0=cap, 1=label, 2=liquid_level
+      ├── patchcore/
+      │   └── normal/      ← 라벨 표면 정상 crop (PatchCore 학습용)
+      └── test/            ← 조립 테스트용 사진
+
+
+=====================================
+  10. 문제 해결
+=====================================
+
+  [에러] CUDA driver too old
+  → 앞에 CUDA_VISIBLE_DEVICES="" 붙이거나 --device cpu 사용
+
+  [에러] No module named 'numpy'
+  → 가상환경 활성화 확인: source venv/bin/activate
+
+  [에러] model not found
+  → 학습을 먼저 실행하거나, 모델 파일을 models/ 폴더에 복사
+
+  [에러] connection refused (10.10.10.130:9000)
+  → 운용서버(C++)가 실행 중인지 확인
