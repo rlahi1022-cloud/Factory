@@ -71,7 +71,13 @@ void HealthChecker::run_loop() {
                 }
             }
         }
-        std::this_thread::sleep_for(interval_);
+        // 종료 시 빠르게 탈출하기 위해 200ms 단위로 나누어 대기
+        auto remaining = interval_;
+        while (is_running_.load() && remaining.count() > 0) {
+            auto step = std::min(remaining, std::chrono::seconds(1));
+            std::this_thread::sleep_for(step);
+            remaining -= step;
+        }
     }
 }
 

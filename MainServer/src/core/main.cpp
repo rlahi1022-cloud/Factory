@@ -47,7 +47,7 @@ int main() {
     Station2Handler station2_handler(event_bus);
     station2_handler.register_handlers();
 
-    DbManager db_manager(event_bus, "127.0.0.1", "factory", "factory_pw", "factory_qc");
+    DbManager db_manager(event_bus, "127.0.0.1", "factorymanager", "1234", "Factory");
     db_manager.connect();
     db_manager.register_handlers();
 

@@ -50,6 +50,11 @@ void GuiTcpListener::start() {
     ::setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR,
                  reinterpret_cast<const char*>(&opt), sizeof(opt));
 
+    // accept() 타임아웃 1초 — 종료 시 블로킹 방지
+    struct timeval tv{1, 0};
+    ::setsockopt(server_fd_, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char*>(&tv), sizeof(tv));
+
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
@@ -90,9 +95,6 @@ void GuiTcpListener::run_accept_loop() {
         int client_fd = static_cast<int>(
             ::accept(server_fd_, reinterpret_cast<sockaddr*>(&client_addr), &addr_len));
         if (client_fd < 0) {
-            if (is_running_.load()) {
-                std::cerr << "[GuiTcpListener] accept() failed" << std::endl;
-            }
             continue;
         }
         char ip_buf[64] = {0};
