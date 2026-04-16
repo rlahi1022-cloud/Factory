@@ -10,6 +10,7 @@ public:
     CPageHome(CWnd* p = nullptr);
     enum { IDD = IDD_PAGE_HOME };
     void Update(const std::vector<InspectionRecord>& recs);
+    void UpdateStationCount(int stationId, int okCount, int ngCount);
 protected:
     CListCtrl m_listNG;
     virtual BOOL OnInitDialog() override;

@@ -8,6 +8,9 @@ class CPageModel : public CDialogEx {
 public:
     CPageModel(CWnd* p=nullptr);
     enum { IDD = IDD_PAGE_MODEL };
+    void OnModelListRes(const std::string& json);
+    void OnRetrainRes(const std::string& json);
+    void OnRetrainProgress(int progress);
 protected:
     struct ModelRow{int id,station;CString type,ver;double acc;CString deployed;bool active;};
     struct UpFile{CString name,size;};

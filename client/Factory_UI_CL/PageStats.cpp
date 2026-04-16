@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "PageStats.h"
+#include "PacketBuilder.h"
 #include <algorithm>
 
 IMPLEMENT_DYNAMIC(CPageStats, CDialogEx)
@@ -117,6 +118,35 @@ void CPageStats::DrawLatency(CDC& dc, CRect rc){
                       pl.bottom-(int)(v/maxMs*pl.Height()));};
     dc.MoveTo(pt(0,m_trend[0].lat));
     for(int i=1;i<n;++i)dc.LineTo(pt(i,m_trend[i].lat));
+}
+
+void CPageStats::OnInspectHistoryRes(const std::string& json)
+{
+    // 서버에서 받은 검사 이력을 m_recs에 반영
+    CStringA jsonA(json.c_str());
+    int count = CPacketBuilder::ExtractInt(jsonA, "count");
+    TRACE(_T("[PageStats] 검사 이력 수신: %d건\n"), count);
+    // items 배열은 간이 파서로 처리 불가 — 수신 확인만 로그
+    // TODO: JSON 배열 파서 추가 시 m_recs에 반영
+    Rebuild();
+    Invalidate();
+}
+
+void CPageStats::OnStatsRes(const std::string& json)
+{
+    // 서버에서 받은 통계를 표시
+    CStringA jsonA(json.c_str());
+    int total    = CPacketBuilder::ExtractInt(jsonA, "total");
+    int okCount  = CPacketBuilder::ExtractInt(jsonA, "ok_count");
+    int ngCount  = CPacketBuilder::ExtractInt(jsonA, "ng_count");
+    double ngRate = CPacketBuilder::ExtractDouble(jsonA, "ng_rate");
+
+    TRACE(_T("[PageStats] 통계 수신: total=%d ok=%d ng=%d rate=%.2f%%\n"),
+        total, okCount, ngCount, ngRate);
+
+    // TODO: 차트에 반영
+    Rebuild();
+    Invalidate();
 }
 
 void CPageStats::OnBtnQuery(){Rebuild();Invalidate();}

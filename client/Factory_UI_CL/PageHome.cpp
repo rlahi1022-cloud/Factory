@@ -125,4 +125,20 @@ void CPageHome::Update(const std::vector<InspectionRecord>& recs)
     }
 }
 
+void CPageHome::UpdateStationCount(int stationId, int okCount, int ngCount)
+{
+    auto set = [&](int id, CString v) {
+        CWnd* w = GetDlgItem(id);
+        if (w) w->SetWindowText(v);
+    };
+    CString s;
+    if (stationId == 1) {
+        s.Format(_T("%d"), okCount);  set(IDC_STATIC_S1_OK, s);
+        s.Format(_T("%d"), ngCount);  set(IDC_STATIC_S1_NG, s);
+    } else if (stationId == 2) {
+        s.Format(_T("%d"), okCount);  set(IDC_STATIC_S2_OK, s);
+        s.Format(_T("%d"), ngCount);  set(IDC_STATIC_S2_NG, s);
+    }
+}
+
 void CPageHome::OnPaint() { Default(); }

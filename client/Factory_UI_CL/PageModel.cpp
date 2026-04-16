@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "PageModel.h"
+#include "PacketBuilder.h"
 
 IMPLEMENT_DYNAMIC(CPageModel, CDialogEx)
 BEGIN_MESSAGE_MAP(CPageModel, CDialogEx)
@@ -84,6 +85,46 @@ void CPageModel::OnBtnRetrain(){
     CWnd* w=GetDlgItem(IDC_BTN_RETRAIN);if(w){w->SetWindowText(_T("학습 중..."));w->EnableWindow(FALSE);}
     SetTimer(IDT_TRAINING,400,nullptr);
 }
+void CPageModel::OnModelListRes(const std::string& json)
+{
+    CStringA jsonA(json.c_str());
+    int count = CPacketBuilder::ExtractInt(jsonA, "count");
+    TRACE(_T("[PageModel] 모델 목록 수신: %d건\n"), count);
+    // TODO: items 배열 파싱 → m_models 갱신 → FillModels()
+    // 현재는 수신 확인만 로그
+}
+
+void CPageModel::OnRetrainRes(const std::string& json)
+{
+    CStringA jsonA(json.c_str());
+    CStringA msg = CPacketBuilder::ExtractString(jsonA, "message");
+    TRACE(_T("[PageModel] 재학습 응답: %S\n"), (LPCSTR)msg);
+
+    CWnd* w = GetDlgItem(IDC_STATIC_TRAIN_STATUS);
+    if (w) w->SetWindowText(CString(msg));
+}
+
+void CPageModel::OnRetrainProgress(int progress)
+{
+    m_prog = progress;
+    m_progress.SetPos(progress);
+    if (!m_progress.IsWindowVisible())
+        m_progress.ShowWindow(SW_SHOW);
+
+    CString s;
+    s.Format(_T("서버 학습 진행률: %d%%"), progress);
+    CWnd* w = GetDlgItem(IDC_STATIC_TRAIN_STATUS);
+    if (w) w->SetWindowText(s);
+
+    if (progress >= 100) {
+        m_training = false;
+        m_progress.ShowWindow(SW_HIDE);
+        w = GetDlgItem(IDC_BTN_RETRAIN);
+        if (w) { w->SetWindowText(_T("재학습 실행")); w->EnableWindow(TRUE); }
+        MessageBox(_T("서버 모델 재학습이 완료되었습니다."), _T("완료"), MB_OK | MB_ICONINFORMATION);
+    }
+}
+
 void CPageModel::OnBtnClear(){m_files.clear();FillFiles();}
 void CPageModel::OnTimer(UINT_PTR id){
     if(id==IDT_TRAINING){

@@ -10,6 +10,8 @@ public:
     CPageStats(CWnd* p=nullptr);
     enum { IDD = IDD_PAGE_STATS };
     void Update(const std::vector<InspectionRecord>& recs);
+    void OnInspectHistoryRes(const std::string& json);
+    void OnStatsRes(const std::string& json);
 protected:
     std::vector<InspectionRecord> m_recs;
     struct TPoint{CString lbl;double s1,s2;int lat;};

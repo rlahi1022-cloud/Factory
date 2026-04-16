@@ -652,8 +652,8 @@ LRESULT CMainTabDlg::OnNetOkCountPush(WPARAM, LPARAM lParam)
     int okCount    = CPacketBuilder::ExtractInt(jsonA, "ok_count");
     int ngCount    = CPacketBuilder::ExtractInt(jsonA, "ng_count");
 
-    // TODO: 홈 페이지의 스테이션별 OK/NG 표시에 반영
-    // m_home->UpdateStationCount(stationId, okCount, ngCount);
+    // 홈 페이지의 스테이션별 OK/NG 표시에 반영
+    if (m_home) m_home->UpdateStationCount(stationId, okCount, ngCount);
     TRACE(_T("[MainTabDlg] OK카운트 수신: station=%d ok=%d ng=%d\n"),
         stationId, okCount, ngCount);
 
@@ -705,22 +705,22 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
     switch (protocolNo) {
     case factory_client::INSPECT_HISTORY_RES:
         // 검사 이력 응답 → 통계 페이지에 전달
-        // TODO: m_stats->OnInspectHistoryRes(*pJson);
+        if (m_stats) m_stats->OnInspectHistoryRes(*pJson);
         break;
 
     case factory_client::STATS_RES:
         // 통계 데이터 응답
-        // TODO: m_stats->OnStatsRes(*pJson);
+        if (m_stats) m_stats->OnStatsRes(*pJson);
         break;
 
     case factory_client::MODEL_LIST_RES:
         // 모델 목록 응답 → 모델 페이지에 전달
-        // TODO: m_model->OnModelListRes(*pJson);
+        if (m_model) m_model->OnModelListRes(*pJson);
         break;
 
     case factory_client::RETRAIN_RES:
         // 재학습 시작 응답
-        // TODO: m_model->OnRetrainRes(*pJson);
+        if (m_model) m_model->OnRetrainRes(*pJson);
         break;
 
     default:
@@ -742,7 +742,7 @@ LRESULT CMainTabDlg::OnNetRetrainProgress(WPARAM, LPARAM lParam)
     int progress = CPacketBuilder::ExtractInt(jsonA, "progress");
 
     // 모델 페이지에 진행률 전달
-    // TODO: m_model->OnRetrainProgress(progress);
+    if (m_model) m_model->OnRetrainProgress(progress);
     TRACE(_T("[MainTabDlg] 재학습 진행률: %d%%\n"), progress);
 
     delete pJson;
