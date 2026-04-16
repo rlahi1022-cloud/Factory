@@ -20,9 +20,25 @@
 | `timestamp` | str | ISO8601 |
 | `image_size` | int | 이미지 동봉 시 양수, 아니면 0 |
 
+참고: C++ 코드에서는 `FACTORY_PROTOCOL_VERSION` 상수명 사용 (MariaDB 헤더 매크로 충돌 방지)
+
 ## 메시지 번호 (요구사항 분석서 기준)
 
-### 내부 채널 (운용 ↔ 추론) — 본 단계 구현
+### 외부 채널 (MFC ↔ 운용) — 100~199
+
+| 번호 | 이름 | 방향 | 구현 상태 |
+|------|------|------|----------|
+| 100 | LOGIN_REQ | MFC → 운용 | 미구현 |
+| 101 | LOGIN_RES | 운용 → MFC | 미구현 |
+| 110 | INSPECT_NG_PUSH | 운용 → MFC | 완성 (GuiNotifier) |
+| 112 | INSPECT_OK_COUNT_PUSH | 운용 → MFC | 미구현 |
+| 114 | INSPECT_HISTORY_REQ | MFC → 운용 | 미구현 |
+| 115 | INSPECT_HISTORY_RES | 운용 → MFC | 미구현 |
+| 130 | STATS_REQ | MFC → 운용 | 미구현 |
+| 131 | STATS_RES | 운용 → MFC | 미구현 |
+| 170 | SERVER_HEALTH_PUSH | 운용 → MFC | 완성 (GuiNotifier) |
+
+### 내부 채널 (운용 ↔ 추론) — 1000~1099, 완성
 
 | 번호 | 이름 | 방향 | ACK |
 |------|------|------|-----|
@@ -34,11 +50,33 @@
 | 1006 | INSPECT_META | 추론 → 운용 | Fire-and-forget |
 | 1010 | MODEL_RELOAD_CMD | 운용 → 추론 | 필수 (1011) |
 | 1011 | MODEL_RELOAD_RES | 추론 → 운용 | — |
-| 1200 | HEALTH_PING | 운용 → 각 서버 | — |
-| 1201 | HEALTH_PONG | 각 서버 → 운용 | — |
-| 1900~1904 | INTERNAL_ACK / NACK / RETRY / ERROR | 양방향 | — |
 
-외부 채널(100~199, MFC ↔ 운용)·학습 채널(1100~1199)은 enum에 번호만 예약.
+### 학습 채널 (운용 ↔ 학습) — 1100~1199
+
+| 번호 | 이름 | 방향 | 구현 상태 |
+|------|------|------|----------|
+| 1100 | TRAIN_START_REQ | 운용 → 학습 | AI서버 완성 |
+| 1101 | TRAIN_START_RES | 학습 → 운용 | AI서버 완성 |
+| 1102 | TRAIN_PROGRESS | 학습 → 운용 | AI서버 완성 |
+| 1104 | TRAIN_COMPLETE | 학습 → 운용 | AI서버 완성 |
+| 1106 | TRAIN_FAIL | 학습 → 운용 | AI서버 완성 |
+
+### 헬스체크 — 1200~
+
+| 번호 | 이름 | 방향 | 구현 상태 |
+|------|------|------|----------|
+| 1200 | HEALTH_PING | 운용 → 각 서버 | 메인서버: TCP connect만 |
+| 1201 | HEALTH_PONG | 각 서버 → 운용 | AI서버: 자동응답 완성 |
+
+### 내부 공통 — 1900~
+
+| 번호 | 이름 | 방향 |
+|------|------|------|
+| 1900 | INTERNAL_ACK | 양방향 |
+| 1901 | INTERNAL_NACK | 양방향 |
+| 1902 | INTERNAL_RETRY_REQ | 양방향 |
+| 1903 | INTERNAL_RETRY_DATA | 양방향 |
+| 1904 | INTERNAL_ERROR | 양방향 |
 
 ## ACK / 재전송 정책
 
@@ -47,6 +85,17 @@
 - **최대 재전송**: 3회
 - **NACK 수신 시**: 재전송하지 않고 drop + 에러 로그
 - **메인서버 동작**: NG 패킷 수신 → DB INSERT 성공 시 같은 connection으로 ACK 회신, 실패 시 NACK
+
+## 포트 할당
+
+| 포트 | 용도 | 프로세스 |
+|------|------|---------|
+| 9000 | 추론서버 → 메인서버 | MainServer (TcpListener) |
+| 9010 | MFC → 메인서버 | MainServer (GuiTcpListener) |
+| 9100 | 메인서버 → 학습서버 | AiServer (TrainingMain) |
+| 9101 | 헬스체크 대상 (추론#1) | AiServer (Station1) |
+| 9102 | 헬스체크 대상 (추론#2) | AiServer (Station2) |
+| 9201 | 헬스체크 대상 (학습) | AiServer (Training) |
 
 ## 송신 예시 (Python)
 

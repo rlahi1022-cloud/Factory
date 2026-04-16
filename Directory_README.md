@@ -6,9 +6,9 @@ Factory/
 └── AiServer/         # AI 추론 서버 (Python 3.10+, asyncio.Queue 비동기 큐)
 ```
 
-학습 서버는 본 저장소에 포함되지 않으며, 학습 완료된 가중치(`*.ckpt`, `*.pt`)는
-별도 경로(SCP/공유폴더)로 추론 서버에 배포되어 `Common/Inferencer.py` 내
-`load_model()` / `infer()` 구현에 주입됩니다.
+학습 서버는 `AiServer/Training/` 디렉터리에 포함되어 있으며,
+학습 완료된 가중치(`*.ckpt`, `*.pt`)는 별도 경로(SCP/공유폴더)로
+추론 서버에 배포되어 `Common/Inferencer.py`의 `load_model()`에서 로드됩니다.
 
 ## 명명 규칙
 
@@ -46,7 +46,7 @@ MainServer/
 │   │   └── ack_sender.h               # 추론서버로 ACK/NACK 회신
 │   │
 │   ├── storage/                        # 저장 계층
-│   │   ├── db_manager.h                # MariaDB INSERT (TODO: 커넥터 연동)
+│   │   ├── db_manager.h                # MariaDB prepared statement INSERT
 │   │   └── image_storage.h             # NG 이미지 파일 저장
 │   │
 │   ├── session/                        # GUI 클라이언트 세션 관리
@@ -111,12 +111,21 @@ AiServer/
 │   ├── Packet.py               # PacketBuilder (protocol_no/inspection_id 자동 주입)
 │   ├── TcpClient.py            # send_with_ack / send_fire_and_forget
 │   ├── SerialCtrl.py           # Arduino 시리얼 (골격)
-│   ├── Inferencer.py           # Station1/2Inferencer (모델 자리만)
+│   ├── Inferencer.py           # Station1/2Inferencer (PatchCore / YOLO11+PatchCore)
 │   └── StationRunner.py        # 비동기 큐 파이프라인 + OK카운트 reporter + INSPECT_META 송신
 ├── Station1/
 │   └── Station1Main.py         # 입고 검사 진입점
-└── Station2/
-    └── Station2Main.py         # 조립 검사 진입점
+├── Station2/
+│   └── Station2Main.py         # 조립 검사 진입점
+├── Training/
+│   ├── TrainingMain.py         # 학습 서버 진입점 (TCP 포트 9100)
+│   ├── TrainingConfig.py       # 학습 설정 dataclass
+│   ├── TrainPatchcore.py       # PatchCore 비지도 학습 (anomalib)
+│   └── TrainYolo.py            # YOLO11 전이학습 (ultralytics)
+└── tests/
+    ├── test_inference.py       # 추론 테스트 스크립트
+    ├── test_training.py        # 학습 테스트 스크립트
+    └── generate_dummy_data.py  # 더미 이미지 데이터 생성
 ```
 
 ### 실행
