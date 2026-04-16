@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+AiServer/data/
+AiServer/models/
+AiServer/deploy/
+runs/
+*.jpg
+*.png
+!AiServer/tests/generate_dummy_data.py
+yolo11n.pt
+.claude/
