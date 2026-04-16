@@ -4,7 +4,7 @@
 
 | 항목 | 값 |
 |------|-----|
-| Host | `10.10.10.130` |
+| Host | `127.0.0.1` (로컬) / `10.10.10.130` (외부 접속 시) |
 | User | `factorymanager` |
 | Password | `1234` |
 | Database | `Factory` |
@@ -12,7 +12,7 @@
 ## 접속 명령어
 
 ```
-mysql -h 10.10.10.130 -u factorymanager -p Factory
+mysql -h 127.0.0.1 -u factorymanager -p Factory
 ```
 
 비밀번호 입력 프롬프트가 뜨면 `1234` 입력.
@@ -22,7 +22,7 @@ mysql -h 10.10.10.130 -u factorymanager -p Factory
 `MainServer/src/core/main.cpp`의 `DbManager` 생성자:
 
 ```cpp
-DbManager db_manager(event_bus, "10.10.10.130", "factorymanager", "1234", "Factory");
+DbManager db_manager(event_bus, "127.0.0.1", "factorymanager", "1234", "Factory");
 ```
 
 (현재는 `127.0.0.1` / `factory` / `factory_pw` / `factory_qc`로 placeholder 상태)

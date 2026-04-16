@@ -23,6 +23,12 @@
 namespace {
 constexpr uint16_t GUI_LISTEN_PORT = 9010;
 
+// DB 접속 정보 (공통)
+const char* DB_HOST     = "127.0.0.1";
+const char* DB_USER     = "factorymanager";
+const char* DB_PASSWORD = "1234";
+const char* DB_SCHEMA   = "Factory";
+
 std::atomic<bool> g_should_exit{false};
 void on_signal(int) { g_should_exit.store(true); }
 } // namespace
@@ -47,7 +53,7 @@ int main() {
     Station2Handler station2_handler(event_bus);
     station2_handler.register_handlers();
 
-    DbManager db_manager(event_bus, "127.0.0.1", "factory", "factory_pw", "factory_qc");
+    DbManager db_manager(event_bus, DB_HOST, DB_USER, DB_PASSWORD, DB_SCHEMA);
     db_manager.connect();
     db_manager.register_handlers();
 
@@ -64,8 +70,9 @@ int main() {
     TcpListener tcp_listener(event_bus, MAIN_SERVER_PORT);
     tcp_listener.start();
 
-    // 4) GUI TCP 리스너 시작 (MFC 클라이언트 접속 수신)
-    GuiTcpListener gui_tcp_listener(event_bus, GUI_LISTEN_PORT);
+    // 4) GUI TCP 리스너 시작 (MFC 클라이언트 접속 + DB 조회)
+    GuiTcpListener gui_tcp_listener(event_bus, GUI_LISTEN_PORT,
+                                    DB_HOST, DB_USER, DB_PASSWORD, DB_SCHEMA);
     gui_tcp_listener.start();
 
     // 5) 헬스체크 시작
