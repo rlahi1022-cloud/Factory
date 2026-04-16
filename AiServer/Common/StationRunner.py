@@ -71,6 +71,8 @@ class StationRunner:
         self._config = config
         self._inferencer = inferencer
         self._tcp_client = TcpClient(config.main_server_host, config.main_server_port)
+        self._tcp_client.set_station_id(config.station_id)
+        self._tcp_client.set_on_model_reload(self._handle_model_reload)
         self._serial_ctrl = SerialCtrl(config.arduino_port, config.arduino_baud)
 
         self._grab_queue: asyncio.Queue = asyncio.Queue(maxsize=config.grab_queue_max)
@@ -272,15 +274,39 @@ class StationRunner:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")[:-3]
         return f"station{self._config.station_id}-{ts}-{self._inspection_seq:06d}"
 
+    def _handle_model_reload(self, cmd_dict: dict) -> None:
+        """MODEL_RELOAD_CMD 수신 시 추론기 모델 재로드."""
+        model_path = cmd_dict.get("model_path", "")
+        if model_path:
+            self._config.model_path = model_path
+        logger.info("Reloading inferencer model: %s", model_path)
+        self._inferencer.load_model()
+
     def _handle_arduino_action(self, result_dict: dict) -> None:
+        """NG 시 Arduino 명령 송신.
+        Station1: REJECT (서보모터 리젝트 + 빨간 LED + 부저)
+        Station2: ALERT:결함유형 (RGB LED + LCD 불량 유형 표시)
+        """
         defect = result_dict.get("defect", "")
-        self._serial_ctrl.send_command(f"NG:{defect}\n")
+        if self._config.station_id == 1:
+            self._serial_ctrl.send_command(f"REJECT:{defect}\n")
+        else:
+            defects = result_dict.get("defects", [defect])
+            defect_str = ",".join(defects) if defects else defect
+            self._serial_ctrl.send_command(f"ALERT:{defect_str}\n")
 
     @staticmethod
     def _encode_image(image: Any) -> Optional[bytes]:
-        # TODO: import cv2; ok, buf = cv2.imencode(".jpg", image); return buf.tobytes()
+        """이미지를 JPEG 바이트로 인코딩."""
         if image is None:
             return None
+        try:
+            import cv2
+            ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            if ok:
+                return buf.tobytes()
+        except Exception:
+            pass
         return None
 
     @staticmethod

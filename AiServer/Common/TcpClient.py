@@ -6,6 +6,8 @@
 - ACK 필수 메시지(STATION1_NG/STATION2_NG 등)에 대해 inspection_id 기준 응답 대기.
 - 1초 타임아웃 내 ACK 미수신 시 최대 3회 재전송.
 - 백그라운드 receiver 코루틴이 ACK 패킷을 수신해 pending future에 결과 주입.
+- HEALTH_PING 수신 시 자동 HEALTH_PONG 응답.
+- MODEL_RELOAD_CMD 수신 시 콜백 호출.
 """
 
 from __future__ import annotations
@@ -14,9 +16,11 @@ import asyncio
 import json
 import logging
 import struct
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
 
-from Common.Protocol import ProtocolNo, expected_ack_no, requires_ack
+from Common.Packet import PacketBuilder
+from Common.Protocol import ProtocolNo, expected_ack_no, requires_ack, PROTOCOL_VERSION
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +45,17 @@ class TcpClient:
         # inspection_id -> Future[dict] : ACK 대기 맵
         self._pending_acks: dict[str, asyncio.Future] = {}
         self._receiver_task: Optional[asyncio.Task] = None
+
+        # 수신 명령 콜백
+        self._on_model_reload: Optional[Callable[[dict], Any]] = None
+        self._station_id: int = 0
+
+    def set_station_id(self, station_id: int) -> None:
+        self._station_id = station_id
+
+    def set_on_model_reload(self, callback: Callable[[dict], Any]) -> None:
+        """MODEL_RELOAD_CMD 수신 시 호출될 콜백 등록."""
+        self._on_model_reload = callback
 
     # ---------- 연결 관리 ----------
 
@@ -142,10 +157,13 @@ class TcpClient:
                 await self._discard_writer()
                 return False
 
-    # ---------- 수신 (ACK 라우팅) ----------
+    # ---------- 수신 (ACK 라우팅 + 명령 처리) ----------
 
     async def _run_receiver(self) -> None:
-        """ACK 패킷을 수신해 pending future에 결과를 주입."""
+        """ACK 패킷을 수신해 pending future에 결과를 주입.
+        HEALTH_PING 수신 시 HEALTH_PONG 자동 응답.
+        MODEL_RELOAD_CMD 수신 시 콜백 호출.
+        """
         try:
             while True:
                 if self._reader is None:
@@ -162,27 +180,83 @@ class TcpClient:
                 json_size = struct.unpack(">I", header)[0]
                 body = await self._reader.readexactly(json_size)
                 try:
-                    ack_dict = json.loads(body.decode("utf-8"))
+                    msg_dict = json.loads(body.decode("utf-8"))
                 except json.JSONDecodeError as exc:
                     logger.error("receiver: invalid JSON: %s", exc)
                     continue
 
-                # 이미지 없는 ACK라고 가정 (image_size==0).
-                # 만약 image_size > 0 응답이 온다면 추가로 읽고 폐기.
-                image_size = int(ack_dict.get("image_size", 0))
+                # 이미지 데이터 소비 (있으면)
+                image_size = int(msg_dict.get("image_size", 0))
                 if image_size > 0:
                     await self._reader.readexactly(image_size)
 
-                inspection_id = ack_dict.get("inspection_id")
+                protocol_no = msg_dict.get("protocol_no", 0)
+
+                # ── HEALTH_PING(1200) → HEALTH_PONG(1201) 자동 응답 ──
+                if protocol_no == ProtocolNo.HEALTH_PING:
+                    await self._handle_health_ping(msg_dict)
+                    continue
+
+                # ── MODEL_RELOAD_CMD(1010) → 콜백 + 응답 ──
+                if protocol_no == ProtocolNo.MODEL_RELOAD_CMD:
+                    await self._handle_model_reload(msg_dict)
+                    continue
+
+                # ── ACK/NACK 라우팅 ──
+                inspection_id = msg_dict.get("inspection_id")
                 if inspection_id and inspection_id in self._pending_acks:
                     fut = self._pending_acks.pop(inspection_id)
                     if not fut.done():
-                        fut.set_result(ack_dict)
+                        fut.set_result(msg_dict)
                 else:
-                    # 모델 리로드 명령 등 비-ACK 수신 분기 — 추후 핸들러
-                    logger.debug("receiver: unmatched packet no=%s",
-                                 ack_dict.get("protocol_no"))
+                    logger.debug("receiver: unmatched packet no=%s", protocol_no)
+
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.exception("receiver crashed: %s", exc)
+
+    async def _handle_health_ping(self, ping_dict: dict) -> None:
+        """HEALTH_PING 수신 → HEALTH_PONG 응답."""
+        pong_body = {
+            "station_id": self._station_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "status": "normal",
+            "queue_size": 0,
+        }
+        pong_packet = PacketBuilder.build_packet(
+            protocol_no=int(ProtocolNo.HEALTH_PONG),
+            body_dict=pong_body,
+        )
+        await self._send_raw(pong_packet)
+        logger.debug("HEALTH_PONG sent")
+
+    async def _handle_model_reload(self, cmd_dict: dict) -> None:
+        """MODEL_RELOAD_CMD 수신 → 모델 리로드 콜백 + 응답."""
+        request_id = cmd_dict.get("request_id", "")
+        model_path = cmd_dict.get("model_path", "")
+        version = cmd_dict.get("version", "")
+
+        success = False
+        if self._on_model_reload is not None:
+            try:
+                self._on_model_reload(cmd_dict)
+                success = True
+                logger.info("Model reload success: path=%s version=%s", model_path, version)
+            except Exception as exc:
+                logger.error("Model reload failed: %s", exc)
+        else:
+            logger.warning("No model reload callback registered")
+
+        # MODEL_RELOAD_RES(1011) 응답
+        res_body = {
+            "station_id": self._station_id,
+            "success": success,
+            "version": version,
+        }
+        res_packet = PacketBuilder.build_packet(
+            protocol_no=int(ProtocolNo.MODEL_RELOAD_RES),
+            body_dict=res_body,
+            request_id=request_id,
+        )
+        await self._send_raw(res_packet)

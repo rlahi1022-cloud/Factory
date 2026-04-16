@@ -1,0 +1,176 @@
+"""TrainYolo.py
+YOLO11 (Ultralytics) 학습 파이프라인.
+
+용도:
+  - Station2 조립 검사: cap, label, liquid_level 3클래스 객체탐지
+
+학습 전략:
+  - 사전학습 YOLO11n 모델 기반 전이학습
+  - 입력 크기: 640x640
+  - IoU 기반 정상/불량 판정을 위해 높은 정밀도 필요
+"""
+
+from __future__ import annotations
+
+import logging
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class YoloTrainer:
+    """YOLO11 학습 파이프라인."""
+
+    # 클래스 정의
+    CLASS_NAMES = ["cap", "label", "liquid_level"]
+
+    def __init__(self,
+                 data_yaml: str,
+                 output_dir: str,
+                 base_model: str = "yolo11n.pt",
+                 input_size: int = 640,
+                 epochs: int = 100,
+                 batch_size: int = 16,
+                 patience: int = 20,
+                 device: str = "cuda",
+                 progress_callback: Optional[Callable[[dict], None]] = None):
+        self._data_yaml = data_yaml
+        self._output_dir = Path(output_dir)
+        self._base_model = base_model
+        self._input_size = input_size
+        self._epochs = epochs
+        self._batch_size = batch_size
+        self._patience = patience
+        self._device = device
+        self._progress_callback = progress_callback
+
+    def train(self) -> dict:
+        """YOLO11 학습 실행.
+
+        Returns:
+            {success, model_path, version, accuracy, message}
+        """
+        version = datetime.now().strftime("v%Y%m%d_%H%M%S")
+        model_name = f"station2_yolo11_{version}"
+
+        try:
+            self._report_progress(0, "Initializing YOLO11 training...")
+
+            from ultralytics import YOLO
+
+            # 사전학습 모델 로드
+            model = YOLO(self._base_model)
+
+            self._report_progress(5, f"Training YOLO11 for {self._epochs} epochs...")
+
+            # 학습 실행
+            save_dir = self._output_dir / model_name
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            results = model.train(
+                data=self._data_yaml,
+                epochs=self._epochs,
+                imgsz=self._input_size,
+                batch=self._batch_size,
+                patience=self._patience,
+                device=self._device,
+                project=str(save_dir),
+                name="train",
+                exist_ok=True,
+                verbose=True,
+                save=True,
+                plots=True,
+            )
+
+            self._report_progress(80, "Evaluating model...")
+
+            # best.pt 경로
+            best_pt = save_dir / "train" / "weights" / "best.pt"
+            if not best_pt.exists():
+                # 대체 검색
+                pt_files = list(save_dir.rglob("best.pt"))
+                if pt_files:
+                    best_pt = pt_files[0]
+                else:
+                    raise FileNotFoundError("best.pt not found after training")
+
+            # 최종 경로로 복사
+            final_path = self._output_dir / f"{model_name}.pt"
+            shutil.copy2(best_pt, final_path)
+
+            # 검증 메트릭 추출
+            accuracy = 0.0
+            if results is not None:
+                if hasattr(results, "results_dict"):
+                    accuracy = results.results_dict.get("metrics/mAP50(B)", 0.0)
+                elif hasattr(results, "maps"):
+                    accuracy = float(results.maps.mean()) if hasattr(results.maps, "mean") else 0.0
+
+            self._report_progress(100, "YOLO11 training complete!")
+
+            return {
+                "success": True,
+                "model_path": str(final_path),
+                "version": version,
+                "accuracy": round(accuracy, 4),
+                "message": f"YOLO11 training complete: {model_name}",
+            }
+
+        except ImportError as exc:
+            msg = f"Required package not installed: {exc}"
+            logger.error(msg)
+            return {"success": False, "model_path": "", "version": version,
+                    "accuracy": 0.0, "message": msg}
+        except Exception as exc:
+            msg = f"YOLO11 training failed: {exc}"
+            logger.exception(msg)
+            return {"success": False, "model_path": "", "version": version,
+                    "accuracy": 0.0, "message": msg}
+
+    def _report_progress(self, progress: int, status: str) -> None:
+        logger.info("[YOLO11] %d%% — %s", progress, status)
+        if self._progress_callback:
+            self._progress_callback({
+                "station_id": 2,
+                "model_type": "YOLO11",
+                "progress": progress,
+                "status": status,
+            })
+
+
+def create_data_yaml(data_dir: str, output_path: str) -> str:
+    """YOLO 학습용 data.yaml 생성.
+
+    data_dir 구조:
+      data_dir/
+        images/
+          train/   (학습 이미지)
+          val/     (검증 이미지)
+        labels/
+          train/   (YOLO 포맷 라벨)
+          val/
+    """
+    data_dir = Path(data_dir)
+    yaml_content = f"""# YOLO11 Dataset Configuration
+# Auto-generated by Factory Training Server
+
+path: {data_dir.resolve()}
+train: images/train
+val: images/val
+
+# Classes
+names:
+  0: cap
+  1: label
+  2: liquid_level
+
+nc: 3
+"""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(yaml_content, encoding="utf-8")
+    logger.info("Created data.yaml: %s", output_path)
+    return str(output_path)
