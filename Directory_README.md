@@ -14,10 +14,17 @@ Factory/
 
 | 대상     | 규칙       | 예시 |
 |----------|------------|------|
-| 파일명   | PascalCase | `StationRunner.py`, `EventBus.cpp` |
-| 클래스명 | PascalCase | `Station1Inferencer`, `PacketBuilder` |
-| 변수명   | snake_case | `anomaly_score`, `result_dict` |
-| 메소드명 | snake_case | `build_packet()`, `infer_image()` |
+| 파일명   | snake_case | `station_handler.cpp`, `event_bus.h` |
+| 클래스명 | PascalCase | `Station1Handler`, `EventBus` |
+| 멤버변수 | snake_case + `_` 접미사 | `event_bus_`, `is_running_` |
+| 로컬변수 | snake_case | `anomaly_score`, `result_dict` |
+| 함수명   | snake_case | `register_handlers()`, `send_ack()` |
+| 파라미터 | snake_case | `sender_addr`, `protocol_no` |
+| Enum 이름 | PascalCase | `EventType`, `ProtocolNo` |
+| Enum 값  | UPPER_SNAKE_CASE | `PACKET_RECEIVED`, `DB_WRITE_COMPLETED` |
+| 구조체명 | PascalCase | `InspectionEvent`, `GuiSession` |
+| 구조체 멤버 | snake_case (prefix 없음) | `json_payload`, `image_bytes` |
+| 전역변수 | `g_` prefix + snake_case | `g_should_exit` |
 
 ## MainServer (C++)
 
@@ -25,21 +32,51 @@ Factory/
 MainServer/
 ├── CMakeLists.txt
 ├── common/
-│   └── Protocol.h              # 메시지 번호 enum(ProtocolNo), ACK 매핑, PROTOCOL_VERSION
+│   └── Protocol.h                      # 메시지 번호 enum(ProtocolNo), ACK 매핑, PROTOCOL_VERSION
+│
 ├── include/
-│   ├── EventTypes.h            # EventType enum + 페이로드 struct
-│   ├── EventBus.h              # std::function 기반 자체 이벤트 버스
-│   ├── TcpListener.h           # 포트 9000 리슨
-│   ├── ConnectionRegistry.h    # ★신규 sender_addr → fd 매핑 (ACK 회신용)
-│   ├── Router.h                # protocol_no 기반 분기
-│   ├── StationHandler.h        # Station1/2Handler
-│   ├── DbManager.h             # MariaDB INSERT (TODO)
-│   ├── ImageStorage.h          # NG 이미지 파일 저장
-│   ├── GuiNotifier.h           # MFC 클라이언트 푸시 (TODO)
-│   ├── HealthChecker.h         # 5초 ping/pong, 3회 실패 판정
-│   └── AckSender.h             # ★신규 ACK/NACK 회신
+│   ├── core/                           # 핵심 인프라
+│   │   ├── event_bus.h                 # std::function 기반 자체 이벤트 버스
+│   │   ├── event_types.h               # EventType enum + 페이로드 struct
+│   │   └── tcp_listener.h              # 추론서버용 TCP 리스너 (포트 9000)
+│   │
+│   ├── handler/                        # 이벤트 핸들러
+│   │   ├── router.h                    # protocol_no 기반 이벤트 분기
+│   │   ├── station_handler.h           # Station1/2Handler (검증 + 후속 이벤트 발행)
+│   │   └── ack_sender.h               # 추론서버로 ACK/NACK 회신
+│   │
+│   ├── storage/                        # 저장 계층
+│   │   ├── db_manager.h                # MariaDB INSERT (TODO: 커넥터 연동)
+│   │   └── image_storage.h             # NG 이미지 파일 저장
+│   │
+│   ├── session/                        # GUI 클라이언트 세션 관리
+│   │   ├── session_manager.h           # 세션 등록/해제/broadcast
+│   │   ├── gui_tcp_listener.h          # MFC 클라이언트 전용 TCP 리스너 (포트 9010)
+│   │   └── gui_notifier.h              # 이벤트 → SessionManager를 통해 클라이언트 push
+│   │
+│   └── monitor/                        # 모니터링
+│       ├── health_checker.h            # 5초 ping/pong, 3회 실패 시 SERVER_DOWN
+│       └── connection_registry.h       # sender_addr → fd 매핑 (추론서버 ACK 회신용)
+│
 └── src/
-    └── (각 *.cpp)
+    ├── core/
+    │   ├── main.cpp                    # 진입점, 컴포넌트 생성 및 구동
+    │   ├── event_bus.cpp
+    │   └── tcp_listener.cpp
+    ├── handler/
+    │   ├── router.cpp
+    │   ├── station_handler.cpp
+    │   └── ack_sender.cpp
+    ├── storage/
+    │   ├── db_manager.cpp
+    │   └── image_storage.cpp
+    ├── session/
+    │   ├── session_manager.cpp
+    │   ├── gui_tcp_listener.cpp
+    │   └── gui_notifier.cpp
+    └── monitor/
+        ├── health_checker.cpp
+        └── connection_registry.cpp
 ```
 
 ### 빌드
@@ -56,11 +93,13 @@ CMake가 없으면 직접:
 
 ```
 g++ -std=c++17 -O2 -Iinclude -Icommon \
-  src/*.cpp -lpthread -o factory_main_server
+  src/core/*.cpp src/handler/*.cpp src/storage/*.cpp \
+  src/session/*.cpp src/monitor/*.cpp \
+  -lpthread -o factory_main_server
 ```
 
 Windows(MFC와 동일 환경)에서는 `ws2_32.lib` 링크가 필요하며,
-`TcpListener.cpp` / `HealthChecker.cpp` 상단의 `_WIN32` 분기가 자동 적용됩니다.
+`tcp_listener.cpp` / `health_checker.cpp` 상단의 `_WIN32` 분기가 자동 적용됩니다.
 
 ## AiServer (Python)
 
@@ -68,7 +107,7 @@ Windows(MFC와 동일 환경)에서는 `ws2_32.lib` 링크가 필요하며,
 AiServer/
 ├── Common/
 │   ├── Config.py               # StationConfig dataclass
-│   ├── Protocol.py             # ★신규 ProtocolNo IntEnum (C++와 동기화)
+│   ├── Protocol.py             # ProtocolNo IntEnum (C++와 동기화)
 │   ├── Packet.py               # PacketBuilder (protocol_no/inspection_id 자동 주입)
 │   ├── TcpClient.py            # send_with_ack / send_fire_and_forget
 │   ├── SerialCtrl.py           # Arduino 시리얼 (골격)

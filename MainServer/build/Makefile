@@ -129,269 +129,317 @@ factory_main_server/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/build
 .PHONY : factory_main_server/fast
 
-src/ack_sender.o: src/ack_sender.cpp.o
-.PHONY : src/ack_sender.o
+src/core/event_bus.o: src/core/event_bus.cpp.o
+.PHONY : src/core/event_bus.o
 
 # target to build an object file
-src/ack_sender.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/ack_sender.cpp.o
-.PHONY : src/ack_sender.cpp.o
+src/core/event_bus.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/core/event_bus.cpp.o
+.PHONY : src/core/event_bus.cpp.o
 
-src/ack_sender.i: src/ack_sender.cpp.i
-.PHONY : src/ack_sender.i
+src/core/event_bus.i: src/core/event_bus.cpp.i
+.PHONY : src/core/event_bus.i
 
 # target to preprocess a source file
-src/ack_sender.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/ack_sender.cpp.i
-.PHONY : src/ack_sender.cpp.i
+src/core/event_bus.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/core/event_bus.cpp.i
+.PHONY : src/core/event_bus.cpp.i
 
-src/ack_sender.s: src/ack_sender.cpp.s
-.PHONY : src/ack_sender.s
+src/core/event_bus.s: src/core/event_bus.cpp.s
+.PHONY : src/core/event_bus.s
 
 # target to generate assembly for a file
-src/ack_sender.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/ack_sender.cpp.s
-.PHONY : src/ack_sender.cpp.s
+src/core/event_bus.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/core/event_bus.cpp.s
+.PHONY : src/core/event_bus.cpp.s
 
-src/connection_registry.o: src/connection_registry.cpp.o
-.PHONY : src/connection_registry.o
+src/core/main.o: src/core/main.cpp.o
+.PHONY : src/core/main.o
 
 # target to build an object file
-src/connection_registry.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/connection_registry.cpp.o
-.PHONY : src/connection_registry.cpp.o
+src/core/main.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/core/main.cpp.o
+.PHONY : src/core/main.cpp.o
 
-src/connection_registry.i: src/connection_registry.cpp.i
-.PHONY : src/connection_registry.i
+src/core/main.i: src/core/main.cpp.i
+.PHONY : src/core/main.i
 
 # target to preprocess a source file
-src/connection_registry.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/connection_registry.cpp.i
-.PHONY : src/connection_registry.cpp.i
+src/core/main.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/core/main.cpp.i
+.PHONY : src/core/main.cpp.i
 
-src/connection_registry.s: src/connection_registry.cpp.s
-.PHONY : src/connection_registry.s
+src/core/main.s: src/core/main.cpp.s
+.PHONY : src/core/main.s
 
 # target to generate assembly for a file
-src/connection_registry.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/connection_registry.cpp.s
-.PHONY : src/connection_registry.cpp.s
+src/core/main.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/core/main.cpp.s
+.PHONY : src/core/main.cpp.s
 
-src/db_manager.o: src/db_manager.cpp.o
-.PHONY : src/db_manager.o
+src/core/tcp_listener.o: src/core/tcp_listener.cpp.o
+.PHONY : src/core/tcp_listener.o
 
 # target to build an object file
-src/db_manager.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/db_manager.cpp.o
-.PHONY : src/db_manager.cpp.o
+src/core/tcp_listener.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/core/tcp_listener.cpp.o
+.PHONY : src/core/tcp_listener.cpp.o
 
-src/db_manager.i: src/db_manager.cpp.i
-.PHONY : src/db_manager.i
+src/core/tcp_listener.i: src/core/tcp_listener.cpp.i
+.PHONY : src/core/tcp_listener.i
 
 # target to preprocess a source file
-src/db_manager.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/db_manager.cpp.i
-.PHONY : src/db_manager.cpp.i
+src/core/tcp_listener.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/core/tcp_listener.cpp.i
+.PHONY : src/core/tcp_listener.cpp.i
 
-src/db_manager.s: src/db_manager.cpp.s
-.PHONY : src/db_manager.s
+src/core/tcp_listener.s: src/core/tcp_listener.cpp.s
+.PHONY : src/core/tcp_listener.s
 
 # target to generate assembly for a file
-src/db_manager.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/db_manager.cpp.s
-.PHONY : src/db_manager.cpp.s
+src/core/tcp_listener.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/core/tcp_listener.cpp.s
+.PHONY : src/core/tcp_listener.cpp.s
 
-src/event_bus.o: src/event_bus.cpp.o
-.PHONY : src/event_bus.o
+src/handler/ack_sender.o: src/handler/ack_sender.cpp.o
+.PHONY : src/handler/ack_sender.o
 
 # target to build an object file
-src/event_bus.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/event_bus.cpp.o
-.PHONY : src/event_bus.cpp.o
+src/handler/ack_sender.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/handler/ack_sender.cpp.o
+.PHONY : src/handler/ack_sender.cpp.o
 
-src/event_bus.i: src/event_bus.cpp.i
-.PHONY : src/event_bus.i
+src/handler/ack_sender.i: src/handler/ack_sender.cpp.i
+.PHONY : src/handler/ack_sender.i
 
 # target to preprocess a source file
-src/event_bus.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/event_bus.cpp.i
-.PHONY : src/event_bus.cpp.i
+src/handler/ack_sender.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/handler/ack_sender.cpp.i
+.PHONY : src/handler/ack_sender.cpp.i
 
-src/event_bus.s: src/event_bus.cpp.s
-.PHONY : src/event_bus.s
+src/handler/ack_sender.s: src/handler/ack_sender.cpp.s
+.PHONY : src/handler/ack_sender.s
 
 # target to generate assembly for a file
-src/event_bus.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/event_bus.cpp.s
-.PHONY : src/event_bus.cpp.s
+src/handler/ack_sender.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/handler/ack_sender.cpp.s
+.PHONY : src/handler/ack_sender.cpp.s
 
-src/gui_notifier.o: src/gui_notifier.cpp.o
-.PHONY : src/gui_notifier.o
+src/handler/router.o: src/handler/router.cpp.o
+.PHONY : src/handler/router.o
 
 # target to build an object file
-src/gui_notifier.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/gui_notifier.cpp.o
-.PHONY : src/gui_notifier.cpp.o
+src/handler/router.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/handler/router.cpp.o
+.PHONY : src/handler/router.cpp.o
 
-src/gui_notifier.i: src/gui_notifier.cpp.i
-.PHONY : src/gui_notifier.i
+src/handler/router.i: src/handler/router.cpp.i
+.PHONY : src/handler/router.i
 
 # target to preprocess a source file
-src/gui_notifier.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/gui_notifier.cpp.i
-.PHONY : src/gui_notifier.cpp.i
+src/handler/router.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/handler/router.cpp.i
+.PHONY : src/handler/router.cpp.i
 
-src/gui_notifier.s: src/gui_notifier.cpp.s
-.PHONY : src/gui_notifier.s
+src/handler/router.s: src/handler/router.cpp.s
+.PHONY : src/handler/router.s
 
 # target to generate assembly for a file
-src/gui_notifier.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/gui_notifier.cpp.s
-.PHONY : src/gui_notifier.cpp.s
+src/handler/router.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/handler/router.cpp.s
+.PHONY : src/handler/router.cpp.s
 
-src/health_checker.o: src/health_checker.cpp.o
-.PHONY : src/health_checker.o
+src/handler/station_handler.o: src/handler/station_handler.cpp.o
+.PHONY : src/handler/station_handler.o
 
 # target to build an object file
-src/health_checker.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/health_checker.cpp.o
-.PHONY : src/health_checker.cpp.o
+src/handler/station_handler.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/handler/station_handler.cpp.o
+.PHONY : src/handler/station_handler.cpp.o
 
-src/health_checker.i: src/health_checker.cpp.i
-.PHONY : src/health_checker.i
+src/handler/station_handler.i: src/handler/station_handler.cpp.i
+.PHONY : src/handler/station_handler.i
 
 # target to preprocess a source file
-src/health_checker.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/health_checker.cpp.i
-.PHONY : src/health_checker.cpp.i
+src/handler/station_handler.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/handler/station_handler.cpp.i
+.PHONY : src/handler/station_handler.cpp.i
 
-src/health_checker.s: src/health_checker.cpp.s
-.PHONY : src/health_checker.s
+src/handler/station_handler.s: src/handler/station_handler.cpp.s
+.PHONY : src/handler/station_handler.s
 
 # target to generate assembly for a file
-src/health_checker.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/health_checker.cpp.s
-.PHONY : src/health_checker.cpp.s
+src/handler/station_handler.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/handler/station_handler.cpp.s
+.PHONY : src/handler/station_handler.cpp.s
 
-src/image_storage.o: src/image_storage.cpp.o
-.PHONY : src/image_storage.o
+src/monitor/connection_registry.o: src/monitor/connection_registry.cpp.o
+.PHONY : src/monitor/connection_registry.o
 
 # target to build an object file
-src/image_storage.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/image_storage.cpp.o
-.PHONY : src/image_storage.cpp.o
+src/monitor/connection_registry.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/monitor/connection_registry.cpp.o
+.PHONY : src/monitor/connection_registry.cpp.o
 
-src/image_storage.i: src/image_storage.cpp.i
-.PHONY : src/image_storage.i
+src/monitor/connection_registry.i: src/monitor/connection_registry.cpp.i
+.PHONY : src/monitor/connection_registry.i
 
 # target to preprocess a source file
-src/image_storage.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/image_storage.cpp.i
-.PHONY : src/image_storage.cpp.i
+src/monitor/connection_registry.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/monitor/connection_registry.cpp.i
+.PHONY : src/monitor/connection_registry.cpp.i
 
-src/image_storage.s: src/image_storage.cpp.s
-.PHONY : src/image_storage.s
+src/monitor/connection_registry.s: src/monitor/connection_registry.cpp.s
+.PHONY : src/monitor/connection_registry.s
 
 # target to generate assembly for a file
-src/image_storage.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/image_storage.cpp.s
-.PHONY : src/image_storage.cpp.s
+src/monitor/connection_registry.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/monitor/connection_registry.cpp.s
+.PHONY : src/monitor/connection_registry.cpp.s
 
-src/main.o: src/main.cpp.o
-.PHONY : src/main.o
+src/monitor/health_checker.o: src/monitor/health_checker.cpp.o
+.PHONY : src/monitor/health_checker.o
 
 # target to build an object file
-src/main.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/main.cpp.o
-.PHONY : src/main.cpp.o
+src/monitor/health_checker.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/monitor/health_checker.cpp.o
+.PHONY : src/monitor/health_checker.cpp.o
 
-src/main.i: src/main.cpp.i
-.PHONY : src/main.i
+src/monitor/health_checker.i: src/monitor/health_checker.cpp.i
+.PHONY : src/monitor/health_checker.i
 
 # target to preprocess a source file
-src/main.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/main.cpp.i
-.PHONY : src/main.cpp.i
+src/monitor/health_checker.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/monitor/health_checker.cpp.i
+.PHONY : src/monitor/health_checker.cpp.i
 
-src/main.s: src/main.cpp.s
-.PHONY : src/main.s
+src/monitor/health_checker.s: src/monitor/health_checker.cpp.s
+.PHONY : src/monitor/health_checker.s
 
 # target to generate assembly for a file
-src/main.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/main.cpp.s
-.PHONY : src/main.cpp.s
+src/monitor/health_checker.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/monitor/health_checker.cpp.s
+.PHONY : src/monitor/health_checker.cpp.s
 
-src/router.o: src/router.cpp.o
-.PHONY : src/router.o
+src/session/gui_notifier.o: src/session/gui_notifier.cpp.o
+.PHONY : src/session/gui_notifier.o
 
 # target to build an object file
-src/router.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/router.cpp.o
-.PHONY : src/router.cpp.o
+src/session/gui_notifier.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/session/gui_notifier.cpp.o
+.PHONY : src/session/gui_notifier.cpp.o
 
-src/router.i: src/router.cpp.i
-.PHONY : src/router.i
+src/session/gui_notifier.i: src/session/gui_notifier.cpp.i
+.PHONY : src/session/gui_notifier.i
 
 # target to preprocess a source file
-src/router.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/router.cpp.i
-.PHONY : src/router.cpp.i
+src/session/gui_notifier.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/session/gui_notifier.cpp.i
+.PHONY : src/session/gui_notifier.cpp.i
 
-src/router.s: src/router.cpp.s
-.PHONY : src/router.s
+src/session/gui_notifier.s: src/session/gui_notifier.cpp.s
+.PHONY : src/session/gui_notifier.s
 
 # target to generate assembly for a file
-src/router.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/router.cpp.s
-.PHONY : src/router.cpp.s
+src/session/gui_notifier.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/session/gui_notifier.cpp.s
+.PHONY : src/session/gui_notifier.cpp.s
 
-src/station_handler.o: src/station_handler.cpp.o
-.PHONY : src/station_handler.o
+src/session/gui_tcp_listener.o: src/session/gui_tcp_listener.cpp.o
+.PHONY : src/session/gui_tcp_listener.o
 
 # target to build an object file
-src/station_handler.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/station_handler.cpp.o
-.PHONY : src/station_handler.cpp.o
+src/session/gui_tcp_listener.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/session/gui_tcp_listener.cpp.o
+.PHONY : src/session/gui_tcp_listener.cpp.o
 
-src/station_handler.i: src/station_handler.cpp.i
-.PHONY : src/station_handler.i
+src/session/gui_tcp_listener.i: src/session/gui_tcp_listener.cpp.i
+.PHONY : src/session/gui_tcp_listener.i
 
 # target to preprocess a source file
-src/station_handler.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/station_handler.cpp.i
-.PHONY : src/station_handler.cpp.i
+src/session/gui_tcp_listener.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/session/gui_tcp_listener.cpp.i
+.PHONY : src/session/gui_tcp_listener.cpp.i
 
-src/station_handler.s: src/station_handler.cpp.s
-.PHONY : src/station_handler.s
+src/session/gui_tcp_listener.s: src/session/gui_tcp_listener.cpp.s
+.PHONY : src/session/gui_tcp_listener.s
 
 # target to generate assembly for a file
-src/station_handler.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/station_handler.cpp.s
-.PHONY : src/station_handler.cpp.s
+src/session/gui_tcp_listener.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/session/gui_tcp_listener.cpp.s
+.PHONY : src/session/gui_tcp_listener.cpp.s
 
-src/tcp_listener.o: src/tcp_listener.cpp.o
-.PHONY : src/tcp_listener.o
+src/session/session_manager.o: src/session/session_manager.cpp.o
+.PHONY : src/session/session_manager.o
 
 # target to build an object file
-src/tcp_listener.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/tcp_listener.cpp.o
-.PHONY : src/tcp_listener.cpp.o
+src/session/session_manager.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/session/session_manager.cpp.o
+.PHONY : src/session/session_manager.cpp.o
 
-src/tcp_listener.i: src/tcp_listener.cpp.i
-.PHONY : src/tcp_listener.i
+src/session/session_manager.i: src/session/session_manager.cpp.i
+.PHONY : src/session/session_manager.i
 
 # target to preprocess a source file
-src/tcp_listener.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/tcp_listener.cpp.i
-.PHONY : src/tcp_listener.cpp.i
+src/session/session_manager.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/session/session_manager.cpp.i
+.PHONY : src/session/session_manager.cpp.i
 
-src/tcp_listener.s: src/tcp_listener.cpp.s
-.PHONY : src/tcp_listener.s
+src/session/session_manager.s: src/session/session_manager.cpp.s
+.PHONY : src/session/session_manager.s
 
 # target to generate assembly for a file
-src/tcp_listener.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/tcp_listener.cpp.s
-.PHONY : src/tcp_listener.cpp.s
+src/session/session_manager.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/session/session_manager.cpp.s
+.PHONY : src/session/session_manager.cpp.s
+
+src/storage/db_manager.o: src/storage/db_manager.cpp.o
+.PHONY : src/storage/db_manager.o
+
+# target to build an object file
+src/storage/db_manager.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/storage/db_manager.cpp.o
+.PHONY : src/storage/db_manager.cpp.o
+
+src/storage/db_manager.i: src/storage/db_manager.cpp.i
+.PHONY : src/storage/db_manager.i
+
+# target to preprocess a source file
+src/storage/db_manager.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/storage/db_manager.cpp.i
+.PHONY : src/storage/db_manager.cpp.i
+
+src/storage/db_manager.s: src/storage/db_manager.cpp.s
+.PHONY : src/storage/db_manager.s
+
+# target to generate assembly for a file
+src/storage/db_manager.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/storage/db_manager.cpp.s
+.PHONY : src/storage/db_manager.cpp.s
+
+src/storage/image_storage.o: src/storage/image_storage.cpp.o
+.PHONY : src/storage/image_storage.o
+
+# target to build an object file
+src/storage/image_storage.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/storage/image_storage.cpp.o
+.PHONY : src/storage/image_storage.cpp.o
+
+src/storage/image_storage.i: src/storage/image_storage.cpp.i
+.PHONY : src/storage/image_storage.i
+
+# target to preprocess a source file
+src/storage/image_storage.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/storage/image_storage.cpp.i
+.PHONY : src/storage/image_storage.cpp.i
+
+src/storage/image_storage.s: src/storage/image_storage.cpp.s
+.PHONY : src/storage/image_storage.s
+
+# target to generate assembly for a file
+src/storage/image_storage.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/factory_main_server.dir/build.make CMakeFiles/factory_main_server.dir/src/storage/image_storage.cpp.s
+.PHONY : src/storage/image_storage.cpp.s
 
 # Help Target
 help:
@@ -402,39 +450,45 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... factory_main_server"
-	@echo "... src/ack_sender.o"
-	@echo "... src/ack_sender.i"
-	@echo "... src/ack_sender.s"
-	@echo "... src/connection_registry.o"
-	@echo "... src/connection_registry.i"
-	@echo "... src/connection_registry.s"
-	@echo "... src/db_manager.o"
-	@echo "... src/db_manager.i"
-	@echo "... src/db_manager.s"
-	@echo "... src/event_bus.o"
-	@echo "... src/event_bus.i"
-	@echo "... src/event_bus.s"
-	@echo "... src/gui_notifier.o"
-	@echo "... src/gui_notifier.i"
-	@echo "... src/gui_notifier.s"
-	@echo "... src/health_checker.o"
-	@echo "... src/health_checker.i"
-	@echo "... src/health_checker.s"
-	@echo "... src/image_storage.o"
-	@echo "... src/image_storage.i"
-	@echo "... src/image_storage.s"
-	@echo "... src/main.o"
-	@echo "... src/main.i"
-	@echo "... src/main.s"
-	@echo "... src/router.o"
-	@echo "... src/router.i"
-	@echo "... src/router.s"
-	@echo "... src/station_handler.o"
-	@echo "... src/station_handler.i"
-	@echo "... src/station_handler.s"
-	@echo "... src/tcp_listener.o"
-	@echo "... src/tcp_listener.i"
-	@echo "... src/tcp_listener.s"
+	@echo "... src/core/event_bus.o"
+	@echo "... src/core/event_bus.i"
+	@echo "... src/core/event_bus.s"
+	@echo "... src/core/main.o"
+	@echo "... src/core/main.i"
+	@echo "... src/core/main.s"
+	@echo "... src/core/tcp_listener.o"
+	@echo "... src/core/tcp_listener.i"
+	@echo "... src/core/tcp_listener.s"
+	@echo "... src/handler/ack_sender.o"
+	@echo "... src/handler/ack_sender.i"
+	@echo "... src/handler/ack_sender.s"
+	@echo "... src/handler/router.o"
+	@echo "... src/handler/router.i"
+	@echo "... src/handler/router.s"
+	@echo "... src/handler/station_handler.o"
+	@echo "... src/handler/station_handler.i"
+	@echo "... src/handler/station_handler.s"
+	@echo "... src/monitor/connection_registry.o"
+	@echo "... src/monitor/connection_registry.i"
+	@echo "... src/monitor/connection_registry.s"
+	@echo "... src/monitor/health_checker.o"
+	@echo "... src/monitor/health_checker.i"
+	@echo "... src/monitor/health_checker.s"
+	@echo "... src/session/gui_notifier.o"
+	@echo "... src/session/gui_notifier.i"
+	@echo "... src/session/gui_notifier.s"
+	@echo "... src/session/gui_tcp_listener.o"
+	@echo "... src/session/gui_tcp_listener.i"
+	@echo "... src/session/gui_tcp_listener.s"
+	@echo "... src/session/session_manager.o"
+	@echo "... src/session/session_manager.i"
+	@echo "... src/session/session_manager.s"
+	@echo "... src/storage/db_manager.o"
+	@echo "... src/storage/db_manager.i"
+	@echo "... src/storage/db_manager.s"
+	@echo "... src/storage/image_storage.o"
+	@echo "... src/storage/image_storage.i"
+	@echo "... src/storage/image_storage.s"
 .PHONY : help
 
 

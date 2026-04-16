@@ -22,7 +22,7 @@ namespace factory {
 
 constexpr std::size_t HEADER_SIZE      = 4;
 constexpr uint16_t    MAIN_SERVER_PORT = 9000;
-constexpr const char* PROTOCOL_VERSION = "1.0";
+constexpr const char* FACTORY_PROTOCOL_VERSION = "1.0";
 
 enum class StationId : int {
     INBOUND  = 1,
