@@ -36,6 +36,8 @@ enum class ProtocolNo : int {
     LOGIN_RES              = 101,
     LOGOUT_REQ             = 102,
     LOGOUT_RES             = 103,
+    REGISTER_REQ           = 104,
+    REGISTER_RES           = 105,
     INSPECT_NG_PUSH        = 110,
     INSPECT_NG_ACK_EXT     = 111,
     INSPECT_OK_COUNT_PUSH  = 112,

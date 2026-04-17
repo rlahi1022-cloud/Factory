@@ -467,7 +467,7 @@ void CMainTabDlg::ConnectToServer()
         // 서버의 handle_client()는 recv_one_request()로 첫 패킷을 기다리고 있음.
         // 이걸 안 보내면 서버가 "클라이언트가 아무 요청도 안 함" → 세션 제거.
         CString loginJson = CPacketBuilder::BuildLoginReq(
-            m_session.username, _T("local"));  // 비밀번호는 이미 인증됨
+            m_session.username, m_session.password);
         m_net.SendJson(loginJson);
         TRACE(_T("[MainTabDlg] 서버 접속 + LOGIN_REQ 전송 완료\n"));
     } else {

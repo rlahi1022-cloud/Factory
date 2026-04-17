@@ -426,6 +426,12 @@ void CNetworkClient::OnPacketReceived(const std::string& json)
             reinterpret_cast<LPARAM>(new std::string(json)));
         break;
 
+    case factory_client::REGISTER_RES:
+        // 회원가입 응답 → 가입 결과 처리
+        ::PostMessage(m_hNotifyWnd, WM_NET_REGISTER_RES, 0,
+            reinterpret_cast<LPARAM>(new std::string(json)));
+        break;
+
     case factory_client::RETRAIN_PROGRESS_PUSH:
         // 재학습 진행률 → 모델 페이지 진행바 업데이트
         ::PostMessage(m_hNotifyWnd, WM_NET_RETRAIN_PROGRESS, 0,

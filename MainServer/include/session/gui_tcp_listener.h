@@ -43,6 +43,7 @@ private:
     void handle_stats_req(int client_fd, const std::string& json);
     void handle_model_list_req(int client_fd, const std::string& json);
     void handle_retrain_req(int client_fd, const std::string& json);
+    void handle_register_req(int client_fd, const std::string& json);
 
     // DB 연결
     bool db_connect();

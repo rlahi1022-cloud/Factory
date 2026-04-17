@@ -233,6 +233,41 @@ CString CPacketBuilder::BuildLoginReq(const CString& username, const CString& pa
     return CString(json);  // CStringA → CString(유니코드) 변환하여 반환
 }
 
+// BuildRegisterReq: 회원가입 요청 JSON (프로토콜 104)
+CString CPacketBuilder::BuildRegisterReq(const CString& username, const CString& password,
+                                          const CString& employeeId, const CString& role)
+{
+    CStringA ts = GetTimestamp();
+    CStringA reqId = GenerateRequestId();
+    CStringA userA(username);
+    CStringA passA(password);
+    CStringA empA(employeeId);
+    CStringA roleA(role);
+
+    CStringA json;
+    json.Format(
+        "{"
+        "\"protocol_no\":%d,"
+        "\"protocol_version\":\"%s\","
+        "\"request_id\":\"%s\","
+        "\"username\":\"%s\","
+        "\"password\":\"%s\","
+        "\"employee_id\":\"%s\","
+        "\"role\":\"%s\","
+        "\"timestamp\":\"%s\""
+        "}",
+        factory_client::REGISTER_REQ,
+        factory_client::PROTOCOL_VERSION,
+        (LPCSTR)reqId,
+        (LPCSTR)userA,
+        (LPCSTR)passA,
+        (LPCSTR)empA,
+        (LPCSTR)roleA,
+        (LPCSTR)ts);
+
+    return CString(json);
+}
+
 // BuildLogoutReq: 로그아웃 요청 JSON (프로토콜 102)
 CString CPacketBuilder::BuildLogoutReq(const CString& username)
 {

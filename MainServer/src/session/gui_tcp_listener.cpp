@@ -195,6 +195,9 @@ void GuiTcpListener::route_request(int client_fd, const std::string& remote_addr
         case static_cast<int>(ProtocolNo::RETRAIN_REQ):
             handle_retrain_req(client_fd, json_request);
             break;
+        case static_cast<int>(ProtocolNo::REGISTER_REQ):
+            handle_register_req(client_fd, json_request);
+            break;
         case static_cast<int>(ProtocolNo::EXT_ACK):
             break; // heartbeat 무시
         default:
@@ -224,8 +227,11 @@ void GuiTcpListener::handle_login_req(int client_fd, const std::string& json) {
     {
         std::lock_guard<std::mutex> lock(db_mutex_);
         if (db_conn_) {
+            // SQL Injection 방지
+            char esc_user[256];
+            mysql_real_escape_string(db_conn_, esc_user, username.c_str(), username.size());
             std::string sql = "SELECT employee_id, role, password_hash FROM users WHERE username='"
-                              + username + "' LIMIT 1";
+                              + std::string(esc_user) + "' LIMIT 1";
             if (mysql_query(db_conn_, sql.c_str()) == 0) {
                 MYSQL_RES* res = mysql_store_result(db_conn_);
                 if (res) {
@@ -245,29 +251,17 @@ void GuiTcpListener::handle_login_req(int client_fd, const std::string& json) {
         }
     }
 
-    // DB에 없으면 로컬 계정으로 폴백
-    // 클라이언트가 로컬 인증 후 password="local"로 보내는 경우도 허용
-    if (!success) {
-        struct Account { const char* u; const char* r; const char* e; };
-        static const Account accs[] = {
-            {"admin01", "admin",    "EMP-001"},
-            {"oper01",  "operator", "EMP-002"},
-            {"viewer",  "viewer",   "EMP-003"},
-        };
-        for (const auto& a : accs) {
-            if (username == a.u && (password == "1234" || password == "local")) {
-                success = true; role = a.r; employee_id = a.e; break;
-            }
-        }
-    }
+    // DB 조회 실패 시 인증 실패 처리 (하드코딩 폴백 없음)
 
     if (success) {
         SessionManager::instance().set_client_info(client_fd, username, 0);
         // last_login_at 업데이트
         std::lock_guard<std::mutex> lock(db_mutex_);
         if (db_conn_) {
+            char esc_user2[256];
+            mysql_real_escape_string(db_conn_, esc_user2, username.c_str(), username.size());
             std::string sql = "UPDATE users SET last_login_at=NOW() WHERE username='"
-                              + username + "'";
+                              + std::string(esc_user2) + "'";
             mysql_query(db_conn_, sql.c_str());
         }
     }
@@ -286,6 +280,80 @@ void GuiTcpListener::handle_login_req(int client_fd, const std::string& json) {
     send_json(client_fd, os.str());
     std::cout << "[GuiTcpListener] LOGIN " << (success ? "성공" : "실패")
               << " user=" << username << std::endl;
+}
+
+// ── REGISTER_REQ(104) → REGISTER_RES(105) ───────────────────────────
+
+void GuiTcpListener::handle_register_req(int client_fd, const std::string& json) {
+    std::string username    = extract_str(json, "username");
+    std::string password    = extract_str(json, "password");
+    std::string employee_id = extract_str(json, "employee_id");
+    std::string role        = extract_str(json, "role");
+    std::string request_id  = extract_str(json, "request_id");
+
+    std::cout << "[GuiTcpListener] REGISTER_REQ user=[" << username
+              << "] emp=[" << employee_id << "] role=[" << role << "]" << std::endl;
+
+    bool success = false;
+    std::string message;
+
+    {
+        std::lock_guard<std::mutex> lock(db_mutex_);
+        if (!db_conn_) {
+            message = "DB 연결 실패";
+        } else {
+            // SQL Injection 방지: mysql_real_escape_string 사용
+            char esc_user[256], esc_pass[512], esc_emp[128], esc_role[64];
+            mysql_real_escape_string(db_conn_, esc_user, username.c_str(), username.size());
+            mysql_real_escape_string(db_conn_, esc_pass, password.c_str(), password.size());
+            mysql_real_escape_string(db_conn_, esc_emp,  employee_id.c_str(), employee_id.size());
+            mysql_real_escape_string(db_conn_, esc_role, role.c_str(), role.size());
+
+            // 중복 사용자 확인
+            std::string check_sql = "SELECT id FROM users WHERE username='"
+                                    + std::string(esc_user) + "' LIMIT 1";
+            if (mysql_query(db_conn_, check_sql.c_str()) == 0) {
+                MYSQL_RES* res = mysql_store_result(db_conn_);
+                if (res) {
+                    if (mysql_fetch_row(res)) {
+                        message = "이미 존재하는 사용자입니다.";
+                    }
+                    mysql_free_result(res);
+                }
+            }
+
+            if (message.empty()) {
+                // INSERT — TODO: bcrypt 해시 적용
+                std::string insert_sql =
+                    "INSERT INTO users (employee_id, username, password_hash, role, created_at) "
+                    "VALUES ('"
+                    + std::string(esc_emp) + "','"
+                    + std::string(esc_user) + "','"
+                    + std::string(esc_pass) + "','"
+                    + std::string(esc_role) + "',NOW())";
+
+                if (mysql_query(db_conn_, insert_sql.c_str()) == 0) {
+                    success = true;
+                    message = "회원가입 성공";
+                } else {
+                    message = "DB 오류: ";
+                    message += mysql_error(db_conn_);
+                }
+            }
+        }
+    }
+
+    std::ostringstream os;
+    os << "{\"protocol_no\":105"
+       << ",\"protocol_version\":\"" << FACTORY_PROTOCOL_VERSION << "\""
+       << ",\"request_id\":\"" << request_id << "\""
+       << ",\"success\":" << (success ? "true" : "false")
+       << ",\"message\":\"" << escape_json(message) << "\""
+       << ",\"timestamp\":\"" << get_timestamp() << "\"}";
+
+    send_json(client_fd, os.str());
+    std::cout << "[GuiTcpListener] REGISTER " << (success ? "성공" : "실패")
+              << " user=" << username << " msg=" << message << std::endl;
 }
 
 // ── 2. LOGOUT_REQ(102) → LOGOUT_RES(103) ────────────────────────────

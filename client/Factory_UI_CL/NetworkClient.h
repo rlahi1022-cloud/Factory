@@ -57,6 +57,8 @@
 #define WM_NET_RESPONSE         (WM_APP + 106)
 // 재학습 진행률 푸시 수신 (프로토콜 154)
 #define WM_NET_RETRAIN_PROGRESS (WM_APP + 107)
+// 회원가입 응답 수신 (프로토콜 105)
+#define WM_NET_REGISTER_RES     (WM_APP + 108)
 
 // ============================================================================
 // CNetworkClient 클래스

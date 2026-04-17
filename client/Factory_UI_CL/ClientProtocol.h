@@ -47,6 +47,8 @@ enum ProtocolNo : int {
     LOGIN_RES              = 101,   // 로그인 응답: 서버 → 클라이언트
     LOGOUT_REQ             = 102,   // 로그아웃 요청
     LOGOUT_RES             = 103,   // 로그아웃 응답
+    REGISTER_REQ           = 104,   // 회원가입 요청: 클라이언트 → 서버
+    REGISTER_RES           = 105,   // 회원가입 응답: 서버 → 클라이언트
 
     // ===== 검사 결과 관련 (110~129) =====
     INSPECT_NG_PUSH        = 110,   // NG 결과 푸시: 서버 → 클라이언트 (실시간)

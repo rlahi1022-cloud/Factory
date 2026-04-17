@@ -90,6 +90,10 @@ public:
     // 반환값: JSON 문자열
     static CString BuildLoginReq(const CString& username, const CString& password);
 
+    // BuildRegisterReq: 회원가입 요청 JSON 생성 (프로토콜 104)
+    static CString BuildRegisterReq(const CString& username, const CString& password,
+                                     const CString& employeeId, const CString& role);
+
     // BuildLogoutReq: 로그아웃 요청 JSON 생성 (프로토콜 102)
     static CString BuildLogoutReq(const CString& username);
 

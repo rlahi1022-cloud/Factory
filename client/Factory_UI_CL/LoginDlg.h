@@ -4,12 +4,14 @@
 // ============================================================================
 // 목적:
 //   프로그램 시작 시 사용자 인증을 수행합니다.
-//   서버 연결 가능 시 네트워크 인증, 불가 시 로컬 인증으로 동작합니다.
+//   서버(MainServer)에 LOGIN_REQ(100) 또는 REGISTER_REQ(104)를 전송하여
+//   DB 기반 인증/가입을 처리합니다.
 // ============================================================================
 
 #include "pch.h"
 #include "Resource.h"
 #include "InspectionData.h"
+#include "NetworkClient.h"
 
 class CLoginDlg : public CDialogEx {
     DECLARE_DYNAMIC(CLoginDlg)
@@ -22,6 +24,10 @@ public:
 
 protected:
     bool m_regMode;              // 모드 플래그: true=회원가입, false=로그인
+    bool m_waitingResponse;      // 서버 응답 대기 중 (중복 클릭 방지)
+
+    // ── 네트워크 ──
+    CNetworkClient m_loginNet;   // 로그인/가입 전용 임시 네트워크 클라이언트
 
     // ── 컨트롤 변수 ──
     CEdit     m_edUser;          // 사용자 이름 입력
@@ -46,6 +52,11 @@ protected:
     afx_msg void OnBtnCancel();
     afx_msg void OnBtnSwitch();
     afx_msg void OnPaint();
+
+    // ── 네트워크 응답 핸들러 ──
+    afx_msg LRESULT OnLoginRes(WPARAM wParam, LPARAM lParam);
+    afx_msg LRESULT OnRegisterRes(WPARAM wParam, LPARAM lParam);
+    afx_msg LRESULT OnNetDisconnected(WPARAM wParam, LPARAM lParam);
 
     DECLARE_MESSAGE_MAP()
 };
