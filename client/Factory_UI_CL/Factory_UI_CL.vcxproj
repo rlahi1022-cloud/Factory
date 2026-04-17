@@ -199,11 +199,11 @@
     <ClCompile Include="InspectionData.cpp" />
     <ClCompile Include="LoginDlg.cpp" />
     <ClCompile Include="MainTabDlg.cpp" />
+    <ClCompile Include="NetworkClient.cpp" />
     <ClCompile Include="PageHome.cpp" />
     <ClCompile Include="PageModel.cpp" />
     <ClCompile Include="PageStation1.cpp" />
     <ClCompile Include="PageStation2.cpp" />
-    <ClCompile Include="NetworkClient.cpp" />
     <ClCompile Include="PacketBuilder.cpp" />
     <ClCompile Include="PageStats.cpp" />
     <ClCompile Include="pch.cpp">
