@@ -68,8 +68,29 @@ bool TrainService::validate(const TrainCompleteEvent& ev, std::string& out_error
         out_error = "invalid_station_id";
         return false;
     }
-    if (ev.version.empty()) {
-        out_error = "empty_version";
+    if (ev.version.empty() || ev.version.size() > 64) {
+        out_error = "invalid_version";
+        return false;
+    }
+    if (ev.model_type.empty() || ev.model_type.size() > 32) {
+        out_error = "invalid_model_type";
+        return false;
+    }
+    if (ev.accuracy < 0.0 || ev.accuracy > 1.0) {
+        out_error = "invalid_accuracy";
+        return false;
+    }
+    // 모델 바이너리 크기 제한: 최대 500MB
+    constexpr std::size_t MAX_MODEL_SIZE = 500ULL * 1024 * 1024;
+    if (ev.model_bytes.size() > MAX_MODEL_SIZE) {
+        out_error = "model_too_large";
+        return false;
+    }
+    // 버전 문자열에 경로 탐색 문자 차단 (path traversal 방지)
+    if (ev.version.find('/') != std::string::npos ||
+        ev.version.find('\\') != std::string::npos ||
+        ev.version.find("..") != std::string::npos) {
+        out_error = "invalid_version_chars";
         return false;
     }
     return true;
@@ -95,6 +116,23 @@ std::string TrainService::save_model_file(const TrainCompleteEvent& ev) {
 
     ofs.write(reinterpret_cast<const char*>(ev.model_bytes.data()),
               static_cast<std::streamsize>(ev.model_bytes.size()));
+    ofs.flush();
+    if (!ofs.good()) {
+        log_err_train("모델 파일 쓰기 실패 | %s", save_path.c_str());
+        ofs.close();
+        std::filesystem::remove(save_path);
+        return "";
+    }
+    ofs.close();
+
+    // 저장된 파일 크기 검증 — 기록 무결성 확인
+    auto file_size = std::filesystem::file_size(save_path);
+    if (file_size != ev.model_bytes.size()) {
+        log_err_train("모델 파일 크기 불일치 | 예상=%zu 실제=%zu", ev.model_bytes.size(), file_size);
+        std::filesystem::remove(save_path);
+        return "";
+    }
+
     log_train("모델 파일 저장 완료 | %s (%zu bytes)", save_path.c_str(), ev.model_bytes.size());
     return save_path;
 }

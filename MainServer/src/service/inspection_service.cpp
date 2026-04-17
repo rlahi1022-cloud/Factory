@@ -67,16 +67,34 @@ bool InspectionService::validate(const InspectionEvent& ev, std::string& out_err
         out_error = "invalid_station_id";
         return false;
     }
-    if (ev.inspection_id.empty()) {
-        out_error = "empty_inspection_id";
+    if (ev.inspection_id.empty() || ev.inspection_id.size() > 128) {
+        out_error = "invalid_inspection_id";
         return false;
     }
-    if (ev.result.empty()) {
-        out_error = "empty_result";
+    if (ev.result.empty() || (ev.result != "ok" && ev.result != "ng")) {
+        out_error = "invalid_result";
         return false;
     }
     if (ev.score < 0.0 || ev.score > 1.0) {
         out_error = "invalid_score";
+        return false;
+    }
+    if (ev.latency_ms < 0 || ev.latency_ms > 60000) {
+        out_error = "invalid_latency";
+        return false;
+    }
+    if (ev.defect_type.size() > 64) {
+        out_error = "defect_type_too_long";
+        return false;
+    }
+    // 이미지 크기 제한: 최대 50MB
+    if (ev.image_bytes.size() > 50ULL * 1024 * 1024) {
+        out_error = "image_too_large";
+        return false;
+    }
+    // timestamp 형식 검증 (최소 10자: YYYY-MM-DD)
+    if (ev.timestamp.size() < 10) {
+        out_error = "invalid_timestamp";
         return false;
     }
     return true;
@@ -109,6 +127,15 @@ std::string InspectionService::save_image(const InspectionEvent& ev) {
 
     std::filesystem::create_directories(std::filesystem::path(save_path).parent_path());
 
+    // 디스크 여유 공간 확인 (최소 100MB 여유 필요)
+    auto space_info = std::filesystem::space(
+        std::filesystem::path(save_path).parent_path());
+    if (space_info.available < 100ULL * 1024 * 1024) {
+        log_err_img("디스크 여유 공간 부족 | 잔여=%zu MB",
+                    space_info.available / (1024 * 1024));
+        return "";
+    }
+
     std::ofstream ofs(save_path, std::ios::binary);
     if (!ofs) {
         log_err_img("파일 열기 실패 | %s", save_path.c_str());
@@ -116,6 +143,24 @@ std::string InspectionService::save_image(const InspectionEvent& ev) {
     }
     ofs.write(reinterpret_cast<const char*>(ev.image_bytes.data()),
               static_cast<std::streamsize>(ev.image_bytes.size()));
+    ofs.flush();
+    if (!ofs.good()) {
+        log_err_img("파일 쓰기 실패 | %s", save_path.c_str());
+        ofs.close();
+        std::filesystem::remove(save_path);
+        return "";
+    }
+    ofs.close();
+
+    // 저장된 파일 크기 검증
+    auto file_size = std::filesystem::file_size(save_path);
+    if (file_size != ev.image_bytes.size()) {
+        log_err_img("이미지 크기 불일치 | 예상=%zu 실제=%zu",
+                    ev.image_bytes.size(), file_size);
+        std::filesystem::remove(save_path);
+        return "";
+    }
+
     log_img("이미지 저장 완료 | %s", save_path.c_str());
     return save_path;
 }

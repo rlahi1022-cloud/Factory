@@ -64,7 +64,7 @@ void GuiTcpListener::start() {
         is_running_.store(false);
         return;
     }
-    if (::listen(server_fd_, 8) < 0) {
+    if (::listen(server_fd_, 32) < 0) {
         log_err_clt("리슨 실패 | 포트=%d", listen_port_);
         CLOSE_SOCK(server_fd_);
         is_running_.store(false);
@@ -99,11 +99,23 @@ void GuiTcpListener::run_accept_loop() {
         std::string remote_addr = std::string(ip_buf) + ":" +
                                   std::to_string(ntohs(client_addr.sin_port));
 
+        // 동시 GUI 접속 수 제한 (최대 20개 클라이언트)
+        if (SessionManager::instance().session_count() >= 20) {
+            log_err_clt("GUI 최대 접속 수 초과");
+            CLOSE_SOCK(client_fd);
+            continue;
+        }
+
         std::thread(&GuiTcpListener::handle_client, this, client_fd, remote_addr).detach();
     }
 }
 
 void GuiTcpListener::handle_client(int client_fd, const std::string& remote_addr) {
+    // recv 타임아웃 30초 — heartbeat 미수신 시 세션 정리
+    struct timeval client_tv{30, 0};
+    ::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char*>(&client_tv), sizeof(client_tv));
+
     SessionManager::instance().register_session(client_fd, remote_addr);
 
     while (is_running_.load()) {

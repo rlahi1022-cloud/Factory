@@ -69,6 +69,7 @@ CMainTabDlg::CMainTabDlg(const UserSession& s, CWnd* p)
     , m_sv2(true)           // 추론 PC #2: 정상
     , m_bConnected(false)   // 네트워크: 미연결
 {
+    InitializeCriticalSection(&m_csRecs);
     // 초기 시뮬레이션 데이터 20건 생성
     m_recs = QCUtil::GenInitialHistory();
 }
@@ -82,6 +83,8 @@ CMainTabDlg::~CMainTabDlg()
 
     // 네트워크 연결 해제
     m_net.Disconnect();
+
+    DeleteCriticalSection(&m_csRecs);
 }
 
 // ============================================================================
@@ -210,10 +213,14 @@ void CMainTabDlg::LayoutPages()
 // PushUpdate: 최신 검사 데이터를 모든 페이지에 전달
 void CMainTabDlg::PushUpdate()
 {
-    m_home ->Update(m_recs);
-    m_st1  ->Update(m_recs);
-    m_st2  ->Update(m_recs);
-    m_stats->Update(m_recs);
+    EnterCriticalSection(&m_csRecs);
+    auto recs_copy = m_recs;  // 스냅샷 복사 후 락 해제
+    LeaveCriticalSection(&m_csRecs);
+
+    m_home ->Update(recs_copy);
+    m_st1  ->Update(recs_copy);
+    m_st2  ->Update(recs_copy);
+    m_stats->Update(recs_copy);
 }
 
 // ============================================================================
@@ -351,7 +358,9 @@ void CMainTabDlg::DrawStatus(CDC& dc)
     CFont* pf = dc.SelectObject(&m_fSmall);
 
     // 왼쪽: TCP/DB 상태 + 마지막 검사 시각
-    const auto& last = m_recs.back();
+    EnterCriticalSection(&m_csRecs);
+    InspectionRecord last = m_recs.empty() ? InspectionRecord{} : m_recs.back();
+    LeaveCriticalSection(&m_csRecs);
     CString leftText;
     leftText.Format(_T("TCP: :%d %s | DB: MariaDB | 마지막 검사: %s"),
         factory_client::GUI_PORT,
@@ -394,9 +403,12 @@ void CMainTabDlg::OnTimer(UINT_PTR id)
         if (!m_bConnected) {
             m_sv2 = (m_tick % 20 != 15);
         }
-        m_recs.push_back(QCUtil::GenRecord(m_nextId++));
-        if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
-
+        {
+            EnterCriticalSection(&m_csRecs);
+            m_recs.push_back(QCUtil::GenRecord(m_nextId++));
+            if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
+            LeaveCriticalSection(&m_csRecs);
+        }
         PushUpdate();
         m_st1->Tick();
         m_st2->Tick();
@@ -632,9 +644,11 @@ LRESULT CMainTabDlg::OnNetNgPush(WPARAM, LPARAM lParam)
     else if (defectA == "fill_low")   rec.defect = EDefect::FillLow;
     else                              rec.defect = EDefect::Anomaly;
 
-    // 이력에 추가
+    // 이력에 추가 (스레드 보호)
+    EnterCriticalSection(&m_csRecs);
     m_recs.push_back(rec);
     if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
+    LeaveCriticalSection(&m_csRecs);
 
     // 모든 페이지 업데이트
     PushUpdate();

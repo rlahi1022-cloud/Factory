@@ -40,7 +40,8 @@ public:
     using Handler = std::function<void(const std::any&)>;
 
     /// @param worker_count 워커 스레드 수 (기본 4)
-    explicit EventBus(int worker_count = 4);
+    /// @param max_queue_size 큐 최대 크기 (기본 10000, 초과 시 drop)
+    explicit EventBus(int worker_count = 4, std::size_t max_queue_size = 10000);
     ~EventBus();
 
     EventBus(const EventBus&)            = delete;
@@ -77,6 +78,7 @@ private:
     // 워커 풀
     std::vector<std::thread>                            workers_;
     int                                                 worker_count_;
+    std::size_t                                         max_queue_size_;
     std::atomic<bool>                                   is_running_;
 };
 

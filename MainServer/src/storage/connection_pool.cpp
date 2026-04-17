@@ -4,6 +4,8 @@
 #include "storage/connection_pool.h"
 #include "core/logger.h"
 
+#include <chrono>
+
 namespace factory {
 
 ConnectionPool::ConnectionPool(const std::string& host,
@@ -60,7 +62,12 @@ bool ConnectionPool::init() {
 
 MYSQL* ConnectionPool::acquire() {
     std::unique_lock<std::mutex> lock(mutex_);
-    cv_.wait(lock, [this] { return !pool_.empty() || is_shutdown_; });
+    // 5초 타임아웃 — 무한 대기 방지 (데드락 등 비정상 상황 대응)
+    if (!cv_.wait_for(lock, std::chrono::seconds(5),
+                      [this] { return !pool_.empty() || is_shutdown_; })) {
+        log_err_db("커넥션 풀 acquire 타임아웃 (5초)");
+        return nullptr;
+    }
     if (is_shutdown_) return nullptr;
 
     MYSQL* conn = pool_.front();

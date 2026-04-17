@@ -7,16 +7,11 @@
 #include "session/session_manager.h"
 
 #include "core/logger.h"
+#include "core/tcp_utils.h"
 
 #include <cstdint>
 #include <cstring>
 #include <iostream>
-
-#ifdef _WIN32
-  #include <winsock2.h>
-#else
-  #include <sys/socket.h>
-#endif
 
 namespace factory {
 
@@ -93,10 +88,7 @@ void SessionManager::broadcast_with_binary(const std::string& json_message,
             continue;
         }
         if (!binary_data.empty()) {
-            int sent = static_cast<int>(::send(fd,
-                reinterpret_cast<const char*>(binary_data.data()),
-                static_cast<int>(binary_data.size()), 0));
-            if (sent != static_cast<int>(binary_data.size())) {
+            if (!send_all(fd, binary_data.data(), binary_data.size())) {
                 log_err_push("이미지 전송 실패 | fd=%d size=%zu", fd, binary_data.size());
             }
         }
@@ -116,20 +108,7 @@ std::size_t SessionManager::session_count() const {
 }
 
 bool SessionManager::send_json(int fd, const std::string& json_body) {
-    // MFC 클라이언트와의 프레이밍 프로토콜: [4byte 빅엔디안 길이] + [JSON 본문]
-    // MFC 측에서도 동일한 헤더를 파싱하여 JSON 경계를 식별한다.
-    uint32_t json_size = static_cast<uint32_t>(json_body.size());
-    uint8_t header[4] = {
-        static_cast<uint8_t>((json_size >> 24) & 0xFF),
-        static_cast<uint8_t>((json_size >> 16) & 0xFF),
-        static_cast<uint8_t>((json_size >>  8) & 0xFF),
-        static_cast<uint8_t>( json_size        & 0xFF),
-    };
-
-    int sent_h = static_cast<int>(::send(fd, reinterpret_cast<const char*>(header), 4, 0));
-    int sent_b = static_cast<int>(::send(fd, json_body.c_str(),
-                                         static_cast<int>(json_body.size()), 0));
-    return (sent_h == 4 && sent_b == static_cast<int>(json_body.size()));
+    return send_json_frame(fd, json_body);
 }
 
 } // namespace factory

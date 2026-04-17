@@ -10,8 +10,9 @@
 
 namespace factory {
 
-EventBus::EventBus(int worker_count)
+EventBus::EventBus(int worker_count, std::size_t max_queue_size)
     : worker_count_(worker_count),
+      max_queue_size_(max_queue_size),
       is_running_(false) {
 }
 
@@ -51,9 +52,13 @@ void EventBus::subscribe(EventType type, Handler handler) {
 void EventBus::publish(EventType type, std::any payload) {
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (event_queue_.size() >= max_queue_size_) {
+            log_err_main("EventBus 큐 포화 | size=%zu — 이벤트 드롭", event_queue_.size());
+            return;
+        }
         event_queue_.push(Event{type, std::move(payload)});
     }
-    queue_cv_.notify_one();  // 대기 중인 워커 1개를 깨움
+    queue_cv_.notify_one();
 }
 
 void EventBus::worker_loop() {

@@ -79,7 +79,7 @@ void TcpListener::start() {
         is_running_.store(false);
         return;
     }
-    if (::listen(server_fd_, 8) < 0) {
+    if (::listen(server_fd_, 16) < 0) {
         log_err_main("리슨 실패 | 포트=%d", listen_port_);
         CLOSE_SOCK(server_fd_);
         is_running_.store(false);
@@ -113,17 +113,38 @@ void TcpListener::run_accept_loop() {
         }
         char ip_buf[64] = {0};
         inet_ntop(AF_INET, &client_addr.sin_addr, ip_buf, sizeof(ip_buf));
+        std::string client_ip(ip_buf);
+
+        // IP 화이트리스트 검증 — 허용된 내부망 IP만 접속 가능
+        if (!is_allowed_ip(client_ip)) {
+            log_err_main("비인가 IP 차단 | ip=%s", client_ip.c_str());
+            CLOSE_SOCK(client_fd);
+            continue;
+        }
+
         // "IP:PORT" 형식으로 조합 — ACK 전송 시 ConnectionRegistry의 키로 사용
-        std::string remote_addr = std::string(ip_buf) + ":" +
+        std::string remote_addr = client_ip + ":" +
                                   std::to_string(ntohs(client_addr.sin_port));
 
-        // 클라이언트당 detach 스레드 생성 (추론 서버 수가 소수이므로 충분)
-        // 주의: detach이므로 handle_client 내부에서 자원 정리를 보장해야 함
+        // 동시 접속 수 제한 (최대 10개 AI서버)
+        int conn_count = static_cast<int>(
+            ConnectionRegistry::instance().get_all_connections().size());
+        if (conn_count >= 10) {
+            log_err_main("AI서버 최대 접속 수 초과 | 현재=%d", conn_count);
+            CLOSE_SOCK(client_fd);
+            continue;
+        }
+
         std::thread(&TcpListener::handle_client, this, client_fd, remote_addr).detach();
     }
 }
 
 void TcpListener::handle_client(int client_fd, const std::string& remote_addr) {
+    // 클라이언트 소켓에 recv 타임아웃 설정 (30초) — 무한 블로킹 방지
+    struct timeval client_tv{30, 0};
+    ::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char*>(&client_tv), sizeof(client_tv));
+
     ConnectionRegistry::instance().register_connection(remote_addr, client_fd);
     log_main("AI서버 연결 | fd=%d ip=%s", client_fd, remote_addr.c_str());
 

@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
+#include <regex>
 
 namespace factory {
 
@@ -304,50 +305,116 @@ std::vector<ModelDao::ModelInfo> ModelDao::list_all() {
 
 UserDao::UserInfo UserDao::find_by_username(const std::string& username) {
     UserInfo info;
+    if (username.empty() || username.size() > 64) return info;
+
     PooledConnection conn(pool_);
     if (!conn.get()) return info;
 
-    char esc[256];
-    mysql_real_escape_string(conn, esc, username.c_str(), username.size());
-    std::string sql = "SELECT employee_id, role, password_hash FROM users WHERE username='"
-                      + std::string(esc) + "' LIMIT 1";
+    MYSQL_STMT* stmt = mysql_stmt_init(conn);
+    if (!stmt) return info;
 
-    if (mysql_query(conn, sql.c_str()) != 0) return info;
+    const char* sql = "SELECT employee_id, role, password_hash FROM users WHERE username=? LIMIT 1";
+    if (mysql_stmt_prepare(stmt, sql, std::strlen(sql)) != 0) {
+        log_err_db("UserDao find prepare 실패 | %s", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return info;
+    }
 
-    MYSQL_RES* res = mysql_store_result(conn);
-    if (!res) return info;
+    MYSQL_BIND bind_param[1];
+    std::memset(bind_param, 0, sizeof(bind_param));
+    unsigned long uname_len = static_cast<unsigned long>(username.size());
+    bind_param[0].buffer_type = MYSQL_TYPE_STRING;
+    bind_param[0].buffer = const_cast<char*>(username.c_str());
+    bind_param[0].buffer_length = uname_len;
+    bind_param[0].length = &uname_len;
 
-    MYSQL_ROW row = mysql_fetch_row(res);
-    if (row) {
-        info.employee_id = row[0] ? row[0] : "";
-        info.role = row[1] ? row[1] : "";
-        info.password_hash = row[2] ? row[2] : "";
+    if (mysql_stmt_bind_param(stmt, bind_param) != 0 || mysql_stmt_execute(stmt) != 0) {
+        log_err_db("UserDao find execute 실패 | %s", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return info;
+    }
+
+    // 결과 바인딩
+    MYSQL_BIND bind_res[3];
+    std::memset(bind_res, 0, sizeof(bind_res));
+    char buf_emp[128]{}, buf_role[64]{}, buf_hash[256]{};
+    unsigned long len_emp = 0, len_role = 0, len_hash = 0;
+
+    bind_res[0].buffer_type = MYSQL_TYPE_STRING;
+    bind_res[0].buffer = buf_emp;  bind_res[0].buffer_length = sizeof(buf_emp);
+    bind_res[0].length = &len_emp;
+
+    bind_res[1].buffer_type = MYSQL_TYPE_STRING;
+    bind_res[1].buffer = buf_role; bind_res[1].buffer_length = sizeof(buf_role);
+    bind_res[1].length = &len_role;
+
+    bind_res[2].buffer_type = MYSQL_TYPE_STRING;
+    bind_res[2].buffer = buf_hash; bind_res[2].buffer_length = sizeof(buf_hash);
+    bind_res[2].length = &len_hash;
+
+    if (mysql_stmt_bind_result(stmt, bind_res) != 0) {
+        mysql_stmt_close(stmt);
+        return info;
+    }
+
+    if (mysql_stmt_fetch(stmt) == 0) {
+        info.employee_id.assign(buf_emp, len_emp);
+        info.role.assign(buf_role, len_role);
+        info.password_hash.assign(buf_hash, len_hash);
         info.found = true;
     }
-    mysql_free_result(res);
+    mysql_stmt_close(stmt);
     return info;
 }
 
 bool UserDao::exists(const std::string& username) {
+    if (username.empty() || username.size() > 64) return false;
+
     PooledConnection conn(pool_);
     if (!conn.get()) return false;
 
-    char esc[256];
-    mysql_real_escape_string(conn, esc, username.c_str(), username.size());
-    std::string sql = "SELECT id FROM users WHERE username='" + std::string(esc) + "' LIMIT 1";
+    MYSQL_STMT* stmt = mysql_stmt_init(conn);
+    if (!stmt) return false;
 
-    if (mysql_query(conn, sql.c_str()) != 0) return false;
+    const char* sql = "SELECT id FROM users WHERE username=? LIMIT 1";
+    if (mysql_stmt_prepare(stmt, sql, std::strlen(sql)) != 0) {
+        mysql_stmt_close(stmt);
+        return false;
+    }
 
-    MYSQL_RES* res = mysql_store_result(conn);
-    if (!res) return false;
+    MYSQL_BIND bind[1];
+    std::memset(bind, 0, sizeof(bind));
+    unsigned long uname_len = static_cast<unsigned long>(username.size());
+    bind[0].buffer_type = MYSQL_TYPE_STRING;
+    bind[0].buffer = const_cast<char*>(username.c_str());
+    bind[0].buffer_length = uname_len;
+    bind[0].length = &uname_len;
 
-    bool found = (mysql_fetch_row(res) != nullptr);
-    mysql_free_result(res);
+    if (mysql_stmt_bind_param(stmt, bind) != 0 || mysql_stmt_execute(stmt) != 0) {
+        mysql_stmt_close(stmt);
+        return false;
+    }
+
+    // 결과 확인
+    MYSQL_BIND bind_res[1];
+    std::memset(bind_res, 0, sizeof(bind_res));
+    int id_val = 0;
+    bind_res[0].buffer_type = MYSQL_TYPE_LONG;
+    bind_res[0].buffer = &id_val;
+
+    mysql_stmt_bind_result(stmt, bind_res);
+    bool found = (mysql_stmt_fetch(stmt) == 0);
+    mysql_stmt_close(stmt);
     return found;
 }
 
 bool UserDao::insert(const std::string& employee_id, const std::string& username,
                      const std::string& password, const std::string& role) {
+    if (username.empty() || username.size() > 64) return false;
+    if (employee_id.empty() || employee_id.size() > 32) return false;
+    if (password.empty() || password.size() > 128) return false;
+    if (role.empty() || role.size() > 16) return false;
+
     PooledConnection conn(pool_);
     if (!conn.get()) return false;
 
@@ -358,77 +425,205 @@ bool UserDao::insert(const std::string& employee_id, const std::string& username
         return false;
     }
 
-    char esc_emp[128], esc_user[256], esc_pass[512], esc_role[64];
-    mysql_real_escape_string(conn, esc_emp, employee_id.c_str(), employee_id.size());
-    mysql_real_escape_string(conn, esc_user, username.c_str(), username.size());
-    mysql_real_escape_string(conn, esc_pass, hashed.c_str(), hashed.size());
-    mysql_real_escape_string(conn, esc_role, role.c_str(), role.size());
+    MYSQL_STMT* stmt = mysql_stmt_init(conn);
+    if (!stmt) return false;
 
-    std::string sql =
-        "INSERT INTO users (employee_id, username, password_hash, role, created_at) VALUES ('"
-        + std::string(esc_emp) + "','" + std::string(esc_user) + "','"
-        + std::string(esc_pass) + "','" + std::string(esc_role) + "',NOW())";
+    const char* sql =
+        "INSERT INTO users (employee_id, username, password_hash, role, created_at) "
+        "VALUES (?, ?, ?, ?, NOW())";
 
-    return (mysql_query(conn, sql.c_str()) == 0);
+    if (mysql_stmt_prepare(stmt, sql, std::strlen(sql)) != 0) {
+        log_err_db("UserDao insert prepare 실패 | %s", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return false;
+    }
+
+    MYSQL_BIND bind[4];
+    std::memset(bind, 0, sizeof(bind));
+
+    unsigned long emp_len = static_cast<unsigned long>(employee_id.size());
+    bind[0].buffer_type = MYSQL_TYPE_STRING;
+    bind[0].buffer = const_cast<char*>(employee_id.c_str());
+    bind[0].buffer_length = emp_len;
+    bind[0].length = &emp_len;
+
+    unsigned long uname_len = static_cast<unsigned long>(username.size());
+    bind[1].buffer_type = MYSQL_TYPE_STRING;
+    bind[1].buffer = const_cast<char*>(username.c_str());
+    bind[1].buffer_length = uname_len;
+    bind[1].length = &uname_len;
+
+    unsigned long hash_len = static_cast<unsigned long>(hashed.size());
+    bind[2].buffer_type = MYSQL_TYPE_STRING;
+    bind[2].buffer = const_cast<char*>(hashed.c_str());
+    bind[2].buffer_length = hash_len;
+    bind[2].length = &hash_len;
+
+    unsigned long role_len = static_cast<unsigned long>(role.size());
+    bind[3].buffer_type = MYSQL_TYPE_STRING;
+    bind[3].buffer = const_cast<char*>(role.c_str());
+    bind[3].buffer_length = role_len;
+    bind[3].length = &role_len;
+
+    if (mysql_stmt_bind_param(stmt, bind) != 0 || mysql_stmt_execute(stmt) != 0) {
+        log_err_db("UserDao insert execute 실패 | %s", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return false;
+    }
+
+    mysql_stmt_close(stmt);
+    log_db("INSERT users | 사용자=%s 사번=%s", username.c_str(), employee_id.c_str());
+    return true;
 }
 
 void UserDao::update_last_login(const std::string& username) {
+    if (username.empty() || username.size() > 64) return;
+
     PooledConnection conn(pool_);
     if (!conn.get()) return;
 
-    char esc[256];
-    mysql_real_escape_string(conn, esc, username.c_str(), username.size());
-    std::string sql = "UPDATE users SET last_login_at=NOW() WHERE username='"
-                      + std::string(esc) + "'";
-    mysql_query(conn, sql.c_str());
+    MYSQL_STMT* stmt = mysql_stmt_init(conn);
+    if (!stmt) return;
+
+    const char* sql = "UPDATE users SET last_login_at=NOW() WHERE username=?";
+    if (mysql_stmt_prepare(stmt, sql, std::strlen(sql)) != 0) {
+        mysql_stmt_close(stmt);
+        return;
+    }
+
+    MYSQL_BIND bind[1];
+    std::memset(bind, 0, sizeof(bind));
+    unsigned long uname_len = static_cast<unsigned long>(username.size());
+    bind[0].buffer_type = MYSQL_TYPE_STRING;
+    bind[0].buffer = const_cast<char*>(username.c_str());
+    bind[0].buffer_length = uname_len;
+    bind[0].length = &uname_len;
+
+    if (mysql_stmt_bind_param(stmt, bind) != 0) {
+        mysql_stmt_close(stmt);
+        return;
+    }
+    mysql_stmt_execute(stmt);
+    mysql_stmt_close(stmt);
 }
 
 // ============================================================================
 // StatsDao
 // ============================================================================
 
+// 날짜 형식 검증: YYYY-MM-DD만 허용
+static bool is_valid_date(const std::string& d) {
+    static const std::regex date_re(R"(\d{4}-\d{2}-\d{2})");
+    return std::regex_match(d, date_re);
+}
+
 StatsDao::StatsResult StatsDao::get_stats(int station_filter,
                                            const std::string& date_from,
                                            const std::string& date_to) {
     StatsResult r;
+    // 날짜 입력 검증
+    if (!date_from.empty() && !is_valid_date(date_from)) return r;
+    if (!date_to.empty()   && !is_valid_date(date_to))   return r;
+    if (station_filter < 0 || station_filter > 99) return r;
+
     PooledConnection conn(pool_);
     if (!conn.get()) return r;
 
+    // 동적 WHERE절 — 조건별 prepared statement 구성
     std::ostringstream sql;
     sql << "SELECT station_id, result, COUNT(*), AVG(latency_ms) "
         << "FROM inspections WHERE 1=1";
-    if (station_filter > 0) sql << " AND station_id=" << station_filter;
-    if (!date_from.empty()) sql << " AND timestamp>='" << date_from << "'";
-    if (!date_to.empty()) sql << " AND timestamp<='" << date_to << " 23:59:59'";
+    if (station_filter > 0) sql << " AND station_id=?";
+    if (!date_from.empty()) sql << " AND timestamp>=?";
+    if (!date_to.empty())   sql << " AND timestamp<=?";
     sql << " GROUP BY station_id, result";
 
-    if (mysql_query(conn, sql.str().c_str()) != 0) return r;
+    MYSQL_STMT* stmt = mysql_stmt_init(conn);
+    if (!stmt) return r;
 
-    MYSQL_RES* res = mysql_store_result(conn);
-    if (!res) return r;
+    std::string sql_str = sql.str();
+    if (mysql_stmt_prepare(stmt, sql_str.c_str(), static_cast<unsigned long>(sql_str.size())) != 0) {
+        log_err_db("StatsDao stats prepare 실패 | %s", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return r;
+    }
 
-    MYSQL_ROW row;
+    MYSQL_BIND bind_params[3];
+    std::memset(bind_params, 0, sizeof(bind_params));
+    int bind_idx = 0;
+    std::string date_to_full = date_to.empty() ? "" : (date_to + " 23:59:59");
+    unsigned long len_from = 0, len_to = 0;
+
+    if (station_filter > 0) {
+        bind_params[bind_idx].buffer_type = MYSQL_TYPE_LONG;
+        bind_params[bind_idx].buffer = &station_filter;
+        bind_idx++;
+    }
+    if (!date_from.empty()) {
+        len_from = static_cast<unsigned long>(date_from.size());
+        bind_params[bind_idx].buffer_type = MYSQL_TYPE_STRING;
+        bind_params[bind_idx].buffer = const_cast<char*>(date_from.c_str());
+        bind_params[bind_idx].buffer_length = len_from;
+        bind_params[bind_idx].length = &len_from;
+        bind_idx++;
+    }
+    if (!date_to.empty()) {
+        len_to = static_cast<unsigned long>(date_to_full.size());
+        bind_params[bind_idx].buffer_type = MYSQL_TYPE_STRING;
+        bind_params[bind_idx].buffer = const_cast<char*>(date_to_full.c_str());
+        bind_params[bind_idx].buffer_length = len_to;
+        bind_params[bind_idx].length = &len_to;
+        bind_idx++;
+    }
+
+    if (bind_idx > 0 && mysql_stmt_bind_param(stmt, bind_params) != 0) {
+        mysql_stmt_close(stmt);
+        return r;
+    }
+
+    if (mysql_stmt_execute(stmt) != 0) {
+        log_err_db("StatsDao stats execute 실패 | %s", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return r;
+    }
+
+    // 결과 바인딩
+    MYSQL_BIND bind_res[4];
+    std::memset(bind_res, 0, sizeof(bind_res));
+    int res_sid = 0; char res_result[16]{}; unsigned long res_result_len = 0;
+    long long res_cnt = 0; double res_lat = 0;
+
+    bind_res[0].buffer_type = MYSQL_TYPE_LONG;
+    bind_res[0].buffer = &res_sid;
+    bind_res[1].buffer_type = MYSQL_TYPE_STRING;
+    bind_res[1].buffer = res_result; bind_res[1].buffer_length = sizeof(res_result);
+    bind_res[1].length = &res_result_len;
+    bind_res[2].buffer_type = MYSQL_TYPE_LONGLONG;
+    bind_res[2].buffer = &res_cnt;
+    bind_res[3].buffer_type = MYSQL_TYPE_DOUBLE;
+    bind_res[3].buffer = &res_lat;
+
+    mysql_stmt_bind_result(stmt, bind_res);
+
     double lat_sum = 0; int lat_cnt = 0;
-    while ((row = mysql_fetch_row(res))) {
-        int sid = row[0] ? std::atoi(row[0]) : 0;
-        std::string result = row[1] ? row[1] : "";
-        int cnt = row[2] ? std::atoi(row[2]) : 0;
-        double lat = row[3] ? std::atof(row[3]) : 0;
+    while (mysql_stmt_fetch(stmt) == 0) {
+        int cnt = static_cast<int>(res_cnt);
+        std::string result_str(res_result, res_result_len);
 
         r.total += cnt;
-        lat_sum += lat * cnt; lat_cnt += cnt;
+        lat_sum += res_lat * cnt; lat_cnt += cnt;
 
-        if (result == "ok") {
+        if (result_str == "ok") {
             r.ok_count += cnt;
-            if (sid == 1) r.s1_ok += cnt; else r.s2_ok += cnt;
+            if (res_sid == 1) r.s1_ok += cnt; else r.s2_ok += cnt;
         } else {
             r.ng_count += cnt;
-            if (sid == 1) r.s1_ng += cnt; else r.s2_ng += cnt;
+            if (res_sid == 1) r.s1_ng += cnt; else r.s2_ng += cnt;
         }
     }
     if (lat_cnt > 0) r.avg_latency = lat_sum / lat_cnt;
     r.ng_rate = r.total > 0 ? (100.0 * r.ng_count / r.total) : 0.0;
-    mysql_free_result(res);
+    mysql_stmt_close(stmt);
     return r;
 }
 
@@ -437,38 +632,115 @@ std::vector<StatsDao::InspectionRecord> StatsDao::get_history(
     const std::string& date_to, int limit) {
 
     std::vector<InspectionRecord> records;
+    // 입력 검증
+    if (!date_from.empty() && !is_valid_date(date_from)) return records;
+    if (!date_to.empty()   && !is_valid_date(date_to))   return records;
+    if (station_filter < 0 || station_filter > 99) return records;
+    if (limit <= 0 || limit > 500) limit = 100;
+
     PooledConnection conn(pool_);
     if (!conn.get()) return records;
-
-    if (limit <= 0 || limit > 500) limit = 100;
 
     std::ostringstream sql;
     sql << "SELECT id, station_id, timestamp, result, confidence, "
         << "defect_type, image_path, latency_ms FROM inspections WHERE 1=1";
-    if (station_filter > 0) sql << " AND station_id=" << station_filter;
-    if (!date_from.empty()) sql << " AND timestamp>='" << date_from << "'";
-    if (!date_to.empty()) sql << " AND timestamp<='" << date_to << " 23:59:59'";
-    sql << " ORDER BY id DESC LIMIT " << limit;
+    if (station_filter > 0) sql << " AND station_id=?";
+    if (!date_from.empty()) sql << " AND timestamp>=?";
+    if (!date_to.empty())   sql << " AND timestamp<=?";
+    sql << " ORDER BY id DESC LIMIT ?";
 
-    if (mysql_query(conn, sql.str().c_str()) != 0) return records;
+    MYSQL_STMT* stmt = mysql_stmt_init(conn);
+    if (!stmt) return records;
 
-    MYSQL_RES* res = mysql_store_result(conn);
-    if (!res) return records;
-
-    MYSQL_ROW row;
-    while ((row = mysql_fetch_row(res))) {
-        InspectionRecord r;
-        r.id = row[0] ? std::atoi(row[0]) : 0;
-        r.station_id = row[1] ? std::atoi(row[1]) : 0;
-        r.timestamp = row[2] ? row[2] : "";
-        r.result = row[3] ? row[3] : "";
-        r.confidence = row[4] ? std::atof(row[4]) : 0;
-        r.defect_type = row[5] ? row[5] : "";
-        r.image_path = row[6] ? row[6] : "";
-        r.latency_ms = row[7] ? std::atoi(row[7]) : 0;
-        records.push_back(r);
+    std::string sql_str = sql.str();
+    if (mysql_stmt_prepare(stmt, sql_str.c_str(), static_cast<unsigned long>(sql_str.size())) != 0) {
+        log_err_db("StatsDao history prepare 실패 | %s", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return records;
     }
-    mysql_free_result(res);
+
+    MYSQL_BIND bind_params[4];
+    std::memset(bind_params, 0, sizeof(bind_params));
+    int bind_idx = 0;
+    std::string date_to_full = date_to.empty() ? "" : (date_to + " 23:59:59");
+    unsigned long len_from = 0, len_to = 0;
+
+    if (station_filter > 0) {
+        bind_params[bind_idx].buffer_type = MYSQL_TYPE_LONG;
+        bind_params[bind_idx].buffer = &station_filter;
+        bind_idx++;
+    }
+    if (!date_from.empty()) {
+        len_from = static_cast<unsigned long>(date_from.size());
+        bind_params[bind_idx].buffer_type = MYSQL_TYPE_STRING;
+        bind_params[bind_idx].buffer = const_cast<char*>(date_from.c_str());
+        bind_params[bind_idx].buffer_length = len_from;
+        bind_params[bind_idx].length = &len_from;
+        bind_idx++;
+    }
+    if (!date_to.empty()) {
+        len_to = static_cast<unsigned long>(date_to_full.size());
+        bind_params[bind_idx].buffer_type = MYSQL_TYPE_STRING;
+        bind_params[bind_idx].buffer = const_cast<char*>(date_to_full.c_str());
+        bind_params[bind_idx].buffer_length = len_to;
+        bind_params[bind_idx].length = &len_to;
+        bind_idx++;
+    }
+    // LIMIT 파라미터
+    bind_params[bind_idx].buffer_type = MYSQL_TYPE_LONG;
+    bind_params[bind_idx].buffer = &limit;
+    bind_idx++;
+
+    if (mysql_stmt_bind_param(stmt, bind_params) != 0) {
+        mysql_stmt_close(stmt);
+        return records;
+    }
+
+    if (mysql_stmt_execute(stmt) != 0) {
+        log_err_db("StatsDao history execute 실패 | %s", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return records;
+    }
+
+    // 결과 바인딩
+    MYSQL_BIND bind_res[8];
+    std::memset(bind_res, 0, sizeof(bind_res));
+    int r_id = 0, r_sid = 0, r_latency = 0;
+    char r_ts[64]{}, r_result[16]{}, r_defect[64]{}, r_imgpath[256]{};
+    double r_conf = 0;
+    unsigned long len_ts = 0, len_result = 0, len_defect = 0, len_imgpath = 0;
+    my_bool null_defect = 0, null_imgpath = 0;
+
+    bind_res[0].buffer_type = MYSQL_TYPE_LONG;   bind_res[0].buffer = &r_id;
+    bind_res[1].buffer_type = MYSQL_TYPE_LONG;   bind_res[1].buffer = &r_sid;
+    bind_res[2].buffer_type = MYSQL_TYPE_STRING;  bind_res[2].buffer = r_ts;
+    bind_res[2].buffer_length = sizeof(r_ts);     bind_res[2].length = &len_ts;
+    bind_res[3].buffer_type = MYSQL_TYPE_STRING;  bind_res[3].buffer = r_result;
+    bind_res[3].buffer_length = sizeof(r_result); bind_res[3].length = &len_result;
+    bind_res[4].buffer_type = MYSQL_TYPE_DOUBLE;  bind_res[4].buffer = &r_conf;
+    bind_res[5].buffer_type = MYSQL_TYPE_STRING;  bind_res[5].buffer = r_defect;
+    bind_res[5].buffer_length = sizeof(r_defect); bind_res[5].length = &len_defect;
+    bind_res[5].is_null = &null_defect;
+    bind_res[6].buffer_type = MYSQL_TYPE_STRING;  bind_res[6].buffer = r_imgpath;
+    bind_res[6].buffer_length = sizeof(r_imgpath); bind_res[6].length = &len_imgpath;
+    bind_res[6].is_null = &null_imgpath;
+    bind_res[7].buffer_type = MYSQL_TYPE_LONG;   bind_res[7].buffer = &r_latency;
+
+    mysql_stmt_bind_result(stmt, bind_res);
+
+    while (mysql_stmt_fetch(stmt) == 0) {
+        InspectionRecord rec;
+        rec.id = r_id;
+        rec.station_id = r_sid;
+        rec.timestamp.assign(r_ts, len_ts);
+        rec.result.assign(r_result, len_result);
+        rec.confidence = r_conf;
+        rec.defect_type = null_defect ? "" : std::string(r_defect, len_defect);
+        rec.image_path  = null_imgpath ? "" : std::string(r_imgpath, len_imgpath);
+        rec.latency_ms = r_latency;
+        records.push_back(rec);
+    }
+    mysql_stmt_close(stmt);
     return records;
 }
 

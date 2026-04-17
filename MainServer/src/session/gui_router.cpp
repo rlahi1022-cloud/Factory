@@ -6,6 +6,7 @@
 #include "session/gui_router.h"
 #include "session/session_manager.h"
 #include "core/logger.h"
+#include "core/tcp_utils.h"
 #include "Protocol.h"
 
 #include <chrono>
@@ -13,12 +14,6 @@
 #include <ctime>
 #include <iomanip>
 #include <sstream>
-
-#ifdef _WIN32
-  #include <winsock2.h>
-#else
-  #include <sys/socket.h>
-#endif
 
 namespace factory {
 
@@ -73,9 +68,9 @@ void GuiRouter::handle_login(int fd, const std::string& json) {
        << ",\"protocol_version\":\"" << FACTORY_PROTOCOL_VERSION << "\""
        << ",\"request_id\":\"" << request_id << "\""
        << ",\"success\":" << (result.success ? "true" : "false")
-       << ",\"username\":\"" << username << "\""
-       << ",\"role\":\"" << result.role << "\""
-       << ",\"employee_id\":\"" << result.employee_id << "\""
+       << ",\"username\":\"" << escape_json(username) << "\""
+       << ",\"role\":\"" << escape_json(result.role) << "\""
+       << ",\"employee_id\":\"" << escape_json(result.employee_id) << "\""
        << ",\"message\":\"" << (result.success ? "로그인 성공" : "인증 실패") << "\""
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 
@@ -269,17 +264,7 @@ std::string GuiRouter::escape_json(const std::string& s) {
 }
 
 bool GuiRouter::send_json(int fd, const std::string& json_body) {
-    uint32_t json_size = static_cast<uint32_t>(json_body.size());
-    uint8_t header[4] = {
-        static_cast<uint8_t>((json_size >> 24) & 0xFF),
-        static_cast<uint8_t>((json_size >> 16) & 0xFF),
-        static_cast<uint8_t>((json_size >>  8) & 0xFF),
-        static_cast<uint8_t>( json_size        & 0xFF),
-    };
-    int sent_h = static_cast<int>(::send(fd, reinterpret_cast<const char*>(header), 4, 0));
-    int sent_b = static_cast<int>(::send(fd, json_body.c_str(),
-                                         static_cast<int>(json_body.size()), 0));
-    return (sent_h == 4 && sent_b == static_cast<int>(json_body.size()));
+    return send_json_frame(fd, json_body);
 }
 
 std::string GuiRouter::extract_str(const std::string& json, const std::string& key) {

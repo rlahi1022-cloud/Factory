@@ -18,16 +18,30 @@
 #include "Protocol.h"
 
 #include "core/logger.h"
+#include "core/tcp_utils.h"
 
 #include <cstdint>
 #include <iostream>
 #include <sstream>
 
-#ifdef _WIN32
-  #include <winsock2.h>
-#else
-  #include <sys/socket.h>
-#endif
+// JSON 문자열 이스케이프 — injection 방지
+static std::string escape_json(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) continue;
+                out += c;
+        }
+    }
+    return out;
+}
 
 namespace factory {
 
@@ -102,27 +116,15 @@ bool AckSender::send_ack(const std::string& sender_addr,
        << "\"ack\":" << (ack_ok ? "true" : "false");
     // 실패 시에만 error_message 필드를 추가하여 페이로드를 최소화
     if (!ack_ok) {
-        os << ",\"error_message\":\"" << error_message << "\"";
+        os << ",\"error_message\":\"" << escape_json(error_message) << "\"";
     }
     // image_size=0 : ACK에는 이미지가 없음을 명시 (추론서버 파서 호환용)
     os << ",\"image_size\":0"
        << "}";
     std::string json_body = os.str();
 
-    // 4바이트 Big-Endian 길이 헤더 구성
-    uint32_t json_size = static_cast<uint32_t>(json_body.size());
-    uint8_t  header[4] = {
-        static_cast<uint8_t>((json_size >> 24) & 0xFF),
-        static_cast<uint8_t>((json_size >> 16) & 0xFF),
-        static_cast<uint8_t>((json_size >>  8) & 0xFF),
-        static_cast<uint8_t>( json_size        & 0xFF),
-    };
-
-    // 헤더 → 본문 순서로 전송, 둘 다 완전히 전송되었는지 검증
-    int sent_h = static_cast<int>(::send(fd, reinterpret_cast<const char*>(header), 4, 0));
-    int sent_b = static_cast<int>(::send(fd, json_body.c_str(),
-                                         static_cast<int>(json_body.size()), 0));
-    if (sent_h != 4 || sent_b != static_cast<int>(json_body.size())) {
+    // send_json_frame: partial send 재시도 포함 안전 전송
+    if (!send_json_frame(fd, json_body)) {
         log_err_ack("전송 실패 | fd=%d addr=%s", fd, sender_addr.c_str());
         return false;
     }
@@ -177,34 +179,21 @@ bool AckSender::send_model_reload(int station_id,
        << "}";
     std::string json_body = os.str();
 
-    // [4바이트 BE 헤더] + [JSON] + [모델 바이너리]
-    uint32_t json_size = static_cast<uint32_t>(json_body.size());
-    uint8_t header[4] = {
-        static_cast<uint8_t>((json_size >> 24) & 0xFF),
-        static_cast<uint8_t>((json_size >> 16) & 0xFF),
-        static_cast<uint8_t>((json_size >>  8) & 0xFF),
-        static_cast<uint8_t>( json_size        & 0xFF),
-    };
-
     bool sent_any = false;
     for (const auto& [addr, fd] : connections) {
-        int sent_h = static_cast<int>(::send(fd, reinterpret_cast<const char*>(header), 4, 0));
-        int sent_j = static_cast<int>(::send(fd, json_body.c_str(),
-                                             static_cast<int>(json_body.size()), 0));
-        int sent_m = 0;
-        if (!model_bytes.empty()) {
-            sent_m = static_cast<int>(::send(fd, reinterpret_cast<const char*>(model_bytes.data()),
-                                             static_cast<int>(model_bytes.size()), 0));
+        // [4바이트 헤더] + [JSON] + [모델 바이너리] — partial send 재시도 포함
+        if (!send_json_frame(fd, json_body)) {
+            log_err_train("MODEL_RELOAD_CMD JSON 전송 실패 | → %s fd=%d", addr.c_str(), fd);
+            continue;
         }
-
-        if (sent_h == 4 && sent_j == static_cast<int>(json_body.size()) &&
-            sent_m == static_cast<int>(model_bytes.size())) {
-            log_train("MODEL_RELOAD_CMD 전송 성공 | → %s fd=%d (%zu bytes)",
-                      addr.c_str(), fd, model_bytes.size());
-            sent_any = true;
-        } else {
-            log_err_train("MODEL_RELOAD_CMD 전송 실패 | → %s fd=%d", addr.c_str(), fd);
+        if (!model_bytes.empty() &&
+            !send_all(fd, model_bytes.data(), model_bytes.size())) {
+            log_err_train("MODEL_RELOAD_CMD 바이너리 전송 실패 | → %s fd=%d", addr.c_str(), fd);
+            continue;
         }
+        log_train("MODEL_RELOAD_CMD 전송 성공 | → %s fd=%d (%zu bytes)",
+                  addr.c_str(), fd, model_bytes.size());
+        sent_any = true;
     }
 
     return sent_any;

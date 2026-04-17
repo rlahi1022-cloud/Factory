@@ -1,0 +1,140 @@
+============================================================================
+보안 취약점 수정 현황 (2026-04-17)
+============================================================================
+
+[완료] CRITICAL 7/7
+[완료] HIGH 12/12
+[완료] MEDIUM 12/16
+[미완료] MEDIUM 4개 + LOW 12개 = 총 16개 남음
+
+============================================================================
+MEDIUM 잔여 (4개)
+============================================================================
+
+M-1. bcrypt salt 검증
+  파일: MainServer/src/storage/password_hash.cpp
+  내용: generate_salt()에서 /dev/urandom 읽기 실패 시 fallback이 없음.
+        읽기 실패 시 빈 문자열 반환 → hash()에서 빈 해시 생성 가능.
+  수정: urandom 실패 시 명시적 에러 반환 + 로그
+
+M-2. MODEL_RELOAD race condition
+  파일: MainServer/src/handler/ack_sender.cpp (send_model_reload)
+  내용: 여러 학습 완료가 동시에 오면 모델 파일 덮어쓰기 경합 가능.
+  수정: 모델 저장/전송 시 mutex 보호 또는 임시파일 → rename 패턴
+
+M-3. stale ACK 정리
+  파일: AiServer/Common/TcpClient.py (_pending_acks)
+  내용: ACK 미수신 시 _pending_acks에 Future가 영원히 남을 수 있음.
+  수정: 주기적 만료 정리 (TTL 10초) 또는 send_with_ack 종료 시 확실히 pop
+
+M-4. 동시 로그인 제한
+  파일: MainServer/src/session/gui_router.cpp (handle_login)
+  내용: 같은 username으로 여러 세션 동시 로그인 가능.
+  수정: SessionManager에서 username 중복 체크 → 기존 세션 강제 종료 또는 거부
+
+============================================================================
+LOW 잔여 (12개)
+============================================================================
+
+L-1. 로그 파일 저장
+  파일: MainServer/include/core/logger.h
+  내용: 현재 stdout만 출력. 서버 재시작 시 로그 유실.
+  수정: 파일 로거 추가 (날짜별 로테이션)
+
+L-2. timestamp 동기화
+  파일: MainServer 전체
+  내용: AI서버/메인서버/클라이언트 간 시계 차이 미보정.
+  수정: NTP 동기화 권고 문서 추가 또는 서버 기준 timestamp 사용
+
+L-3. TRACE 출력 새니타이징
+  파일: client/Factory_UI_CL/NetworkClient.cpp, LoginDlg.cpp 등
+  내용: 디버그 TRACE에 서버 응답 데이터가 그대로 출력됨.
+  수정: TRACE 출력 시 길이 제한 (최대 200자 truncate)
+
+L-4. inspection_id 형식 검증 (클라이언트)
+  파일: client/Factory_UI_CL/MainTabDlg.cpp
+  내용: 서버에서 받은 inspection_id를 형식 검증 없이 사용.
+  수정: "stationN-YYYYMMDD..." 패턴 정규식 검증
+
+L-5. JSON escape 누락 (GUI 라우터 나머지)
+  파일: MainServer/src/session/gui_router.cpp
+  내용: handle_inspect_history, handle_model_list의 응답에서
+        DB 데이터(defect_type, model_type 등)를 이스케이프 없이 JSON에 삽입.
+  수정: 모든 문자열 필드에 escape_json() 적용
+
+L-6. 소켓 non-blocking 미설정 (클라이언트)
+  파일: client/Factory_UI_CL/NetworkClient.cpp
+  내용: 블로킹 소켓 + SO_RCVTIMEO 조합. 악의적 서버가 느리게 응답하면 지연.
+  수정: 현재 구조상 큰 문제 없음. 개선 시 WSAEventSelect 고려.
+
+L-7. model deploy recovery
+  파일: MainServer/src/handler/ack_sender.cpp
+  내용: MODEL_RELOAD_CMD 전송 실패 시 재시도 로직 없음.
+  수정: 실패 시 EventBus에 재시도 이벤트 발행 (최대 3회)
+
+L-8. orphan futures (AI서버)
+  파일: AiServer/Common/TcpClient.py
+  내용: 연결 끊김 시 _pending_acks의 미완료 Future가 정리 안 됨.
+  수정: _discard_writer()에서 모든 pending Future를 cancel/exception 처리
+
+L-9. GUI 라우터 request_id 검증
+  파일: MainServer/src/session/gui_router.cpp
+  내용: request_id를 검증 없이 JSON 응답에 그대로 삽입.
+  수정: request_id에 escape_json() 적용 + 길이 제한 (최대 64자)
+
+L-10. 학습 서버 IP 하드코딩
+  파일: MainServer/src/session/gui_service.cpp (line 116-117)
+  내용: train_host = "10.10.10.130" 하드코딩.
+  수정: main.cpp에서 설정값으로 주입하거나 환경변수 사용
+
+L-11. ConnectionPool reconnect 실패 시 null 반환
+  파일: MainServer/src/storage/connection_pool.cpp (acquire)
+  내용: mysql_ping 실패 → create_connection 실패 시 null 반환.
+        이 경우 all_conns_에서 제거 안 되어 shutdown 시 이중 close.
+  수정: 재연결 실패 시 all_conns_에서 old conn 교체 처리
+
+L-12. GUI 클라이언트 NG 이미지 수신 크기 미검증
+  파일: client/Factory_UI_CL/NetworkClient.cpp (RecvLoop)
+  내용: 현재 JSON만 수신하고 이미지 바이너리는 미수신.
+        향후 이미지 수신 구현 시 image_size 상한 검증 필요.
+  수정: 이미지 수신 구현 시 50MB 상한 + ParseHeader와 동일한 검증 추가
+
+============================================================================
+수정 완료 항목 요약 (CRITICAL 7 + HIGH 12 + MEDIUM 12 = 31개)
+============================================================================
+
+CRITICAL:
+  C-1. SQL Injection (UserDao) → prepared statement 전환
+  C-2. SQL Injection (StatsDao) → prepared statement + 날짜 정규식
+  C-3. Partial Send → tcp_utils.h send_all/send_json_frame
+  C-4. Port 9000 무인증 → IP 화이트리스트
+  C-5. 모델 바이너리 무검증 → 500MB 제한 + path traversal 차단 + 파일 무결성
+  C-6. AI서버 수신 크기 무제한 → JSON 64KB + 바이너리 500MB 상한
+  C-7. MFC JSON 파서 취약 → bounds check + 이스케이프 처리
+
+HIGH:
+  H-1. EventBus 큐 무제한 → max 10000 + 드롭 로그
+  H-2. TCP recv 타임아웃 없음 → 30초 설정
+  H-3. ConnectionPool 무한대기 → 5초 타임아웃
+  H-4. TRAIN_COMPLETE 이중 처리 → DbManager 중복 구독 제거
+  H-5. 동시 학습 미방지 → is_training_ + mutex
+  H-6. volatile bool → std::atomic<bool>
+  H-7. 정수 오버플로우 → INT_MAX 차단
+  H-8. null 체크 누락 → json.empty() 방어
+  H-9. PostMessage 메모리 누수 → safePost 헬퍼
+  H-10. gui_service partial send → tcp_utils.h 교체
+  H-11. m_recs race condition → CRITICAL_SECTION
+  H-12. m_recs.back() 빈 벡터 → empty() 체크
+
+MEDIUM:
+  M-1~2. detach 스레드 제한 (AI 10개, GUI 20개)
+  M-3. 필드 검증 강화 (result, latency, defect, image, timestamp)
+  M-4. 이미지 저장 무결성 + 디스크 여유 확인
+  M-5. HealthChecker IP 정확 매칭
+  M-6. JSON injection (error_message escape)
+  M-7. listen backlog 증가
+  M-8. GUI 응답 JSON injection 방어
+  M-9. atoi → strtol 안전 변환
+  M-10. 미초기화 구조체 수정
+  M-11. Pareto 0 나눗셈 방지
+  M-12. setsockopt 반환값 확인

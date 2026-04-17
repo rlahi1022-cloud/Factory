@@ -283,6 +283,13 @@ class TcpClient:
                 # 헤더에서 JSON 크기 추출 (big-endian 4바이트 정수)
                 json_size = struct.unpack(">I", header)[0]
 
+                # JSON 크기 제한: 최대 64KB (비정상 패킷 차단)
+                if json_size == 0 or json_size > 64 * 1024:
+                    logger.error("receiver: invalid json_size=%d — dropping connection", json_size)
+                    await self._discard_writer()
+                    await asyncio.sleep(self._reconnect_delay_sec)
+                    continue
+
                 # JSON 본문 읽기
                 body = await self._reader.readexactly(json_size)
                 try:
@@ -294,6 +301,13 @@ class TcpClient:
                 # 바이너리 데이터 수신 (이미지 또는 모델 파일)
                 image_size = int(msg_dict.get("image_size", 0))
                 binary_data: bytes | None = None
+                # 바이너리 크기 제한: 최대 500MB (모델 파일 포함)
+                MAX_BINARY_SIZE = 500 * 1024 * 1024
+                if image_size > MAX_BINARY_SIZE:
+                    logger.error("receiver: binary too large=%d — dropping", image_size)
+                    await self._discard_writer()
+                    await asyncio.sleep(self._reconnect_delay_sec)
+                    continue
                 if image_size > 0:
                     binary_data = await self._reader.readexactly(image_size)
 

@@ -4,6 +4,7 @@
 #include "session/gui_service.h"
 #include "session/session_manager.h"
 #include "core/logger.h"
+#include "core/tcp_utils.h"
 #include "Protocol.h"
 
 #include <arpa/inet.h>
@@ -91,24 +92,23 @@ static std::string make_timestamp() {
     return os.str();
 }
 
-static bool send_json_raw(int fd, const std::string& json_body) {
-    uint32_t json_size = static_cast<uint32_t>(json_body.size());
-    uint8_t header[4] = {
-        static_cast<uint8_t>((json_size >> 24) & 0xFF),
-        static_cast<uint8_t>((json_size >> 16) & 0xFF),
-        static_cast<uint8_t>((json_size >>  8) & 0xFF),
-        static_cast<uint8_t>( json_size        & 0xFF),
-    };
-    int sent_h = static_cast<int>(::send(fd, reinterpret_cast<const char*>(header), 4, 0));
-    int sent_b = static_cast<int>(::send(fd, json_body.c_str(),
-                                         static_cast<int>(json_body.size()), 0));
-    return (sent_h == 4 && sent_b == static_cast<int>(json_body.size()));
-}
+// send_json_raw는 tcp_utils.h의 send_json_frame으로 대체
 
 RetrainResult GuiService::request_retrain(int station_id, const std::string& model_type,
                                            const std::string& product_name, int image_count,
                                            const std::string& request_id) {
     RetrainResult result;
+
+    // 동시 학습 방지 — 이미 학습 중이면 거부
+    {
+        std::lock_guard<std::mutex> lock(train_mutex_);
+        if (is_training_) {
+            result.message = "이미 학습이 진행 중입니다.";
+            log_err_train("재학습 거부 | 이미 진행 중");
+            return result;
+        }
+        is_training_ = true;
+    }
 
     log_train("재학습 요청 접수 | 스테이션=%d 모델=%s 이미지=%d건",
               station_id, model_type.c_str(), image_count);
@@ -135,6 +135,10 @@ RetrainResult GuiService::request_retrain(int station_id, const std::string& mod
     if (::connect(train_fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
         log_err_train("학습서버 연결 실패 | %s:%d", train_host, train_port);
         ::close(train_fd);
+        {
+            std::lock_guard<std::mutex> lock(train_mutex_);
+            is_training_ = false;
+        }
         result.message = "학습서버 연결 실패";
         return result;
     }
@@ -149,7 +153,7 @@ RetrainResult GuiService::request_retrain(int station_id, const std::string& mod
        << ",\"image_count\":" << image_count
        << ",\"timestamp\":\"" << make_timestamp() << "\"}";
 
-    if (send_json_raw(train_fd, os.str())) {
+    if (send_json_frame(train_fd, os.str())) {
         result.success = true;
         result.message = "재학습 요청 전달 완료";
         log_train("TRAIN_START_REQ → 학습서버 전송 성공");

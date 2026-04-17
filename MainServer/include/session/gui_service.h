@@ -9,6 +9,7 @@
 #include "storage/dao.h"
 #include "storage/password_hash.h"
 
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -59,10 +60,20 @@ public:
                                    const std::string& product_name, int image_count,
                                    const std::string& request_id);
 
+    /// 학습 완료 시 플래그 해제 (TrainHandler에서 호출)
+    void set_training_done() {
+        std::lock_guard<std::mutex> lock(train_mutex_);
+        is_training_ = false;
+    }
+
 private:
     UserDao  user_dao_;
     ModelDao model_dao_;
     StatsDao stats_dao_;
+
+    // 동시 학습 요청 방지
+    std::mutex train_mutex_;
+    bool       is_training_ = false;
 };
 
 } // namespace factory

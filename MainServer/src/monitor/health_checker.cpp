@@ -49,10 +49,12 @@ void HealthChecker::run_loop() {
         int connected_count = static_cast<int>(connections.size());
 
         for (const auto& target : targets_) {
-            // target.ip를 포함하는 연결이 있는지 확인
+            // target.ip와 정확히 일치하는 연결이 있는지 확인
+            // addr 형식: "IP:PORT" — ':'까지의 prefix가 target.ip와 일치해야 함
             bool alive = false;
+            std::string ip_prefix = target.ip + ":";
             for (const auto& [addr, fd] : connections) {
-                if (addr.find(target.ip) != std::string::npos) {
+                if (addr.rfind(ip_prefix, 0) == 0) {
                     alive = true;
                     break;
                 }

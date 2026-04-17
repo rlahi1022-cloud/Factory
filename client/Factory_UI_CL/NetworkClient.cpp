@@ -73,26 +73,24 @@ bool CNetworkClient::Connect(const CString& host, UINT16 port, HWND hNotifyWnd)
     }
 
     // ── 소켓 옵션 설정 ──
-    // SO_KEEPALIVE: TCP 레벨에서 주기적으로 생존 확인 패킷을 보냄
-    //              → 상대방이 살아있는지 OS가 자동 확인, 끊어지면 recv 에러 반환
-    //              → 방화벽/NAT의 유휴 연결 타임아웃도 방지
     BOOL keepAlive = TRUE;
-    setsockopt(m_socket, SOL_SOCKET, SO_KEEPALIVE,
-               reinterpret_cast<const char*>(&keepAlive), sizeof(keepAlive));
+    if (setsockopt(m_socket, SOL_SOCKET, SO_KEEPALIVE,
+               reinterpret_cast<const char*>(&keepAlive), sizeof(keepAlive)) == SOCKET_ERROR) {
+        TRACE(_T("[NetworkClient] SO_KEEPALIVE 설정 실패: %d\n"), WSAGetLastError());
+    }
 
-    // TCP_NODELAY: Nagle 알고리즘 비활성화
-    //             → 작은 패킷(JSON)도 즉시 전송 (지연 없이)
     BOOL noDelay = TRUE;
-    setsockopt(m_socket, IPPROTO_TCP, TCP_NODELAY,
-               reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
+    if (setsockopt(m_socket, IPPROTO_TCP, TCP_NODELAY,
+               reinterpret_cast<const char*>(&noDelay), sizeof(noDelay)) == SOCKET_ERROR) {
+        TRACE(_T("[NetworkClient] TCP_NODELAY 설정 실패: %d\n"), WSAGetLastError());
+    }
 
-    // SO_RCVTIMEO: recv() 타임아웃 5초 설정
-    //             → recv가 5초마다 SOCKET_ERROR(WSAETIMEDOUT)를 반환
-    //             → RecvLoop이 멈추지 않고 주기적으로 깨어남
-    //             → 이를 이용해 heartbeat 패킷을 서버에 전송하여 세션 유지
-    DWORD recvTimeout = 5000;  // 5초 (밀리초)
-    setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO,
-               reinterpret_cast<const char*>(&recvTimeout), sizeof(recvTimeout));
+    // SO_RCVTIMEO: recv() 타임아웃 5초 → heartbeat 주기
+    DWORD recvTimeout = 5000;
+    if (setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&recvTimeout), sizeof(recvTimeout)) == SOCKET_ERROR) {
+        TRACE(_T("[NetworkClient] SO_RCVTIMEO 설정 실패: %d\n"), WSAGetLastError());
+    }
 
     // ── 서버 주소 설정 ──
     sockaddr_in serverAddr = {};
@@ -200,8 +198,12 @@ bool CNetworkClient::Send(const std::vector<char>& packet)
     // EnterCriticalSection: 다른 스레드가 이 구간에 있으면 여기서 대기
     EnterCriticalSection(&m_csSend);
 
-    // send: 소켓을 통해 데이터 전송
-    // 반환값: 실제로 보낸 바이트 수 (실패 시 SOCKET_ERROR)
+    // 패킷 크기 검증 — 2GB 초과 차단 (int 오버플로우 방지)
+    if (packet.size() > static_cast<size_t>(INT_MAX)) {
+        LeaveCriticalSection(&m_csSend);
+        return false;
+    }
+
     int totalSent = 0;
     int remaining = static_cast<int>(packet.size());
     const char* ptr = packet.data();
@@ -382,9 +384,11 @@ void CNetworkClient::SendHeartbeat()
 //       UI 스레드의 메시지 핸들러에서 delete로 해제해야 합니다.
 void CNetworkClient::OnPacketReceived(const std::string& json)
 {
+    if (json.empty()) return;
+
     CStringA jsonA(json.c_str());
 
-    // protocol_no 추출 — 이 패킷이 어떤 종류의 메시지인지 판별
+    // protocol_no 추출
     int protocolNo = CPacketBuilder::ExtractInt(jsonA, "protocol_no");
 
     TRACE(_T("[NetworkClient] 수신: protocol_no=%d, size=%d\n"),
@@ -398,52 +402,36 @@ void CNetworkClient::OnPacketReceived(const std::string& json)
         return;
     }
 
-    // ── 프로토콜 번호별 메시지 라우팅 ──
-    // new std::string: 힙에 JSON 데이터를 복사하여 UI 스레드에 전달
-    // UI 스레드의 메시지 핸들러가 이 포인터를 delete 해야 메모리 누수가 없습니다!
+    // PostMessage 안전 전송 헬퍼 — 실패 시 메모리 누수 방지
+    auto safePost = [this](UINT msg, WPARAM wp, const std::string& data) {
+        auto* pStr = new (std::nothrow) std::string(data);
+        if (!pStr) return;
+        if (!::PostMessage(m_hNotifyWnd, msg, wp, reinterpret_cast<LPARAM>(pStr))) {
+            delete pStr;  // PostMessage 실패 시 즉시 해제
+        }
+    };
+
     switch (protocolNo) {
     case factory_client::INSPECT_NG_PUSH:
-        // NG 검사 결과 푸시 → MainTabDlg가 검사 데이터 갱신
-        ::PostMessage(m_hNotifyWnd, WM_NET_NG_PUSH, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_NG_PUSH, 0, json);
         break;
-
     case factory_client::INSPECT_OK_COUNT_PUSH:
-        // OK/NG 카운트 푸시 → 종합 현황 갱신
-        ::PostMessage(m_hNotifyWnd, WM_NET_OK_COUNT_PUSH, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_OK_COUNT_PUSH, 0, json);
         break;
-
     case factory_client::SERVER_HEALTH_PUSH:
-        // 서버 헬스 상태 변경 → 서버 LED 업데이트
-        ::PostMessage(m_hNotifyWnd, WM_NET_HEALTH_PUSH, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_HEALTH_PUSH, 0, json);
         break;
-
     case factory_client::LOGIN_RES:
-        // 로그인 응답 → 인증 결과 처리
-        ::PostMessage(m_hNotifyWnd, WM_NET_LOGIN_RES, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_LOGIN_RES, 0, json);
         break;
-
     case factory_client::REGISTER_RES:
-        // 회원가입 응답 → 가입 결과 처리
-        ::PostMessage(m_hNotifyWnd, WM_NET_REGISTER_RES, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_REGISTER_RES, 0, json);
         break;
-
     case factory_client::RETRAIN_PROGRESS_PUSH:
-        // 재학습 진행률 → 모델 페이지 진행바 업데이트
-        ::PostMessage(m_hNotifyWnd, WM_NET_RETRAIN_PROGRESS, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_RETRAIN_PROGRESS, 0, json);
         break;
-
     default:
-        // 그 외 응답 (INSPECT_HISTORY_RES, STATS_RES, MODEL_LIST_RES 등)
-        // WPARAM에 프로토콜 번호를 담아서 핸들러가 구분할 수 있게 함
-        ::PostMessage(m_hNotifyWnd, WM_NET_RESPONSE,
-            static_cast<WPARAM>(protocolNo),
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_RESPONSE, static_cast<WPARAM>(protocolNo), json);
         break;
     }
 }

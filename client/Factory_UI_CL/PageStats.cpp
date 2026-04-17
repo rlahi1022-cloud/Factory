@@ -81,6 +81,7 @@ void CPageStats::DrawPareto(CDC& dc, CRect rc){
     if(m_pareto.empty())return;
     static COLORREF cols[]={RGB(204,0,0),RGB(224,96,0),RGB(212,160,0),RGB(0,112,192),RGB(128,128,128)};
     int n=(int)m_pareto.size(),maxC=m_pareto[0].cnt;
+    if(maxC<=0) maxC=1;  // 0 나눗셈 방지
     CRect pl(rc.left+28,rc.top+4,rc.right-4,rc.bottom-20);
     int bw=(pl.Width()/n)-4;
     dc.SetBkMode(TRANSPARENT);

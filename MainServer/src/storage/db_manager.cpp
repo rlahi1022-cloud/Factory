@@ -23,8 +23,8 @@ DbManager::DbManager(EventBus& bus, ConnectionPool& pool)
 void DbManager::register_handlers() {
     event_bus_.subscribe(EventType::DB_WRITE_REQUESTED,
                          [this](const std::any& p) { this->on_db_write(p); });
-    event_bus_.subscribe(EventType::TRAIN_COMPLETE_RECEIVED,
-                         [this](const std::any& p) { this->on_train_complete(p); });
+    // TRAIN_COMPLETE_RECEIVED는 TrainHandler(Service 레이어)에서 처리
+    // 여기서 중복 구독하면 이중 DB INSERT + 이중 ACK 발생
 }
 
 // ── 검사 결과 DB 저장 ──
