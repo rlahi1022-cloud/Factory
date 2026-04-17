@@ -207,9 +207,15 @@ void GuiTcpListener::route_request(int client_fd, const std::string& remote_addr
 // ── 1. LOGIN_REQ(100) → LOGIN_RES(101) ──────────────────────────────
 
 void GuiTcpListener::handle_login_req(int client_fd, const std::string& json) {
+    // 디버그: 수신된 JSON 전체 출력
+    std::cout << "[GuiTcpListener] LOGIN JSON: " << json.substr(0, 200) << std::endl;
+
     std::string username   = extract_str(json, "username");
     std::string password   = extract_str(json, "password");
     std::string request_id = extract_str(json, "request_id");
+
+    std::cout << "[GuiTcpListener] 파싱 결과 user=[" << username
+              << "] pass=[" << password << "]" << std::endl;
 
     bool success = false;
     std::string role, employee_id;
@@ -240,15 +246,16 @@ void GuiTcpListener::handle_login_req(int client_fd, const std::string& json) {
     }
 
     // DB에 없으면 로컬 계정으로 폴백
+    // 클라이언트가 로컬 인증 후 password="local"로 보내는 경우도 허용
     if (!success) {
-        struct Account { const char* u; const char* p; const char* r; const char* e; };
+        struct Account { const char* u; const char* r; const char* e; };
         static const Account accs[] = {
-            {"admin01", "1234", "admin",    "EMP-001"},
-            {"oper01",  "1234", "operator", "EMP-002"},
-            {"viewer",  "1234", "viewer",   "EMP-003"},
+            {"admin01", "admin",    "EMP-001"},
+            {"oper01",  "operator", "EMP-002"},
+            {"viewer",  "viewer",   "EMP-003"},
         };
         for (const auto& a : accs) {
-            if (username == a.u && password == a.p) {
+            if (username == a.u && (password == "1234" || password == "local")) {
                 success = true; role = a.r; employee_id = a.e; break;
             }
         }

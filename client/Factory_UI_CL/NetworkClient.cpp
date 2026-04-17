@@ -321,10 +321,11 @@ void CNetworkClient::RecvLoop()
     // ※ 소켓은 여기서 닫지 않음! Disconnect()가 관리합니다.
     m_bRunning = false;
 
-    // UI에 연결 끊김 알림
-    if (m_hNotifyWnd && ::IsWindow(m_hNotifyWnd)) {
-        ::PostMessage(m_hNotifyWnd, WM_NET_DISCONNECTED, 0, 0);
-    }
+    // ※ WM_NET_DISCONNECTED는 Disconnect()에서만 발송합니다.
+    //    여기서 중복 발송하면 MainTabDlg의 재접속 타이머가 2번 등록되어
+    //    IDT_RECONNECT가 중복 실행되는 부작용이 생깁니다.
+    //    Disconnect()가 소켓을 닫아 이 루프를 종료시키므로
+    //    이후 Disconnect() 내부의 PostMessage가 반드시 호출됩니다.
 }
 
 // ============================================================================

@@ -28,6 +28,11 @@
 #include <vector>
 #include <memory>
 
+// 타이머 ID — enum 충돌 방지를 위해 클래스 밖에 정의
+#define IDT_LIVE_UPDATE  1   // 3초: 시뮬레이션 데이터 생성
+#define IDT_STATUSBAR    2   // 1초: 상태바 시각 갱신
+#define IDT_RECONNECT    3   // 10초: 서버 재접속 시도
+
 class CMainTabDlg : public CDialogEx {
     DECLARE_DYNAMIC(CMainTabDlg)
 public:
@@ -136,6 +141,9 @@ protected:
     afx_msg LRESULT OnNetResponse(WPARAM wParam, LPARAM lParam);
     // OnNetRetrainProgress: 재학습 진행률 수신 (WM_NET_RETRAIN_PROGRESS, 프로토콜 154)
     afx_msg LRESULT OnNetRetrainProgress(WPARAM wParam, LPARAM lParam);
+    // OnNetLoginRes: 로그인 응답 수신 (WM_NET_LOGIN_RES, 프로토콜 101)
+    // 이 핸들러가 없으면 서버가 응답 후 세션을 즉시 끊어버림
+    afx_msg LRESULT OnNetLoginRes(WPARAM wParam, LPARAM lParam);
 
     DECLARE_MESSAGE_MAP()
 };
