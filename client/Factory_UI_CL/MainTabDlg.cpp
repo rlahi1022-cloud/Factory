@@ -51,6 +51,7 @@ BEGIN_MESSAGE_MAP(CMainTabDlg, CDialogEx)
     ON_MESSAGE(WM_NET_HEALTH_PUSH,      OnNetHealthPush)
     ON_MESSAGE(WM_NET_RESPONSE,         OnNetResponse)
     ON_MESSAGE(WM_NET_RETRAIN_PROGRESS, OnNetRetrainProgress)
+    ON_MESSAGE(WM_NET_LOGIN_RES,        OnNetLoginRes)   // 로그인 응답 (프로토콜 101)
 END_MESSAGE_MAP()
 
 // ============================================================================
@@ -653,7 +654,7 @@ LRESULT CMainTabDlg::OnNetOkCountPush(WPARAM, LPARAM lParam)
     int ngCount    = CPacketBuilder::ExtractInt(jsonA, "ng_count");
 
     // 홈 페이지의 스테이션별 OK/NG 표시에 반영
-    if (m_home) m_home->UpdateStationCount(stationId, okCount, ngCount);
+    m_home->UpdateStationCount(stationId, okCount, ngCount);
     TRACE(_T("[MainTabDlg] OK카운트 수신: station=%d ok=%d ng=%d\n"),
         stationId, okCount, ngCount);
 
@@ -744,6 +745,36 @@ LRESULT CMainTabDlg::OnNetRetrainProgress(WPARAM, LPARAM lParam)
     // 모델 페이지에 진행률 전달
     if (m_model) m_model->OnRetrainProgress(progress);
     TRACE(_T("[MainTabDlg] 재학습 진행률: %d%%\n"), progress);
+
+    delete pJson;
+    return 0;
+}
+
+// ============================================================================
+// OnNetLoginRes — 로그인 응답 수신 (WM_NET_LOGIN_RES, 프로토콜 101)
+// ============================================================================
+// 서버가 LOGIN_REQ(100)를 처리한 결과를 반환합니다.
+// result=0 이면 인증 성공, 그 외는 실패(재접속 타이머 시작).
+// 이 핸들러가 없으면 서버는 응답 후 다음 요청을 기다리다가
+// 클라이언트가 아무것도 안 보내는 것으로 판단하여 세션을 끊어버립니다.
+LRESULT CMainTabDlg::OnNetLoginRes(WPARAM, LPARAM lParam)
+{
+    std::string* pJson = reinterpret_cast<std::string*>(lParam);
+    if (!pJson) return 0;
+
+    CStringA jsonA(pJson->c_str());
+    int result = CPacketBuilder::ExtractInt(jsonA, "result");  // 0=성공, 그 외=실패
+
+    if (result == 0) {
+        TRACE(_T("[MainTabDlg] LOGIN_RES 수신: 인증 성공 — 세션 유지\n"));
+        // m_bConnected는 WM_NET_CONNECTED에서 이미 true로 설정됨
+        // 필요 시 여기서 초기 데이터 요청 추가 가능:
+        // m_net.SendJson(CPacketBuilder::BuildModelListReq());
+    } else {
+        TRACE(_T("[MainTabDlg] LOGIN_RES 수신: 인증 실패 (result=%d)\n"), result);
+        m_net.Disconnect();
+        // Disconnect 후 OnNetDisconnectedMsg가 호출되어 재접속 타이머 시작
+    }
 
     delete pJson;
     return 0;

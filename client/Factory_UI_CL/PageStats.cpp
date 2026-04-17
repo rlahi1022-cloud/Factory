@@ -1,6 +1,6 @@
 ﻿#include "pch.h"
 #include "PageStats.h"
-#include "PacketBuilder.h"
+#include "PacketBuilder.h"   // ExtractInt/String/Double
 #include <algorithm>
 
 IMPLEMENT_DYNAMIC(CPageStats, CDialogEx)
@@ -120,35 +120,6 @@ void CPageStats::DrawLatency(CDC& dc, CRect rc){
     for(int i=1;i<n;++i)dc.LineTo(pt(i,m_trend[i].lat));
 }
 
-void CPageStats::OnInspectHistoryRes(const std::string& json)
-{
-    // 서버에서 받은 검사 이력을 m_recs에 반영
-    CStringA jsonA(json.c_str());
-    int count = CPacketBuilder::ExtractInt(jsonA, "count");
-    TRACE(_T("[PageStats] 검사 이력 수신: %d건\n"), count);
-    // items 배열은 간이 파서로 처리 불가 — 수신 확인만 로그
-    // TODO: JSON 배열 파서 추가 시 m_recs에 반영
-    Rebuild();
-    Invalidate();
-}
-
-void CPageStats::OnStatsRes(const std::string& json)
-{
-    // 서버에서 받은 통계를 표시
-    CStringA jsonA(json.c_str());
-    int total    = CPacketBuilder::ExtractInt(jsonA, "total");
-    int okCount  = CPacketBuilder::ExtractInt(jsonA, "ok_count");
-    int ngCount  = CPacketBuilder::ExtractInt(jsonA, "ng_count");
-    double ngRate = CPacketBuilder::ExtractDouble(jsonA, "ng_rate");
-
-    TRACE(_T("[PageStats] 통계 수신: total=%d ok=%d ng=%d rate=%.2f%%\n"),
-        total, okCount, ngCount, ngRate);
-
-    // TODO: 차트에 반영
-    Rebuild();
-    Invalidate();
-}
-
 void CPageStats::OnBtnQuery(){Rebuild();Invalidate();}
 void CPageStats::OnBtnExportCSV(){
     CFileDialog dlg(FALSE,_T("csv"),_T("log.csv"),OFN_OVERWRITEPROMPT,_T("CSV|*.csv||"),this);
@@ -164,4 +135,142 @@ void CPageStats::OnBtnExportCSV(){
         f.WriteString(l);}
     f.Close();
     MessageBox(_T("CSV 내보내기 완료"),_T("완료"),MB_OK|MB_ICONINFORMATION);
+}
+
+// ============================================================================
+// OnInspectHistoryRes — 검사 이력 응답 수신 (프로토콜 115)
+// ============================================================================
+// MainTabDlg::OnNetResponse()에서 INSPECT_HISTORY_RES 수신 시 호출됩니다.
+// JSON 배열 내 각 레코드를 파싱하여 m_recs에 추가하고 화면을 갱신합니다.
+// 서버 JSON 예시:
+//   {"protocol_no":115,"records":[
+//     {"id":1,"station_id":1,"result":"NG","score":0.91,
+//      "defect_type":"cap_loose","latency_ms":52,"timestamp":"2026-04-16T14:00:00"},
+//     ...
+//   ]}
+void CPageStats::OnInspectHistoryRes(const std::string& json)
+{
+    CStringA jsonA(json.c_str());
+
+    // records 배열을 수동 파싱합니다 (경량 파서 한계상 객체 단위로 분리)
+    // "[" ~ "]" 구간을 추출하여 "}" 단위로 분리합니다.
+    int arrStart = jsonA.Find("[");
+    int arrEnd   = jsonA.ReverseFind(']');
+    if (arrStart < 0 || arrEnd < 0) return;
+
+    CStringA arrStr = jsonA.Mid(arrStart + 1, arrEnd - arrStart - 1);
+
+    m_recs.clear();
+
+    // "}" 기준으로 각 레코드 객체를 분리
+    int pos = 0;
+    while (pos < arrStr.GetLength()) {
+        int objStart = arrStr.Find('{', pos);
+        int objEnd   = arrStr.Find('}', objStart);
+        if (objStart < 0 || objEnd < 0) break;
+
+        CStringA obj = arrStr.Mid(objStart, objEnd - objStart + 1);
+
+        InspectionRecord rec;
+        rec.id        = CPacketBuilder::ExtractInt(obj, "id");
+        rec.station   = CPacketBuilder::ExtractInt(obj, "station_id");
+        rec.score     = CPacketBuilder::ExtractDouble(obj, "score");
+        rec.latencyMs = CPacketBuilder::ExtractInt(obj, "latency_ms");
+
+        CStringA resultA  = CPacketBuilder::ExtractString(obj, "result");
+        rec.isNG = (resultA == "NG");
+
+        CStringA tsA = CPacketBuilder::ExtractString(obj, "timestamp");
+        if (tsA.GetLength() >= 19)
+            rec.time = CString(tsA.Mid(11, 8));  // "HH:MM:SS"
+        else
+            rec.time = _T("--:--:--");
+
+        CStringA defectA = CPacketBuilder::ExtractString(obj, "defect_type");
+        if      (defectA == "anomaly")      rec.defect = EDefect::Anomaly;
+        else if (defectA == "cap_loose")    rec.defect = EDefect::CapLoose;
+        else if (defectA == "cap_missing")  rec.defect = EDefect::CapMissing;
+        else if (defectA == "label_tilt")   rec.defect = EDefect::LabelTilt;
+        else if (defectA == "label_torn")   rec.defect = EDefect::LabelTorn;
+        else if (defectA == "fill_low")     rec.defect = EDefect::FillLow;
+        else                                rec.defect = EDefect::Anomaly;
+
+        m_recs.push_back(rec);
+        pos = objEnd + 1;
+    }
+
+    // 파레토/트렌드 재계산 후 화면 갱신
+    Rebuild();
+    Invalidate();
+
+    TRACE(_T("[PageStats] 이력 수신: %d건\n"), (int)m_recs.size());
+}
+
+// ============================================================================
+// OnStatsRes — 통계 응답 수신 (프로토콜 131)
+// ============================================================================
+// MainTabDlg::OnNetResponse()에서 STATS_RES 수신 시 호출됩니다.
+// 서버가 보내는 시간대별 NG율과 결함 유형별 카운트로 차트 데이터를 교체합니다.
+// 서버 JSON 예시:
+//   {"protocol_no":131,
+//    "trend":[{"hour":8,"s1_ng_rate":0.5,"s2_ng_rate":1.2,"avg_latency_ms":52}, ...],
+//    "pareto":[{"defect_type":"cap_loose","count":5}, ...]}
+void CPageStats::OnStatsRes(const std::string& json)
+{
+    CStringA jsonA(json.c_str());
+
+    // ── 트렌드 배열 파싱 ──
+    int tStart = jsonA.Find("\"trend\"");
+    if (tStart >= 0) {
+        int arrS = jsonA.Find('[', tStart);
+        int arrE = jsonA.Find(']', arrS);
+        if (arrS >= 0 && arrE >= 0) {
+            CStringA arr = jsonA.Mid(arrS + 1, arrE - arrS - 1);
+            m_trend.clear();
+            int pos = 0;
+            while (pos < arr.GetLength()) {
+                int os = arr.Find('{', pos);
+                int oe = arr.Find('}', os);
+                if (os < 0 || oe < 0) break;
+                CStringA obj = arr.Mid(os, oe - os + 1);
+                TPoint p;
+                int hour = CPacketBuilder::ExtractInt(obj, "hour");
+                p.lbl.Format(_T("%d:00"), hour);
+                p.s1  = CPacketBuilder::ExtractDouble(obj, "s1_ng_rate");
+                p.s2  = CPacketBuilder::ExtractDouble(obj, "s2_ng_rate");
+                p.lat = CPacketBuilder::ExtractInt(obj, "avg_latency_ms");
+                m_trend.push_back(p);
+                pos = oe + 1;
+            }
+        }
+    }
+
+    // ── 파레토 배열 파싱 ──
+    int pStart = jsonA.Find("\"pareto\"");
+    if (pStart >= 0) {
+        int arrS = jsonA.Find('[', pStart);
+        int arrE = jsonA.Find(']', arrS);
+        if (arrS >= 0 && arrE >= 0) {
+            CStringA arr = jsonA.Mid(arrS + 1, arrE - arrS - 1);
+            m_pareto.clear();
+            int pos = 0;
+            while (pos < arr.GetLength()) {
+                int os = arr.Find('{', pos);
+                int oe = arr.Find('}', os);
+                if (os < 0 || oe < 0) break;
+                CStringA obj  = arr.Mid(os, oe - os + 1);
+                CStringA name = CPacketBuilder::ExtractString(obj, "defect_type");
+                int cnt = CPacketBuilder::ExtractInt(obj, "count");
+                PItem item;
+                item.name = CString(name);
+                item.cnt  = cnt;
+                m_pareto.push_back(item);
+                pos = oe + 1;
+            }
+        }
+    }
+
+    Invalidate();
+    TRACE(_T("[PageStats] 통계 수신: trend=%d, pareto=%d\n"),
+        (int)m_trend.size(), (int)m_pareto.size());
 }
