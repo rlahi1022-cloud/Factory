@@ -1,9 +1,13 @@
-// gui_tcp_listener.cpp
-// MFC GUI 클라이언트 전용 TCP 리스너 + 요청 핸들러
-// LOGIN, LOGOUT, INSPECT_HISTORY, STATS, MODEL_LIST, RETRAIN 처리
+// ============================================================================
+// gui_tcp_listener.cpp — MFC GUI 전용 TCP 리스너 + 요청 핸들러 (DAO 기반)
+// ============================================================================
+// DAO를 통해 DB에 접근하며, ConnectionPool에서 커넥션을 빌려 사용한다.
+// ============================================================================
 
 #include "session/gui_tcp_listener.h"
 #include "session/session_manager.h"
+#include "core/logger.h"
+#include "storage/password_hash.h"
 #include "Protocol.h"
 
 #include <chrono>
@@ -31,58 +35,19 @@ namespace factory {
 
 // ── 생성자/소멸자 ────────────────────────────────────────────────────
 
-GuiTcpListener::GuiTcpListener(EventBus& bus, uint16_t port,
-                               const std::string& db_host,
-                               const std::string& db_user,
-                               const std::string& db_password,
-                               const std::string& db_schema,
-                               unsigned int db_port)
+GuiTcpListener::GuiTcpListener(EventBus& bus, uint16_t port, ConnectionPool& pool)
     : event_bus_(bus),
       listen_port_(port),
       server_fd_(-1),
       is_running_(false),
-      db_conn_(nullptr),
-      db_host_(db_host),
-      db_user_(db_user),
-      db_password_(db_password),
-      db_schema_(db_schema),
-      db_port_(db_port) {
+      pool_(pool),
+      user_dao_(pool),
+      model_dao_(pool),
+      stats_dao_(pool) {
 }
 
 GuiTcpListener::~GuiTcpListener() {
     stop();
-    db_disconnect();
-}
-
-// ── DB 연결 ──────────────────────────────────────────────────────────
-
-bool GuiTcpListener::db_connect() {
-    std::lock_guard<std::mutex> lock(db_mutex_);
-    db_conn_ = mysql_init(nullptr);
-    if (!db_conn_) return false;
-
-    my_bool reconnect = 1;
-    mysql_options(db_conn_, MYSQL_OPT_RECONNECT, &reconnect);
-    mysql_options(db_conn_, MYSQL_SET_CHARSET_NAME, "utf8mb4");
-
-    if (!mysql_real_connect(db_conn_, db_host_.c_str(), db_user_.c_str(),
-                            db_password_.c_str(), db_schema_.c_str(),
-                            db_port_, nullptr, 0)) {
-        std::cerr << "[GuiTcpListener] DB 연결 실패: " << mysql_error(db_conn_) << std::endl;
-        mysql_close(db_conn_);
-        db_conn_ = nullptr;
-        return false;
-    }
-    std::cout << "[GuiTcpListener] GUI용 DB 연결 성공" << std::endl;
-    return true;
-}
-
-void GuiTcpListener::db_disconnect() {
-    std::lock_guard<std::mutex> lock(db_mutex_);
-    if (db_conn_) {
-        mysql_close(db_conn_);
-        db_conn_ = nullptr;
-    }
 }
 
 // ── TCP 서버 ─────────────────────────────────────────────────────────
@@ -90,11 +55,9 @@ void GuiTcpListener::db_disconnect() {
 void GuiTcpListener::start() {
     if (is_running_.exchange(true)) return;
 
-    db_connect();
-
     server_fd_ = static_cast<int>(::socket(AF_INET, SOCK_STREAM, 0));
     if (server_fd_ < 0) {
-        std::cerr << "[GuiTcpListener] socket() failed" << std::endl;
+        log_err_clt("소켓 생성 실패 | GUI 리스너");
         is_running_.store(false);
         return;
     }
@@ -113,20 +76,20 @@ void GuiTcpListener::start() {
     addr.sin_port        = htons(listen_port_);
 
     if (::bind(server_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        std::cerr << "[GuiTcpListener] bind() failed on port " << listen_port_ << std::endl;
+        log_err_clt("바인드 실패 | 포트=%d", listen_port_);
         CLOSE_SOCK(server_fd_);
         is_running_.store(false);
         return;
     }
     if (::listen(server_fd_, 8) < 0) {
-        std::cerr << "[GuiTcpListener] listen() failed" << std::endl;
+        log_err_clt("리슨 실패 | 포트=%d", listen_port_);
         CLOSE_SOCK(server_fd_);
         is_running_.store(false);
         return;
     }
 
     accept_thread_ = std::thread(&GuiTcpListener::run_accept_loop, this);
-    std::cout << "[GuiTcpListener] listening on :" << listen_port_ << std::endl;
+    log_clt("GUI 리스너 시작 | 포트=%d", listen_port_);
 }
 
 void GuiTcpListener::stop() {
@@ -178,92 +141,42 @@ void GuiTcpListener::route_request(int client_fd, const std::string& remote_addr
 
     switch (protocol_no) {
         case static_cast<int>(ProtocolNo::LOGIN_REQ):
-            handle_login_req(client_fd, json_request);
-            break;
+            handle_login_req(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::LOGOUT_REQ):
-            handle_logout_req(client_fd, json_request);
-            break;
-        case static_cast<int>(ProtocolNo::INSPECT_HISTORY_REQ):
-            handle_inspect_history_req(client_fd, json_request);
-            break;
-        case static_cast<int>(ProtocolNo::STATS_REQ):
-            handle_stats_req(client_fd, json_request);
-            break;
-        case static_cast<int>(ProtocolNo::MODEL_LIST_REQ):
-            handle_model_list_req(client_fd, json_request);
-            break;
-        case static_cast<int>(ProtocolNo::RETRAIN_REQ):
-            handle_retrain_req(client_fd, json_request);
-            break;
+            handle_logout_req(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::REGISTER_REQ):
-            handle_register_req(client_fd, json_request);
-            break;
+            handle_register_req(client_fd, json_request); break;
+        case static_cast<int>(ProtocolNo::INSPECT_HISTORY_REQ):
+            handle_inspect_history_req(client_fd, json_request); break;
+        case static_cast<int>(ProtocolNo::STATS_REQ):
+            handle_stats_req(client_fd, json_request); break;
+        case static_cast<int>(ProtocolNo::MODEL_LIST_REQ):
+            handle_model_list_req(client_fd, json_request); break;
+        case static_cast<int>(ProtocolNo::RETRAIN_REQ):
+            handle_retrain_req(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::EXT_ACK):
-            break; // heartbeat 무시
+            break;
         default:
-            std::cout << "[GuiTcpListener] 미처리 protocol_no=" << protocol_no
-                      << " from " << remote_addr << std::endl;
+            log_clt("미처리 프로토콜 | no=%d ip=%s", protocol_no, remote_addr.c_str());
             break;
     }
 }
 
-// ── 1. LOGIN_REQ(100) → LOGIN_RES(101) ──────────────────────────────
+// ── LOGIN_REQ(100) ───────────────────────────────────────────────────
 
 void GuiTcpListener::handle_login_req(int client_fd, const std::string& json) {
-    // 디버그: 수신된 JSON 전체 출력
-    std::cout << "[GuiTcpListener] LOGIN JSON: " << json.substr(0, 200) << std::endl;
-
     std::string username   = extract_str(json, "username");
     std::string password   = extract_str(json, "password");
     std::string request_id = extract_str(json, "request_id");
 
-    std::cout << "[GuiTcpListener] 파싱 결과 user=[" << username
-              << "] pass=[" << password << "]" << std::endl;
+    log_clt("로그인 요청 | 사용자=%s", username.c_str());
 
-    bool success = false;
-    std::string role, employee_id;
-
-    // DB users 테이블 조회
-    {
-        std::lock_guard<std::mutex> lock(db_mutex_);
-        if (db_conn_) {
-            // SQL Injection 방지
-            char esc_user[256];
-            mysql_real_escape_string(db_conn_, esc_user, username.c_str(), username.size());
-            std::string sql = "SELECT employee_id, role, password_hash FROM users WHERE username='"
-                              + std::string(esc_user) + "' LIMIT 1";
-            if (mysql_query(db_conn_, sql.c_str()) == 0) {
-                MYSQL_RES* res = mysql_store_result(db_conn_);
-                if (res) {
-                    MYSQL_ROW row = mysql_fetch_row(res);
-                    if (row) {
-                        employee_id = row[0] ? row[0] : "";
-                        role        = row[1] ? row[1] : "";
-                        std::string db_password = row[2] ? row[2] : "";
-                        // TODO: bcrypt 검증. 현재는 평문 비교
-                        if (db_password == password) {
-                            success = true;
-                        }
-                    }
-                    mysql_free_result(res);
-                }
-            }
-        }
-    }
-
-    // DB 조회 실패 시 인증 실패 처리 (하드코딩 폴백 없음)
+    auto user = user_dao_.find_by_username(username);
+    bool success = user.found && PasswordHash::verify(password, user.password_hash);
 
     if (success) {
         SessionManager::instance().set_client_info(client_fd, username, 0);
-        // last_login_at 업데이트
-        std::lock_guard<std::mutex> lock(db_mutex_);
-        if (db_conn_) {
-            char esc_user2[256];
-            mysql_real_escape_string(db_conn_, esc_user2, username.c_str(), username.size());
-            std::string sql = "UPDATE users SET last_login_at=NOW() WHERE username='"
-                              + std::string(esc_user2) + "'";
-            mysql_query(db_conn_, sql.c_str());
-        }
+        user_dao_.update_last_login(username);
     }
 
     std::ostringstream os;
@@ -272,17 +185,19 @@ void GuiTcpListener::handle_login_req(int client_fd, const std::string& json) {
        << ",\"request_id\":\"" << request_id << "\""
        << ",\"success\":" << (success ? "true" : "false")
        << ",\"username\":\"" << username << "\""
-       << ",\"role\":\"" << role << "\""
-       << ",\"employee_id\":\"" << employee_id << "\""
+       << ",\"role\":\"" << user.role << "\""
+       << ",\"employee_id\":\"" << user.employee_id << "\""
        << ",\"message\":\"" << (success ? "로그인 성공" : "인증 실패") << "\""
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 
     send_json(client_fd, os.str());
-    std::cout << "[GuiTcpListener] LOGIN " << (success ? "성공" : "실패")
-              << " user=" << username << std::endl;
+    if (success)
+        log_clt("로그인 성공 | 사용자=%s 권한=%s", username.c_str(), user.role.c_str());
+    else
+        log_err_clt("로그인 실패 | 사용자=%s", username.c_str());
 }
 
-// ── REGISTER_REQ(104) → REGISTER_RES(105) ───────────────────────────
+// ── REGISTER_REQ(104) ────────────────────────────────────────────────
 
 void GuiTcpListener::handle_register_req(int client_fd, const std::string& json) {
     std::string username    = extract_str(json, "username");
@@ -291,56 +206,19 @@ void GuiTcpListener::handle_register_req(int client_fd, const std::string& json)
     std::string role        = extract_str(json, "role");
     std::string request_id  = extract_str(json, "request_id");
 
-    std::cout << "[GuiTcpListener] REGISTER_REQ user=[" << username
-              << "] emp=[" << employee_id << "] role=[" << role << "]" << std::endl;
+    log_clt("회원가입 요청 | 사용자=%s 사원ID=%s 권한=%s",
+            username.c_str(), employee_id.c_str(), role.c_str());
 
     bool success = false;
     std::string message;
 
-    {
-        std::lock_guard<std::mutex> lock(db_mutex_);
-        if (!db_conn_) {
-            message = "DB 연결 실패";
-        } else {
-            // SQL Injection 방지: mysql_real_escape_string 사용
-            char esc_user[256], esc_pass[512], esc_emp[128], esc_role[64];
-            mysql_real_escape_string(db_conn_, esc_user, username.c_str(), username.size());
-            mysql_real_escape_string(db_conn_, esc_pass, password.c_str(), password.size());
-            mysql_real_escape_string(db_conn_, esc_emp,  employee_id.c_str(), employee_id.size());
-            mysql_real_escape_string(db_conn_, esc_role, role.c_str(), role.size());
-
-            // 중복 사용자 확인
-            std::string check_sql = "SELECT id FROM users WHERE username='"
-                                    + std::string(esc_user) + "' LIMIT 1";
-            if (mysql_query(db_conn_, check_sql.c_str()) == 0) {
-                MYSQL_RES* res = mysql_store_result(db_conn_);
-                if (res) {
-                    if (mysql_fetch_row(res)) {
-                        message = "이미 존재하는 사용자입니다.";
-                    }
-                    mysql_free_result(res);
-                }
-            }
-
-            if (message.empty()) {
-                // INSERT — TODO: bcrypt 해시 적용
-                std::string insert_sql =
-                    "INSERT INTO users (employee_id, username, password_hash, role, created_at) "
-                    "VALUES ('"
-                    + std::string(esc_emp) + "','"
-                    + std::string(esc_user) + "','"
-                    + std::string(esc_pass) + "','"
-                    + std::string(esc_role) + "',NOW())";
-
-                if (mysql_query(db_conn_, insert_sql.c_str()) == 0) {
-                    success = true;
-                    message = "회원가입 성공";
-                } else {
-                    message = "DB 오류: ";
-                    message += mysql_error(db_conn_);
-                }
-            }
-        }
+    if (user_dao_.exists(username)) {
+        message = "이미 존재하는 사용자입니다.";
+    } else if (user_dao_.insert(employee_id, username, password, role)) {
+        success = true;
+        message = "회원가입 성공";
+    } else {
+        message = "DB 오류";
     }
 
     std::ostringstream os;
@@ -352,11 +230,13 @@ void GuiTcpListener::handle_register_req(int client_fd, const std::string& json)
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 
     send_json(client_fd, os.str());
-    std::cout << "[GuiTcpListener] REGISTER " << (success ? "성공" : "실패")
-              << " user=" << username << " msg=" << message << std::endl;
+    if (success)
+        log_clt("회원가입 성공 | 사용자=%s", username.c_str());
+    else
+        log_err_clt("회원가입 실패 | 사용자=%s 사유=%s", username.c_str(), message.c_str());
 }
 
-// ── 2. LOGOUT_REQ(102) → LOGOUT_RES(103) ────────────────────────────
+// ── LOGOUT_REQ(102) ──────────────────────────────────────────────────
 
 void GuiTcpListener::handle_logout_req(int client_fd, const std::string& json) {
     std::string username = extract_str(json, "username");
@@ -369,10 +249,10 @@ void GuiTcpListener::handle_logout_req(int client_fd, const std::string& json) {
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 
     send_json(client_fd, os.str());
-    std::cout << "[GuiTcpListener] LOGOUT user=" << username << std::endl;
+    log_clt("로그아웃 | 사용자=%s", username.c_str());
 }
 
-// ── 3. INSPECT_HISTORY_REQ(114) → INSPECT_HISTORY_RES(115) ──────────
+// ── INSPECT_HISTORY_REQ(114) ─────────────────────────────────────────
 
 void GuiTcpListener::handle_inspect_history_req(int client_fd, const std::string& json) {
     std::string request_id = extract_str(json, "request_id");
@@ -380,60 +260,36 @@ void GuiTcpListener::handle_inspect_history_req(int client_fd, const std::string
     std::string date_from  = extract_str(json, "date_from");
     std::string date_to    = extract_str(json, "date_to");
     int limit              = extract_int(json, "limit");
-    if (limit <= 0 || limit > 500) limit = 100;
+
+    auto records = stats_dao_.get_history(station_filter, date_from, date_to, limit);
 
     std::ostringstream items;
-    int count = 0;
-
-    {
-        std::lock_guard<std::mutex> lock(db_mutex_);
-        if (db_conn_) {
-            std::ostringstream sql;
-            sql << "SELECT id, station_id, timestamp, result, confidence, "
-                << "defect_type, image_path, latency_ms FROM inspections WHERE 1=1";
-            if (station_filter > 0)
-                sql << " AND station_id=" << station_filter;
-            if (!date_from.empty())
-                sql << " AND timestamp>='" << date_from << "'";
-            if (!date_to.empty())
-                sql << " AND timestamp<='" << date_to << " 23:59:59'";
-            sql << " ORDER BY id DESC LIMIT " << limit;
-
-            if (mysql_query(db_conn_, sql.str().c_str()) == 0) {
-                MYSQL_RES* res = mysql_store_result(db_conn_);
-                if (res) {
-                    MYSQL_ROW row;
-                    while ((row = mysql_fetch_row(res))) {
-                        if (count > 0) items << ",";
-                        items << "{\"id\":" << (row[0] ? row[0] : "0")
-                              << ",\"station_id\":" << (row[1] ? row[1] : "0")
-                              << ",\"timestamp\":\"" << (row[2] ? row[2] : "") << "\""
-                              << ",\"result\":\"" << (row[3] ? row[3] : "") << "\""
-                              << ",\"confidence\":" << (row[4] ? row[4] : "0")
-                              << ",\"defect_type\":\"" << (row[5] ? row[5] : "") << "\""
-                              << ",\"image_path\":\"" << (row[6] ? row[6] : "") << "\""
-                              << ",\"latency_ms\":" << (row[7] ? row[7] : "0")
-                              << "}";
-                        count++;
-                    }
-                    mysql_free_result(res);
-                }
-            }
-        }
+    for (size_t i = 0; i < records.size(); ++i) {
+        const auto& r = records[i];
+        if (i > 0) items << ",";
+        items << "{\"id\":" << r.id
+              << ",\"station_id\":" << r.station_id
+              << ",\"timestamp\":\"" << r.timestamp << "\""
+              << ",\"result\":\"" << r.result << "\""
+              << ",\"confidence\":" << r.confidence
+              << ",\"defect_type\":\"" << r.defect_type << "\""
+              << ",\"image_path\":\"" << r.image_path << "\""
+              << ",\"latency_ms\":" << r.latency_ms
+              << "}";
     }
 
     std::ostringstream os;
     os << "{\"protocol_no\":115"
        << ",\"request_id\":\"" << request_id << "\""
-       << ",\"count\":" << count
+       << ",\"count\":" << records.size()
        << ",\"items\":[" << items.str() << "]"
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 
     send_json(client_fd, os.str());
-    std::cout << "[GuiTcpListener] INSPECT_HISTORY 응답 " << count << "건" << std::endl;
+    log_clt("검사이력 응답 | %zu건", records.size());
 }
 
-// ── 4. STATS_REQ(130) → STATS_RES(131) ──────────────────────────────
+// ── STATS_REQ(130) ───────────────────────────────────────────────────
 
 void GuiTcpListener::handle_stats_req(int client_fd, const std::string& json) {
     std::string request_id = extract_str(json, "request_id");
@@ -441,122 +297,58 @@ void GuiTcpListener::handle_stats_req(int client_fd, const std::string& json) {
     std::string date_from  = extract_str(json, "date_from");
     std::string date_to    = extract_str(json, "date_to");
 
-    int total = 0, ok_count = 0, ng_count = 0;
-    int s1_ok = 0, s1_ng = 0, s2_ok = 0, s2_ng = 0;
-    double avg_latency = 0.0;
-
-    {
-        std::lock_guard<std::mutex> lock(db_mutex_);
-        if (db_conn_) {
-            std::ostringstream sql;
-            sql << "SELECT station_id, result, COUNT(*), AVG(latency_ms) "
-                << "FROM inspections WHERE 1=1";
-            if (station_filter > 0)
-                sql << " AND station_id=" << station_filter;
-            if (!date_from.empty())
-                sql << " AND timestamp>='" << date_from << "'";
-            if (!date_to.empty())
-                sql << " AND timestamp<='" << date_to << " 23:59:59'";
-            sql << " GROUP BY station_id, result";
-
-            if (mysql_query(db_conn_, sql.str().c_str()) == 0) {
-                MYSQL_RES* res = mysql_store_result(db_conn_);
-                if (res) {
-                    MYSQL_ROW row;
-                    double lat_sum = 0; int lat_cnt = 0;
-                    while ((row = mysql_fetch_row(res))) {
-                        int sid = row[0] ? std::atoi(row[0]) : 0;
-                        std::string result = row[1] ? row[1] : "";
-                        int cnt = row[2] ? std::atoi(row[2]) : 0;
-                        double lat = row[3] ? std::atof(row[3]) : 0;
-
-                        total += cnt;
-                        lat_sum += lat * cnt; lat_cnt += cnt;
-
-                        if (result == "ok") {
-                            ok_count += cnt;
-                            if (sid == 1) s1_ok += cnt; else s2_ok += cnt;
-                        } else {
-                            ng_count += cnt;
-                            if (sid == 1) s1_ng += cnt; else s2_ng += cnt;
-                        }
-                    }
-                    if (lat_cnt > 0) avg_latency = lat_sum / lat_cnt;
-                    mysql_free_result(res);
-                }
-            }
-        }
-    }
-
-    double ng_rate = total > 0 ? (100.0 * ng_count / total) : 0.0;
+    auto s = stats_dao_.get_stats(station_filter, date_from, date_to);
 
     std::ostringstream os;
     os << std::fixed << std::setprecision(2);
     os << "{\"protocol_no\":131"
        << ",\"request_id\":\"" << request_id << "\""
-       << ",\"total\":" << total
-       << ",\"ok_count\":" << ok_count
-       << ",\"ng_count\":" << ng_count
-       << ",\"ng_rate\":" << ng_rate
-       << ",\"s1_ok\":" << s1_ok << ",\"s1_ng\":" << s1_ng
-       << ",\"s2_ok\":" << s2_ok << ",\"s2_ng\":" << s2_ng
-       << ",\"avg_latency_ms\":" << avg_latency
+       << ",\"total\":" << s.total
+       << ",\"ok_count\":" << s.ok_count
+       << ",\"ng_count\":" << s.ng_count
+       << ",\"ng_rate\":" << s.ng_rate
+       << ",\"s1_ok\":" << s.s1_ok << ",\"s1_ng\":" << s.s1_ng
+       << ",\"s2_ok\":" << s.s2_ok << ",\"s2_ng\":" << s.s2_ng
+       << ",\"avg_latency_ms\":" << s.avg_latency
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 
     send_json(client_fd, os.str());
-    std::cout << "[GuiTcpListener] STATS 응답 total=" << total
-              << " ng_rate=" << ng_rate << "%" << std::endl;
+    log_clt("통계 응답 | total=%d ng_rate=%.1f%%", s.total, s.ng_rate);
 }
 
-// ── 5. MODEL_LIST_REQ(150) → MODEL_LIST_RES(151) ────────────────────
+// ── MODEL_LIST_REQ(150) ──────────────────────────────────────────────
 
 void GuiTcpListener::handle_model_list_req(int client_fd, const std::string& json) {
     std::string request_id = extract_str(json, "request_id");
 
+    auto models = model_dao_.list_all();
+
     std::ostringstream items;
-    int count = 0;
-
-    {
-        std::lock_guard<std::mutex> lock(db_mutex_);
-        if (db_conn_) {
-            const char* sql =
-                "SELECT id, station_id, model_type, version, accuracy, "
-                "deployed_at, is_active FROM models ORDER BY id DESC";
-
-            if (mysql_query(db_conn_, sql) == 0) {
-                MYSQL_RES* res = mysql_store_result(db_conn_);
-                if (res) {
-                    MYSQL_ROW row;
-                    while ((row = mysql_fetch_row(res))) {
-                        if (count > 0) items << ",";
-                        items << "{\"id\":" << (row[0] ? row[0] : "0")
-                              << ",\"station_id\":" << (row[1] ? row[1] : "0")
-                              << ",\"model_type\":\"" << (row[2] ? row[2] : "") << "\""
-                              << ",\"version\":\"" << (row[3] ? row[3] : "") << "\""
-                              << ",\"accuracy\":" << (row[4] ? row[4] : "0")
-                              << ",\"deployed_at\":\"" << (row[5] ? row[5] : "") << "\""
-                              << ",\"is_active\":" << (row[6] ? row[6] : "0")
-                              << "}";
-                        count++;
-                    }
-                    mysql_free_result(res);
-                }
-            }
-        }
+    for (size_t i = 0; i < models.size(); ++i) {
+        const auto& m = models[i];
+        if (i > 0) items << ",";
+        items << "{\"id\":" << m.id
+              << ",\"station_id\":" << m.station_id
+              << ",\"model_type\":\"" << m.model_type << "\""
+              << ",\"version\":\"" << m.version << "\""
+              << ",\"accuracy\":" << m.accuracy
+              << ",\"deployed_at\":\"" << m.deployed_at << "\""
+              << ",\"is_active\":" << m.is_active
+              << "}";
     }
 
     std::ostringstream os;
     os << "{\"protocol_no\":151"
        << ",\"request_id\":\"" << request_id << "\""
-       << ",\"count\":" << count
+       << ",\"count\":" << models.size()
        << ",\"items\":[" << items.str() << "]"
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 
     send_json(client_fd, os.str());
-    std::cout << "[GuiTcpListener] MODEL_LIST 응답 " << count << "건" << std::endl;
+    log_clt("모델목록 응답 | %zu건", models.size());
 }
 
-// ── 6. RETRAIN_REQ(152) → RETRAIN_RES(153) ──────────────────────────
+// ── RETRAIN_REQ(152) ─────────────────────────────────────────────────
 
 void GuiTcpListener::handle_retrain_req(int client_fd, const std::string& json) {
     std::string request_id   = extract_str(json, "request_id");
@@ -565,18 +357,54 @@ void GuiTcpListener::handle_retrain_req(int client_fd, const std::string& json) 
     std::string product_name = extract_str(json, "product_name");
     int image_count          = extract_int(json, "image_count");
 
-    // TODO: 학습서버(9100)에 TRAIN_START_REQ(1100) TCP 전달
-    // 현재는 요청 접수 응답만 전송
-    std::cout << "[GuiTcpListener] RETRAIN 요청 접수 station=" << station_id
-              << " model=" << model_type << " images=" << image_count << std::endl;
+    log_train("재학습 요청 접수 | 스테이션=%d 모델=%s 이미지=%d건",
+              station_id, model_type.c_str(), image_count);
+
+    bool train_sent = false;
+    const char* train_host = "10.10.10.130";
+    uint16_t    train_port = 9100;
+
+    int train_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (train_fd >= 0) {
+        struct sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port   = htons(train_port);
+        inet_pton(AF_INET, train_host, &addr.sin_addr);
+
+        struct timeval tv;
+        tv.tv_sec = 3;
+        tv.tv_usec = 0;
+        setsockopt(train_fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
+
+        if (::connect(train_fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
+            std::ostringstream train_os;
+            train_os << "{\"protocol_no\":1100"
+                     << ",\"protocol_version\":\"1.0\""
+                     << ",\"request_id\":\"" << request_id << "\""
+                     << ",\"station_id\":" << station_id
+                     << ",\"model_type\":\"" << model_type << "\""
+                     << ",\"product_name\":\"" << product_name << "\""
+                     << ",\"image_count\":" << image_count
+                     << ",\"timestamp\":\"" << get_timestamp() << "\"}";
+
+            train_sent = send_json(train_fd, train_os.str());
+            if (train_sent)
+                log_train("TRAIN_START_REQ → 학습서버 전송 성공");
+            else
+                log_err_train("TRAIN_START_REQ → 학습서버 전송 실패");
+        } else {
+            log_err_train("학습서버 연결 실패 | %s:%d", train_host, train_port);
+        }
+        ::close(train_fd);
+    }
 
     std::ostringstream os;
     os << "{\"protocol_no\":153"
        << ",\"request_id\":\"" << request_id << "\""
-       << ",\"success\":true"
+       << ",\"success\":" << (train_sent ? "true" : "false")
        << ",\"station_id\":" << station_id
        << ",\"model_type\":\"" << model_type << "\""
-       << ",\"message\":\"재학습 요청 접수\""
+       << ",\"message\":\"" << (train_sent ? "재학습 요청 전달 완료" : "학습서버 연결 실패") << "\""
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 
     send_json(client_fd, os.str());

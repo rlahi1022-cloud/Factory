@@ -36,10 +36,12 @@ Camera → AI Server → Main Server → DB → MFC Client
 
 * **MainServer (C++17)**
 
-  * EventBus 아키텍처 (느슨한 결합, 확장 가능)
+  * EventBus (워커 풀 4스레드 병렬 처리) + Service 레이어 아키텍처
+  * Handler → Service(검증+트랜잭션) → DAO(DB) 계층 분리
+  * ConnectionPool (4개 DB 커넥션 공유)
+  * bcrypt 비밀번호 해시 (glibc crypt_r)
   * 추론서버 수신 (포트 9000) + GUI 클라이언트 수신 (포트 9010)
-  * MariaDB prepared statement INSERT
-  * NG 이미지 파일 저장
+  * 모델 바이너리 TCP 중계 (학습서버 → 메인서버 → 추론서버)
   * SessionManager를 통한 MFC 클라이언트 broadcast
 
 * **Training Server (Python)**
@@ -74,12 +76,15 @@ Camera → AI Server → Main Server → DB → MFC Client
 
 ## 핵심 설계 특징
 
-* EventBus 기반 서버 아키텍처 (확장성)
+* EventBus + Service 레이어 서버 아키텍처 (책임 분리)
+* Handler → Service → DAO 3계층 구조 (검증 + 트랜잭션 + 롤백)
+* ConnectionPool 기반 DB 커넥션 관리
 * asyncio.Queue 기반 비동기 처리 (Backpressure 대응)
 * NG 중심 전송 구조 (트래픽 최적화)
 * inspection_id 기반 end-to-end 추적
 * ACK / 재전송 기반 데이터 신뢰성 확보
 * MariaDB prepared statement (SQL injection 방지)
+* 모델 바이너리 TCP 전송 (학습서버 → 메인서버 → 추론서버)
 * SessionManager 기반 다중 GUI 클라이언트 broadcast
 
 ---
@@ -157,19 +162,33 @@ python -m Station2.Station2Main      # 조립 검사
 * MariaDB 연동 (prepared statement)
 * SessionManager + GuiNotifier (MFC broadcast)
 * 학습 서버 (PatchCore / YOLO11)
+* 학습서버 ↔ 메인서버 연동 (TRAIN_PROGRESS/COMPLETE/FAIL 수신 → DB models INSERT → GUI 푸시)
+* 메인서버 → 학습서버 TRAIN_START_REQ 전송 (클라이언트 재학습 버튼 연동)
+* MFC 클라이언트 전체 프로토콜 구현 (100~199)
+  * 로그인/회원가입 — DB 기반 인증 (하드코딩 제거)
+  * 검사 이력 조회, 통계 조회, 모델 목록 조회
+  * 재학습 요청/진행률 실시간 수신
+* 한글 행동 중심 로그 시스템 (logger.h — 이모지 prefix, 역할별 분류)
+* 전체 메인서버 코드 한글 주석
 * 테스트 스크립트 + 더미 데이터 생성기
 
 ### 미완성
 
-* MFC 클라이언트 요청 처리 (protocol 100~199 파싱)
-* HealthChecker 실제 PING/PONG JSON 교환
-* DB 테이블 bottle_id, model_id NULL 허용 ALTER 필요
+* CSV 내보내기 기능 (클라이언트)
+* NG 이미지 UI 표시 (클라이언트)
 
 ---
 
 ## 향후 계획
 
-* MFC 클라이언트 요청 핸들러 구현 (로그인, 이력 조회, 통계)
+* Pylon 카메라 SDK 연동 (현재 더미 이미지)
+* Arduino 실제 시리얼 통신 연동
+
+---
+
+## 향후 계획
+
 * HealthChecker PING/PONG 프로토콜 완성
 * Pylon 카메라 SDK 연동 (현재 더미 이미지)
+* 비밀번호 bcrypt 해시 적용
 * 모델 정확도 개선 및 최적화

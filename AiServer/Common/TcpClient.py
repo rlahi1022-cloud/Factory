@@ -291,10 +291,11 @@ class TcpClient:
                     logger.error("receiver: invalid JSON: %s", exc)
                     continue
 
-                # 이미지 데이터가 있으면 읽어서 버리기 (ACK에는 이미지가 없지만 안전 처리)
+                # 바이너리 데이터 수신 (이미지 또는 모델 파일)
                 image_size = int(msg_dict.get("image_size", 0))
+                binary_data: bytes | None = None
                 if image_size > 0:
-                    await self._reader.readexactly(image_size)
+                    binary_data = await self._reader.readexactly(image_size)
 
                 # 메시지 번호로 분기 처리
                 protocol_no = msg_dict.get("protocol_no", 0)
@@ -304,8 +305,11 @@ class TcpClient:
                     await self._handle_health_ping(msg_dict)
                     continue
 
-                # ── MODEL_RELOAD_CMD(1010) → 모델 리로드 + 응답 ──
+                # ── MODEL_RELOAD_CMD(1010) → 모델 파일 저장 + 리로드 + 응답 ──
                 if protocol_no == ProtocolNo.MODEL_RELOAD_CMD:
+                    # 모델 바이너리가 있으면 cmd_dict에 첨부하여 콜백에 전달
+                    if binary_data:
+                        msg_dict["_model_bytes"] = binary_data
                     await self._handle_model_reload(msg_dict)
                     continue
 
@@ -355,21 +359,38 @@ class TcpClient:
         Args:
             cmd_dict: 수신한 명령 내용 (model_path, version, request_id 포함)
         """
-        request_id = cmd_dict.get("request_id", "")  # 요청/응답 매칭용 ID
-        model_path = cmd_dict.get("model_path", "")  # 새 모델 파일 경로
-        version = cmd_dict.get("version", "")         # 모델 버전
+        request_id = cmd_dict.get("request_id", "")
+        model_path = cmd_dict.get("model_path", "")
+        version = cmd_dict.get("version", "")
+        model_bytes: bytes | None = cmd_dict.pop("_model_bytes", None)
+
+        # 모델 바이너리가 있으면 로컬에 저장한다
+        if model_bytes:
+            import os
+            # 원본 확장자 유지 (예: .pt, .ckpt)
+            ext = os.path.splitext(model_path)[1] if model_path else ".bin"
+            save_dir = os.path.join(".", "models")
+            os.makedirs(save_dir, exist_ok=True)
+            local_path = os.path.join(save_dir, f"{version}{ext}")
+            try:
+                with open(local_path, "wb") as f:
+                    f.write(model_bytes)
+                logger.info("모델 파일 저장 완료: %s (%d bytes)", local_path, len(model_bytes))
+                # 콜백에 전달할 경로를 로컬 저장 경로로 교체
+                cmd_dict["model_path"] = local_path
+            except Exception as exc:
+                logger.error("모델 파일 저장 실패: %s", exc)
 
         success = False
         if self._on_model_reload is not None:
             try:
-                # 등록된 콜백 함수 호출 (StationRunner._handle_model_reload)
                 self._on_model_reload(cmd_dict)
                 success = True
-                logger.info("Model reload success: path=%s version=%s", model_path, version)
+                logger.info("모델 리로드 성공: path=%s version=%s", model_path, version)
             except Exception as exc:
-                logger.error("Model reload failed: %s", exc)
+                logger.error("모델 리로드 실패: %s", exc)
         else:
-            logger.warning("No model reload callback registered")
+            logger.warning("모델 리로드 콜백 미등록")
 
         # MODEL_RELOAD_RES(1011) 응답: 성공/실패 결과를 운용서버에 알림
         res_body = {

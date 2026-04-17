@@ -1,37 +1,48 @@
 #pragma once
-// Protocol.h
-// AI 추론 서버 <-> 메인 운영 서버 간 통신 프로토콜 정의
+// ============================================================================
+// Protocol.h — 공장 품질관리 시스템 통신 프로토콜 정의
+// ============================================================================
+// AI 추론 서버 <-> 메인 운영 서버 간 바이너리+JSON 프로토콜을 정의한다.
 //
-// 패킷 구조:
-//   [4byte length(JSON size, big-endian)] + [JSON payload] + [Image binary (있을 때만)]
+// 패킷 구조 (TCP 스트림):
+//   ┌──────────────────┬──────────────┬──────────────────────┐
+//   │ 4바이트 길이      │ JSON 페이로드 │ 이미지 바이너리 (선택) │
+//   │ (big-endian,      │              │ image_size > 0일 때   │
+//   │  JSON 크기만)     │              │ JSON 뒤에 이어붙임    │
+//   └──────────────────┴──────────────┴──────────────────────┘
 //
 // JSON 본문 공통 필드 (요구사항 분석서 "공통 패킷 구조" 기준):
-//   - protocol_no    : int      (필수, 메시지 번호)
-//   - protocol_version : string (필수)
-//   - inspection_id  : string   (검사 결과 계열에서 필수)
-//   - request_id     : string   (요청/응답 매칭용, optional)
-//   - station_id     : int
-//   - timestamp      : string   (ISO8601)
-//   - image_size     : int      (NG 이미지 동봉 시)
+//   - protocol_no      : int     (필수, 메시지 번호 — 아래 ProtocolNo enum)
+//   - protocol_version : string  (필수, "1.0")
+//   - inspection_id    : string  (검사 결과 계열에서 필수)
+//   - request_id       : string  (요청/응답 매칭용, optional)
+//   - station_id       : int     (1=입고, 2=조립)
+//   - timestamp        : string  (ISO8601)
+//   - image_size       : int     (NG 이미지 동봉 시, 바이트 단위)
 //
-// 외부(MFC ↔ 운용)는 100~199, 내부(운용 ↔ 추론/학습)는 1000~1999.
+// 번호 대역:
+//   외부(MFC 클라이언트 ↔ 운영서버): 100~199
+//   내부(운영서버 ↔ 추론/학습서버):  1000~1999
+// ============================================================================
 
 #include <cstdint>
 
 namespace factory {
 
-constexpr std::size_t HEADER_SIZE      = 4;
-constexpr uint16_t    MAIN_SERVER_PORT = 9000;
-constexpr const char* FACTORY_PROTOCOL_VERSION = "1.0";
+constexpr std::size_t HEADER_SIZE      = 4;      // JSON 길이 헤더 크기 (big-endian 4바이트)
+constexpr uint16_t    MAIN_SERVER_PORT = 9000;    // 메인 운영서버 TCP 리슨 포트
+constexpr const char* FACTORY_PROTOCOL_VERSION = "1.0";  // 프로토콜 버전 문자열
 
+// 스테이션(검사 공정) 식별자
 enum class StationId : int {
-    INBOUND  = 1,
-    ASSEMBLY = 2,
+    INBOUND  = 1,   // Station1: 입고 검사 (양품/불량 분류)
+    ASSEMBLY = 2,   // Station2: 조립 검사 (캡/라벨/충전 상태 + 이상 탐지)
 };
 
-// 메시지 번호 enum (정수값 그대로 wire에 실림)
+// 메시지 번호 enum — JSON의 "protocol_no" 필드에 정수값 그대로 전송된다.
+// 홀수는 응답/ACK, 짝수는 요청/데이터 전송이 일반적인 관례.
 enum class ProtocolNo : int {
-    // ===== 외부 100~199 (MFC ↔ 운용) — 추후 구현, 번호만 예약 =====
+    // ===== 외부 100~199 (MFC 클라이언트 ↔ 운영서버) — 추후 구현, 번호만 예약 =====
     LOGIN_REQ              = 100,
     LOGIN_RES              = 101,
     LOGOUT_REQ             = 102,
@@ -95,7 +106,8 @@ enum class ProtocolNo : int {
     INTERNAL_ERROR         = 1904,
 };
 
-// ACK 필수 여부 판정
+// 해당 프로토콜 번호가 ACK 응답을 필수로 요구하는지 판정한다.
+// ACK가 필요한 메시지는 타임아웃 내 응답이 없으면 재전송 대상이 된다.
 inline bool requires_ack(ProtocolNo no) {
     switch (no) {
         case ProtocolNo::STATION1_NG:
@@ -111,7 +123,8 @@ inline bool requires_ack(ProtocolNo no) {
     }
 }
 
-// NG 패킷 → 대응 ACK 번호
+// NG(불량) 데이터 패킷 번호로부터 대응하는 ACK 패킷 번호를 반환한다.
+// 매핑되지 않는 번호는 범용 INTERNAL_ACK로 대체한다.
 inline ProtocolNo ack_no_for(ProtocolNo ng_no) {
     switch (ng_no) {
         case ProtocolNo::STATION1_NG: return ProtocolNo::STATION1_NG_ACK;

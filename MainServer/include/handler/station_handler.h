@@ -1,30 +1,34 @@
+// ============================================================================
+// station_handler.h — 스테이션별 검사 이벤트 핸들러
+// ============================================================================
+// INSPECTION_INBOUND/ASSEMBLY 이벤트 수신 → InspectionService 호출
+// 결과에 따라 ACK/NACK + GUI 푸시 이벤트 발행
+// ============================================================================
 #pragma once
-// StationHandler.h
-// INSPECTION_INBOUND / INSPECTION_ASSEMBLY 이벤트를 받아 도메인 검증 후
-// INSPECTION_VALIDATED, IMAGE_SAVE_REQUESTED, DB_WRITE_REQUESTED, GUI_PUSH_REQUESTED를 발행.
 
 #include "core/event_bus.h"
+#include "service/inspection_service.h"
 
 namespace factory {
 
 class Station1Handler {
 public:
-    explicit Station1Handler(EventBus& bus);
+    Station1Handler(EventBus& bus, InspectionService& service);
     void register_handlers();
-
 private:
     void on_inspection(const std::any& payload);
     EventBus& event_bus_;
+    InspectionService& service_;
 };
 
 class Station2Handler {
 public:
-    explicit Station2Handler(EventBus& bus);
+    Station2Handler(EventBus& bus, InspectionService& service);
     void register_handlers();
-
 private:
     void on_inspection(const std::any& payload);
     EventBus& event_bus_;
+    InspectionService& service_;
 };
 
 } // namespace factory

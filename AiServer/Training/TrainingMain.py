@@ -635,23 +635,40 @@ class TrainingServer:
           없음 (None)
         """
         # 학습 완료 정보를 패킷 본문으로 구성한다.
+        model_path = result.get("model_path", "")
         body = {
-            "model_path": result.get("model_path", ""),  # 저장된 모델 파일 경로
+            "model_path": model_path,                     # 원본 모델 파일 경로 (학습서버 로컬)
             "version": result.get("version", ""),         # 모델 버전
             "accuracy": result.get("accuracy", 0.0),      # 정확도 (AUROC 또는 mAP50)
             "message": result.get("message", ""),          # 결과 설명 메시지
         }
 
+        # 모델 파일을 바이너리로 읽어서 패킷에 첨부한다.
+        # 메인서버(다른 PC)에서 모델 파일을 저장할 수 있도록 TCP로 전송.
+        model_bytes: bytes | None = None
+        if model_path:
+            try:
+                with open(model_path, "rb") as f:
+                    model_bytes = f.read()
+                logger.info("모델 파일 읽기 완료: %s (%d bytes)",
+                            model_path, len(model_bytes))
+            except Exception as exc:
+                logger.warning("모델 파일 읽기 실패: %s — %s", model_path, exc)
+
         # TRAIN_COMPLETE 패킷을 만들어 전송한다.
+        # image_bytes 파라미터에 모델 바이너리를 실어 보낸다.
+        # 패킷 구조: [4바이트 헤더] + [JSON(image_size=N)] + [모델 바이너리(N bytes)]
         packet = PacketBuilder.build_packet(
-            protocol_no=int(ProtocolNo.TRAIN_COMPLETE),  # 프로토콜 번호 1104
+            protocol_no=int(ProtocolNo.TRAIN_COMPLETE),
             body_dict=body,
             request_id=request_id,
+            image_bytes=model_bytes,
         )
         await self._send_to_main(packet)
 
-        # 완료 로그를 남긴다.
-        logger.info("TRAIN_COMPLETE sent: %s", result.get("message"))
+        logger.info("TRAIN_COMPLETE sent: %s (model=%d bytes)",
+                    result.get("message"),
+                    len(model_bytes) if model_bytes else 0)
 
     async def _send_train_fail(self, result: dict, request_id: str) -> None:
         """TRAIN_FAIL(1106) 패킷을 운용서버에 전송한다.
