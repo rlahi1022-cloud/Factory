@@ -34,7 +34,7 @@
 | 103 | LOGOUT_RES | 운용 → MFC | ✅ 완성 |
 | 104 | REGISTER_REQ | MFC → 운용 | ✅ 완성 (DB INSERT) |
 | 105 | REGISTER_RES | 운용 → MFC | ✅ 완성 |
-| 110 | INSPECT_NG_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
+| 110 | INSPECT_NG_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier, 이미지 바이너리 첨부) |
 | 112 | INSPECT_OK_COUNT_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
 | 114 | INSPECT_HISTORY_REQ | MFC → 운용 | ✅ 완성 (DB 조회) |
 | 115 | INSPECT_HISTORY_RES | 운용 → MFC | ✅ 완성 |

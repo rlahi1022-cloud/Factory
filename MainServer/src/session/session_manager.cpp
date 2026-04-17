@@ -76,6 +76,33 @@ void SessionManager::broadcast(const std::string& json_message, int station_filt
     }
 }
 
+void SessionManager::broadcast_with_binary(const std::string& json_message,
+                                            const std::vector<uint8_t>& binary_data,
+                                            int station_filter) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [fd, session] : sessions_) {
+        if (station_filter != 0 &&
+            session.subscribed_station != 0 &&
+            session.subscribed_station != station_filter) {
+            continue;
+        }
+        // [4바이트 헤더] + [JSON] + [이미지 바이너리]
+        if (!send_json(fd, json_message)) {
+            log_err_push("브로드캐스트 실패 | fd=%d ip=%s", fd,
+                         session.remote_addr.c_str());
+            continue;
+        }
+        if (!binary_data.empty()) {
+            int sent = static_cast<int>(::send(fd,
+                reinterpret_cast<const char*>(binary_data.data()),
+                static_cast<int>(binary_data.size()), 0));
+            if (sent != static_cast<int>(binary_data.size())) {
+                log_err_push("이미지 전송 실패 | fd=%d size=%zu", fd, binary_data.size());
+            }
+        }
+    }
+}
+
 bool SessionManager::send_to(int client_fd, const std::string& json_message) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = sessions_.find(client_fd);

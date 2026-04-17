@@ -174,8 +174,8 @@ python -m Station2.Station2Main      # 조립 검사
 
 ### 미완성
 
-* CSV 내보내기 기능 (클라이언트)
-* NG 이미지 UI 표시 (클라이언트)
+* NG 이미지 CameraView 렌더링 (클라이언트)
+* 카메라 실시간 연동 (하드웨어)
 
 ---
 

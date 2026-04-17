@@ -126,7 +126,7 @@ client/
 | 101 | LOGIN_RES | OnLoginRes() | ✅ 완성 |
 | 103 | LOGOUT_RES | OnNetResponse() | ✅ 완성 |
 | 105 | REGISTER_RES | OnRegisterRes() | ✅ 완성 |
-| 110 | INSPECT_NG_PUSH | OnNetNgPush() | ✅ 완성 |
+| 110 | INSPECT_NG_PUSH | OnNetNgPush() | ✅ 완성 (JSON + 이미지 바이너리) |
 | 112 | INSPECT_OK_COUNT_PUSH | OnNetOkCountPush() | ✅ 완성 |
 | 115 | INSPECT_HISTORY_RES | OnNetResponse() | ✅ 완성 |
 | 131 | STATS_RES | OnNetResponse() | ✅ 완성 |
@@ -182,6 +182,5 @@ TestPacketBuilder.exe
 
 ### 미완성
 
-- CSV 내보내기
-- NG 이미지 UI 표시
+- NG 이미지 UI 표시 (바이너리 수신은 구현, CameraView 렌더링 미구현)
 - 카메라 실시간 연동 (현재 시뮬레이션 뷰)

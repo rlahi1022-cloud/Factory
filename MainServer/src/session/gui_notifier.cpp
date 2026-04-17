@@ -48,9 +48,15 @@ void GuiNotifier::on_gui_push(const std::any& payload) {
        << ",\"score\":" << ev.score
        << ",\"latency_ms\":" << ev.latency_ms
        << ",\"timestamp\":\"" << ev.timestamp << "\""
+       << ",\"image_size\":" << ev.image_bytes.size()
        << "}";
 
-    SessionManager::instance().broadcast(os.str(), ev.station_id);
+    if (!ev.image_bytes.empty()) {
+        // 이미지 바이너리를 JSON 뒤에 첨부하여 전송
+        SessionManager::instance().broadcast_with_binary(os.str(), ev.image_bytes, ev.station_id);
+    } else {
+        SessionManager::instance().broadcast(os.str(), ev.station_id);
+    }
     log_push("NG 푸시 | 스테이션=%d 접속자=%zu명", ev.station_id,
              SessionManager::instance().session_count());
 }

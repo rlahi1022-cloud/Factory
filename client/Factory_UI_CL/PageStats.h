@@ -5,6 +5,8 @@
 #include "pch.h"
 #include "Resource.h"
 #include "InspectionData.h"
+#include "NetworkClient.h"
+#include "PacketBuilder.h"
 #include <vector>
 #include <string>
 
@@ -15,11 +17,14 @@ public:
     enum { IDD = IDD_PAGE_STATS };
 
     void Update(const std::vector<InspectionRecord>& recs);
-    // 서버 응답 수신 핸들러 (MainTabDlg에서 호출)
-    void OnInspectHistoryRes(const std::string& json);  // 프로토콜 115
-    void OnStatsRes(const std::string& json);           // 프로토콜 131
+    void OnInspectHistoryRes(const std::string& json);
+    void OnStatsRes(const std::string& json);
+
+    // 네트워크 클라이언트 설정 (MainTabDlg에서 호출)
+    void SetNetworkClient(CNetworkClient* net) { m_net = net; }
 
 protected:
+    CNetworkClient* m_net = nullptr;
     std::vector<InspectionRecord> m_recs;
 
     struct TPoint { CString lbl; double s1, s2; int lat; };

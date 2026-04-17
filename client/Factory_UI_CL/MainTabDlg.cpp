@@ -139,9 +139,11 @@ BOOL CMainTabDlg::OnInitDialog()
     // IDT_STATUSBAR: 1초마다 상태바 시각 갱신
     SetTimer(IDT_STATUSBAR, 1000, nullptr);
 
+    // ── 각 페이지에 NetworkClient 주입 ──
+    if (m_stats) m_stats->SetNetworkClient(&m_net);
+    if (m_model) m_model->SetNetworkClient(&m_net);
+
     // ── 네트워크 자동 접속 시도 ──
-    // 서버 IP와 포트는 ClientProtocol.h의 DEFAULT_SERVER_IP에서 설정합니다.
-    // 실패 시 시뮬레이션 모드로 동작하며 10초마다 재접속을 시도합니다.
     ConnectToServer();
 
     // ── 최대화 표시 ──
@@ -469,7 +471,11 @@ void CMainTabDlg::ConnectToServer()
         CString loginJson = CPacketBuilder::BuildLoginReq(
             m_session.username, m_session.password);
         m_net.SendJson(loginJson);
-        TRACE(_T("[MainTabDlg] 서버 접속 + LOGIN_REQ 전송 완료\n"));
+
+        // 접속 직후 초기 데이터 요청
+        if (m_model) m_model->RequestModelList();
+
+        TRACE(_T("[MainTabDlg] 서버 접속 + LOGIN_REQ + 초기 데이터 요청 완료\n"));
     } else {
         TRACE(_T("[MainTabDlg] 서버 자동 접속 실패 — 시뮬레이션 모드\n"));
         SetTimer(IDT_RECONNECT, 10000, nullptr);

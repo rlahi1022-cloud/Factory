@@ -52,6 +52,11 @@ public:
     // station_filter: 0이면 전체, 1/2이면 해당 station 구독자만
     void broadcast(const std::string& json_message, int station_filter = 0);
 
+    // JSON + 바이너리(이미지) broadcast
+    void broadcast_with_binary(const std::string& json_message,
+                               const std::vector<uint8_t>& binary_data,
+                               int station_filter = 0);
+
     // 특정 클라이언트에 JSON 전송
     bool send_to(int client_fd, const std::string& json_message);
 
