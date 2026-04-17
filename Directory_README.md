@@ -58,7 +58,9 @@ MainServer/
 │   │
 │   ├── session/                        # GUI 클라이언트 세션 관리
 │   │   ├── session_manager.h           # 세션 등록/해제/broadcast
-│   │   ├── gui_tcp_listener.h          # MFC 클라이언트 전용 TCP 리스너 (포트 9010)
+│   │   ├── gui_tcp_listener.h          # TCP 수신만 담당 (포트 9010)
+│   │   ├── gui_router.h               # protocol_no별 분기 → GuiService 호출
+│   │   ├── gui_service.h              # 비즈니스 로직 (DAO 호출 + 결과 반환)
 │   │   └── gui_notifier.h              # 이벤트 → SessionManager를 통해 클라이언트 push
 │   │
 │   └── monitor/                        # 모니터링
@@ -84,7 +86,9 @@ MainServer/
     │   └── password_hash.cpp
     ├── session/
     │   ├── session_manager.cpp
-    │   ├── gui_tcp_listener.cpp
+    │   ├── gui_tcp_listener.cpp        # TCP 수신만
+    │   ├── gui_router.cpp              # 프로토콜 라우팅 + JSON 응답
+    │   ├── gui_service.cpp             # DB 조회/저장 로직
     │   └── gui_notifier.cpp
     └── monitor/
         ├── health_checker.cpp

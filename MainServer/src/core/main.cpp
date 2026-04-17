@@ -32,6 +32,7 @@
 #include "service/train_service.h"
 #include "session/gui_notifier.h"
 #include "session/gui_tcp_listener.h"
+#include "session/gui_service.h"
 #include "monitor/health_checker.h"
 #include "Protocol.h"
 
@@ -99,8 +100,10 @@ int main() {
     TcpListener tcp_listener(event_bus, MAIN_SERVER_PORT);
     tcp_listener.start();
 
-    // 4) GUI TCP 리스너 시작 (MFC 클라이언트 접속 — ConnectionPool 공유)
-    GuiTcpListener gui_tcp_listener(event_bus, GUI_LISTEN_PORT, db_pool);
+    // 4) GUI TCP 리스너 시작 (TCP수신 → GuiRouter → GuiService → DAO)
+    GuiService gui_service(db_pool);
+    GuiRouter gui_router(gui_service);
+    GuiTcpListener gui_tcp_listener(event_bus, GUI_LISTEN_PORT, gui_router);
     gui_tcp_listener.start();
 
     // 5) 헬스체크 시작 — ConnectionRegistry 기반 서버 생존 확인

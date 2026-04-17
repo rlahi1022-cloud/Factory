@@ -41,6 +41,8 @@ set(SRC_FILES
     # session
     src/session/gui_notifier.cpp
     src/session/gui_tcp_listener.cpp
+    src/session/gui_router.cpp
+    src/session/gui_service.cpp
     src/session/session_manager.cpp
 
     # monitor
