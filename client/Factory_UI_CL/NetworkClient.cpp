@@ -300,20 +300,50 @@ void CNetworkClient::RecvLoop()
             }
         }
 
-        // ── 2단계: 헤더에서 JSON 크기 추출 ──
+        // ── 2단계: 헤더에서 JSON 크기 추출 (ParseHeader가 64KB 상한 검증) ──
         UINT32 jsonSize = 0;
         if (!CPacketBuilder::ParseHeader(header, jsonSize)) {
             TRACE(_T("[NetworkClient] 비정상 헤더 (size=%u)\n"), jsonSize);
             break;
         }
 
-        // ── 3단계: JSON 본문 수신 ──
-        std::string jsonBuf(jsonSize, '\0');
+        // ── 3단계: JSON 본문 수신 (bad_alloc 방어) ──
+        std::string jsonBuf;
+        try {
+            jsonBuf.assign(jsonSize, '\0');
+        } catch (const std::bad_alloc&) {
+            TRACE(_T("[NetworkClient] JSON 버퍼 할당 실패 (size=%u)\n"), jsonSize);
+            break;
+        }
         if (!RecvN(&jsonBuf[0], static_cast<int>(jsonSize))) {
             break;
         }
 
-        // ── 4단계: 패킷 처리 ──
+        // ── 4단계: 이미지 바이너리 수신 (image_size 존재 시) ──
+        // NG 푸시 시 서버가 JSON 뒤에 이미지를 붙여 보냄. 향후 구현용 선제 방어.
+        CStringA jsonA(jsonBuf.c_str());
+        int imageSize = CPacketBuilder::ExtractInt(jsonA, "image_size");
+        if (imageSize > 0) {
+            // 최대 50MB 상한 — 악성 서버/중간자 공격으로부터 메모리 고갈 방지
+            constexpr int MAX_IMAGE_SIZE = 50 * 1024 * 1024;
+            if (imageSize > MAX_IMAGE_SIZE) {
+                TRACE(_T("[NetworkClient] 이미지 크기 초과: %d bytes — 연결 종료\n"), imageSize);
+                break;
+            }
+            // 일단 버퍼로 비우기만 함 (향후 CameraView 렌더링 구현 시 저장 로직 추가)
+            std::vector<char> imgBuf;
+            try {
+                imgBuf.resize(imageSize);
+            } catch (const std::bad_alloc&) {
+                TRACE(_T("[NetworkClient] 이미지 버퍼 할당 실패 (size=%d)\n"), imageSize);
+                break;
+            }
+            if (!RecvN(imgBuf.data(), imageSize)) {
+                break;
+            }
+        }
+
+        // ── 5단계: 패킷 처리 ──
         OnPacketReceived(jsonBuf);
     }
 
@@ -391,6 +421,7 @@ void CNetworkClient::OnPacketReceived(const std::string& json)
     // protocol_no 추출
     int protocolNo = CPacketBuilder::ExtractInt(jsonA, "protocol_no");
 
+    // 민감정보 노출 방지 — JSON 본문은 로그하지 않고 메타데이터만 출력
     TRACE(_T("[NetworkClient] 수신: protocol_no=%d, size=%d\n"),
         protocolNo, (int)json.size());
 
@@ -452,6 +483,22 @@ void CNetworkClient::SendAckIfNeeded(int protocolNo, const std::string& json)
     CStringA jsonA(json.c_str());
     CStringA inspId = CPacketBuilder::ExtractString(jsonA, "inspection_id");
 
+    // inspection_id 형식 검증 — "stationN-YYYYMMDD..." 패턴
+    // 길이 제한 (최대 128자) + 위험 문자 차단 (injection 방지)
+    if (inspId.IsEmpty() || inspId.GetLength() > 128) {
+        TRACE(_T("[NetworkClient] 비정상 inspection_id — ACK 생략 (len=%d)\n"),
+            inspId.GetLength());
+        return;
+    }
+    for (int i = 0; i < inspId.GetLength(); ++i) {
+        char c = inspId[i];
+        // 영숫자, '-', '_', '.'만 허용
+        if (!(isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.')) {
+            TRACE(_T("[NetworkClient] inspection_id 위험문자 — ACK 생략\n"));
+            return;
+        }
+    }
+
     // 대응하는 ACK 번호 계산
     int ackNo = factory_client::AckNoFor(protocolNo);
 
@@ -459,6 +506,6 @@ void CNetworkClient::SendAckIfNeeded(int protocolNo, const std::string& json)
     CString ackJson = CPacketBuilder::BuildAck(ackNo, CString(inspId));
     SendJson(ackJson);
 
-    TRACE(_T("[NetworkClient] ACK 전송: %d → %d (id=%S)\n"),
-        protocolNo, ackNo, (LPCSTR)inspId);
+    TRACE(_T("[NetworkClient] ACK 전송: %d → %d (len=%d)\n"),
+        protocolNo, ackNo, inspId.GetLength());
 }

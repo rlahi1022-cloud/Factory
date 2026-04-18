@@ -107,6 +107,20 @@ std::size_t SessionManager::session_count() const {
     return sessions_.size();
 }
 
+int SessionManager::find_fd_by_username(const std::string& username) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [fd, session] : sessions_) {
+        if (session.client_name == username) return fd;
+    }
+    return -1;
+}
+
+void SessionManager::force_close(int client_fd) {
+    // 소켓 강제 종료 → handle_client의 recv가 실패하며 자연스럽게 unregister됨
+    ::shutdown(client_fd, SHUT_RDWR);
+    log_clt("세션 강제 종료 | fd=%d (중복 로그인)", client_fd);
+}
+
 bool SessionManager::send_json(int fd, const std::string& json_body) {
     return send_json_frame(fd, json_body);
 }

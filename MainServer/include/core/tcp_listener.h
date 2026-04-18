@@ -59,20 +59,6 @@ private:
                          std::string& out_json,
                          std::vector<uint8_t>& out_image);
 
-    /// IP 화이트리스트 검증 — 내부망 및 로컬호스트만 허용
-    static bool is_allowed_ip(const std::string& ip) {
-        // 로컬호스트
-        if (ip == "127.0.0.1") return true;
-        // 내부망 대역: 10.x.x.x, 192.168.x.x, 172.16~31.x.x
-        if (ip.rfind("10.", 0) == 0)      return true;
-        if (ip.rfind("192.168.", 0) == 0) return true;
-        if (ip.rfind("172.", 0) == 0) {
-            int second = std::atoi(ip.c_str() + 4);
-            if (second >= 16 && second <= 31) return true;
-        }
-        return false;
-    }
-
     EventBus&         event_bus_;       // 이벤트 발행용 버스 참조
     uint16_t          listen_port_;     // 리슨 포트
     int               server_fd_;       // 서버 소켓 FD (-1이면 미생성)

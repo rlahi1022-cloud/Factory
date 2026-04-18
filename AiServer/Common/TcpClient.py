@@ -141,16 +141,27 @@ class TcpClient:
                 pass  # 취소는 정상 동작
 
     async def _discard_writer(self) -> None:
-        """writer(송신 소켓)를 안전하게 닫는다."""
-        if self._writer is None:
-            return
-        try:
-            self._writer.close()          # 소켓 닫기 요청
-            await self._writer.wait_closed()  # 닫힘 완료 대기
-        except Exception:
-            pass  # 이미 닫혀있어도 무시
-        self._writer = None
-        self._reader = None
+        """writer(송신 소켓)를 안전하게 닫고 pending ACK를 모두 정리한다.
+
+        연결이 끊긴 상태에서 계속 대기 중인 Future는 TimeoutError로 해제하여
+        호출자가 깔끔하게 종료/재시도할 수 있게 한다.
+        """
+        if self._writer is not None:
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except Exception:
+                pass
+            self._writer = None
+            self._reader = None
+
+        # 연결 끊김 — pending ACK 모두 취소 (orphan future 방지)
+        if self._pending_acks:
+            logger.warning("연결 끊김 | pending ACK %d건 정리", len(self._pending_acks))
+            for inspection_id, fut in list(self._pending_acks.items()):
+                if not fut.done():
+                    fut.set_exception(ConnectionError("connection lost"))
+            self._pending_acks.clear()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 송신
@@ -167,10 +178,12 @@ class TcpClient:
         3. ACK 미수신 시 재전송 (최대 3회)
         4. 3회 모두 실패하면 포기 (False 반환)
 
+        모든 경로에서 _pending_acks를 확실히 정리하여 메모리 누수 방지.
+
         Args:
-            packet_bytes: 전송할 패킷 (PacketBuilder로 만든 것)
-            protocol_no: 메시지 번호 (예: 1000)
-            inspection_id: 검사 ID (ACK 매칭에 사용)
+            packet_bytes: 전송할 패킷
+            protocol_no: 메시지 번호
+            inspection_id: 검사 ID (ACK 매칭 키)
         Returns:
             True: 전송 성공 (ACK 수신), False: 전송 실패
         """
@@ -180,44 +193,48 @@ class TcpClient:
 
         loop = asyncio.get_running_loop()
 
-        # 최대 3회 시도
-        for attempt in range(1, MAX_SEND_ATTEMPTS + 1):
-            # Future 생성: ACK가 오면 이 Future에 결과가 들어온다
-            future: asyncio.Future = loop.create_future()
-            self._pending_acks[inspection_id] = future  # ACK 대기 맵에 등록
+        try:
+            for attempt in range(1, MAX_SEND_ATTEMPTS + 1):
+                future: asyncio.Future = loop.create_future()
+                self._pending_acks[inspection_id] = future
 
-            # 패킷 전송
-            ok = await self._send_raw(packet_bytes)
-            if not ok:
-                # 전송 자체가 실패 (연결 끊김 등)
-                self._pending_acks.pop(inspection_id, None)
-                await asyncio.sleep(self._reconnect_delay_sec)
-                continue  # 다음 시도
+                try:
+                    # 패킷 전송
+                    ok = await self._send_raw(packet_bytes)
+                    if not ok:
+                        await asyncio.sleep(self._reconnect_delay_sec)
+                        continue
 
-            try:
-                # 1초간 ACK 대기
-                ack_dict = await asyncio.wait_for(future, timeout=ACK_TIMEOUT_SEC)
-            except asyncio.TimeoutError:
-                # 1초 내 ACK 미수신 → 재전송
-                self._pending_acks.pop(inspection_id, None)
-                logger.warning("ACK timeout inspection_id=%s attempt=%d/%d",
-                               inspection_id, attempt, MAX_SEND_ATTEMPTS)
-                continue  # 다음 시도
+                    # 1초간 ACK 대기
+                    try:
+                        ack_dict = await asyncio.wait_for(future, timeout=ACK_TIMEOUT_SEC)
+                    except asyncio.TimeoutError:
+                        logger.warning("ACK timeout inspection_id=%s attempt=%d/%d",
+                                       inspection_id, attempt, MAX_SEND_ATTEMPTS)
+                        continue
 
-            # ACK 수신 성공
-            if ack_dict.get("ack") is True:
-                logger.debug("ACK ok inspection_id=%s", inspection_id)
-                return True
+                    # ACK 수신 성공
+                    if ack_dict.get("ack") is True:
+                        logger.debug("ACK ok inspection_id=%s", inspection_id)
+                        return True
 
-            # NACK(처리 실패) 수신 → 재시도 의미 없음, 포기
-            logger.error("NACK received inspection_id=%s err=%s",
-                         inspection_id, ack_dict.get("error_message"))
+                    # NACK(처리 실패) 수신 → 재시도 의미 없음, 포기
+                    logger.error("NACK received inspection_id=%s err=%s",
+                                 inspection_id, ack_dict.get("error_message"))
+                    return False
+
+                finally:
+                    # 각 시도마다 확실히 pop — 예외 경로에서도 메모리 누수 방지
+                    self._pending_acks.pop(inspection_id, None)
+
+            # 3회 모두 실패
+            logger.error("send_with_ack giveup inspection_id=%s after %d attempts",
+                         inspection_id, MAX_SEND_ATTEMPTS)
             return False
 
-        # 3회 모두 실패
-        logger.error("send_with_ack giveup inspection_id=%s after %d attempts",
-                     inspection_id, MAX_SEND_ATTEMPTS)
-        return False
+        finally:
+            # 함수 종료 시 최종 보장 — 예상치 못한 예외 시에도 정리
+            self._pending_acks.pop(inspection_id, None)
 
     async def send_fire_and_forget(self, packet_bytes: bytes) -> bool:
         """ACK 없이 단순 전송한다 (OK 카운트, 메타데이터 등).

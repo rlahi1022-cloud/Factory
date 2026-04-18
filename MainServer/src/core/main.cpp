@@ -101,7 +101,11 @@ int main() {
     tcp_listener.start();
 
     // 4) GUI TCP 리스너 시작 (TCP수신 → GuiRouter → GuiService → DAO)
-    GuiService gui_service(db_pool);
+    // 학습서버 주소 — 환경변수 TRAIN_HOST로 오버라이드 가능 (기본: 10.10.10.130)
+    const char* env_train_host = std::getenv("TRAIN_HOST");
+    std::string train_host = env_train_host ? env_train_host : "10.10.10.130";
+    uint16_t    train_port = 9100;
+    GuiService gui_service(db_pool, train_host, train_port);
     GuiRouter gui_router(gui_service);
     GuiTcpListener gui_tcp_listener(event_bus, GUI_LISTEN_PORT, gui_router);
     gui_tcp_listener.start();

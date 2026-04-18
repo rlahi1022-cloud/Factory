@@ -70,17 +70,31 @@ MYSQL* ConnectionPool::acquire() {
     }
     if (is_shutdown_) return nullptr;
 
-    MYSQL* conn = pool_.front();
+    MYSQL* old_conn = pool_.front();
     pool_.pop();
 
     // 연결이 끊어졌으면 재연결 시도
-    if (mysql_ping(conn) != 0) {
+    if (mysql_ping(old_conn) != 0) {
         log_err_db("커넥션 끊어짐 → 재연결 시도");
-        mysql_close(conn);
-        conn = create_connection();
+        mysql_close(old_conn);
+
+        MYSQL* new_conn = create_connection();
+        // all_conns_에서 old 포인터를 new로 교체 → shutdown 시 double-close 방지
+        for (auto& c : all_conns_) {
+            if (c == old_conn) {
+                c = new_conn;  // new_conn이 nullptr이어도 교체 (double-close 회피가 목적)
+                break;
+            }
+        }
+
+        if (!new_conn) {
+            log_err_db("재연결 실패 — 풀 크기 축소");
+            return nullptr;
+        }
+        return new_conn;
     }
 
-    return conn;
+    return old_conn;
 }
 
 void ConnectionPool::release(MYSQL* conn) {
@@ -97,6 +111,7 @@ void ConnectionPool::shutdown() {
     }
     cv_.notify_all();
 
+    // 재연결 실패로 nullptr이 들어간 슬롯이 있을 수 있음 → 체크 후 close
     for (MYSQL* conn : all_conns_) {
         if (conn) mysql_close(conn);
     }

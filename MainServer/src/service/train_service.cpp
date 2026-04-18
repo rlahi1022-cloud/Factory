@@ -9,8 +9,11 @@
 #include "service/train_service.h"
 #include "core/logger.h"
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <system_error>
+#include <unistd.h>
 
 namespace factory {
 
@@ -107,10 +110,17 @@ std::string TrainService::save_model_file(const TrainCompleteEvent& ev) {
     std::string dir = "./storage/models/station" + std::to_string(ev.station_id);
     std::filesystem::create_directories(dir);
 
-    std::string save_path = dir + "/" + ev.version + ext;
-    std::ofstream ofs(save_path, std::ios::binary);
+    // 임시파일 → 최종파일 rename 패턴 (atomic, race condition 방지)
+    // 임시파일명에 PID + 나노초 타임스탬프로 고유성 보장 — 동시 학습 충돌 방지
+    std::string final_path = dir + "/" + ev.version + ext;
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::string tmp_path = final_path + ".tmp." + std::to_string(::getpid()) +
+                           "." + std::to_string(ns);
+
+    std::ofstream ofs(tmp_path, std::ios::binary);
     if (!ofs) {
-        log_err_train("모델 파일 저장 실패 | %s", save_path.c_str());
+        log_err_train("모델 임시파일 저장 실패 | %s", tmp_path.c_str());
         return "";
     }
 
@@ -118,23 +128,33 @@ std::string TrainService::save_model_file(const TrainCompleteEvent& ev) {
               static_cast<std::streamsize>(ev.model_bytes.size()));
     ofs.flush();
     if (!ofs.good()) {
-        log_err_train("모델 파일 쓰기 실패 | %s", save_path.c_str());
+        log_err_train("모델 쓰기 실패 | %s", tmp_path.c_str());
         ofs.close();
-        std::filesystem::remove(save_path);
+        std::filesystem::remove(tmp_path);
         return "";
     }
     ofs.close();
 
-    // 저장된 파일 크기 검증 — 기록 무결성 확인
-    auto file_size = std::filesystem::file_size(save_path);
+    // 임시파일 크기 검증
+    auto file_size = std::filesystem::file_size(tmp_path);
     if (file_size != ev.model_bytes.size()) {
-        log_err_train("모델 파일 크기 불일치 | 예상=%zu 실제=%zu", ev.model_bytes.size(), file_size);
-        std::filesystem::remove(save_path);
+        log_err_train("모델 크기 불일치 | 예상=%zu 실제=%zu", ev.model_bytes.size(), file_size);
+        std::filesystem::remove(tmp_path);
         return "";
     }
 
-    log_train("모델 파일 저장 완료 | %s (%zu bytes)", save_path.c_str(), ev.model_bytes.size());
-    return save_path;
+    // atomic rename — 부분 쓰기된 파일이 추론서버에 전달되는 race 차단
+    std::error_code ec;
+    std::filesystem::rename(tmp_path, final_path, ec);
+    if (ec) {
+        log_err_train("모델 rename 실패 | %s → %s | %s",
+                      tmp_path.c_str(), final_path.c_str(), ec.message().c_str());
+        std::filesystem::remove(tmp_path);
+        return "";
+    }
+
+    log_train("모델 파일 저장 완료 | %s (%zu bytes)", final_path.c_str(), ev.model_bytes.size());
+    return final_path;
 }
 
 } // namespace factory

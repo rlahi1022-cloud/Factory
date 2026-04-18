@@ -220,7 +220,8 @@ CStringA CPacketBuilder::GenerateRequestId()
 }
 
 // ============================================================================
-// JSON 이스케이프 — 특수문자 처리 (injection 방지)
+// JSON 이스케이프 — 서버 측 security::escape_json과 동일 기준으로 정렬
+//   처리: " \ \n \r \t \b \f + 제어문자(0x00~0x1F) → \uXXXX
 // ============================================================================
 static CStringA EscapeJson(const CStringA& s)
 {
@@ -234,10 +235,12 @@ static CStringA EscapeJson(const CStringA& s)
             case '\n': out += "\\n"; break;
             case '\r': out += "\\r"; break;
             case '\t': out += "\\t"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
                     CStringA hex;
-                    hex.Format("\\u%04x", (unsigned)c);
+                    hex.Format("\\u%04x", static_cast<unsigned char>(c));
                     out += hex;
                 } else {
                     out += c;

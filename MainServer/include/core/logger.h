@@ -27,20 +27,82 @@
 
 #include <cstdio>
 #include <cstdarg>
+#include <ctime>
+#include <mutex>
+#include <string>
+#include <sys/stat.h>
+
+// ── 파일 로거 — 날짜별 로테이션 ──
+// logs/YYYY-MM-DD.log 파일에 stdout과 동일한 내용을 tee한다.
+// 서버 재시작/크래시 시에도 로그가 보존되어 사후 포렌식 가능.
+inline FILE* log_file_get() {
+    static FILE* cur_file = nullptr;
+    static std::string cur_date;
+    static std::mutex mtx;
+
+    std::lock_guard<std::mutex> lock(mtx);
+
+    // 현재 날짜 계산 (로컬타임)
+    std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    localtime_r(&now, &tm);
+    char date_buf[16];
+    std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", &tm);
+
+    // 날짜가 바뀌었으면 파일 교체 (자정 로테이션)
+    if (cur_date != date_buf) {
+        if (cur_file) std::fclose(cur_file);
+        ::mkdir("logs", 0755);  // 디렉터리 생성 (이미 있으면 무시)
+        std::string path = std::string("logs/") + date_buf + ".log";
+        cur_file = std::fopen(path.c_str(), "a");
+        cur_date = date_buf;
+    }
+    return cur_file;
+}
+
+// 로그 1줄을 파일에 타임스탬프 prefix와 함께 기록
+inline void log_file_write(const char* prefix, const char* tag, const char* fmt, va_list args) {
+    FILE* f = log_file_get();
+    if (!f) return;
+
+    std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    localtime_r(&now, &tm);
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%H:%M:%S", &tm);
+
+    std::fprintf(f, "[%s] %s [%-5s] ", ts, prefix, tag);
+    std::vfprintf(f, fmt, args);
+    std::fprintf(f, "\n");
+    std::fflush(f);
+}
 
 // ── 공통 출력 ──
 inline void log_impl(const char* emoji, const char* tag, const char* fmt, va_list args) {
+    // 파일용 복사본 생성 (va_list는 한 번만 사용 가능)
+    va_list args_copy;
+    va_copy(args_copy, args);
+
     fprintf(stdout, "%s [%-5s] ", emoji, tag);
     vfprintf(stdout, fmt, args);
     fprintf(stdout, "\n");
     fflush(stdout);
+
+    log_file_write(emoji, tag, fmt, args_copy);
+    va_end(args_copy);
 }
 
 inline void log_err_impl(const char* tag, const char* fmt, va_list args) {
+    va_list args_copy;
+    va_copy(args_copy, args);
+
     fprintf(stderr, "❌ [%-5s] ", tag);
     vfprintf(stderr, fmt, args);
     fprintf(stderr, "\n");
     fflush(stderr);
+
+    log_file_write("❌", tag, fmt, args_copy);
+    va_end(args_copy);
 }
 
 // ============================================================================

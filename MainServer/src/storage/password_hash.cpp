@@ -16,27 +16,52 @@ static const char BCRYPT_BASE64[] =
     "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 std::string PasswordHash::generate_salt() {
-    // /dev/urandom에서 16바이트 난수 읽기
-    unsigned char random_bytes[16];
+    // 22바이트 난수 필요 (base64 1문자당 1바이트)
+    unsigned char random_bytes[22];
+    bool success = false;
+
+    // 1순위: /dev/urandom — 암호학적으로 안전한 난수
     std::ifstream urandom("/dev/urandom", std::ios::binary);
     if (urandom) {
         urandom.read(reinterpret_cast<char*>(random_bytes), sizeof(random_bytes));
+        if (urandom.gcount() == static_cast<std::streamsize>(sizeof(random_bytes))) {
+            success = true;
+        } else {
+            log_err_db("urandom 부분 읽기 | 요청=%zu 실제=%lld",
+                       sizeof(random_bytes), static_cast<long long>(urandom.gcount()));
+        }
     } else {
-        // fallback: std::random_device
-        std::random_device rd;
-        for (auto& b : random_bytes) b = static_cast<unsigned char>(rd());
+        log_err_db("/dev/urandom 열기 실패");
     }
 
-    // bcrypt salt: "$2b$12$" + 22자 base64
+    // 2순위: std::random_device (폴백) — 플랫폼별 최선의 난수
+    if (!success) {
+        std::random_device rd;
+        // random_device 엔트로피 확인 — 0이면 결정론적일 수 있음
+        if (rd.entropy() == 0) {
+            log_err_db("random_device 엔트로피 없음 — 해시 생성 중단");
+            return "";  // 빈 솔트 반환 → hash()에서 실패 처리
+        }
+        for (auto& b : random_bytes) {
+            b = static_cast<unsigned char>(rd() & 0xFF);
+        }
+        log_warn("DB", "urandom 실패 → random_device 폴백 사용");
+    }
+
+    // bcrypt salt: "$2b$12$" + 22자 base64 (각 위치마다 독립 난수 바이트 사용)
     std::string salt = "$2b$12$";
     for (int i = 0; i < 22; ++i) {
-        salt += BCRYPT_BASE64[random_bytes[i % 16] % 64];
+        salt += BCRYPT_BASE64[random_bytes[i] % 64];
     }
     return salt;
 }
 
 std::string PasswordHash::hash(const std::string& password) {
     std::string salt = generate_salt();
+    if (salt.empty() || salt.size() < 29) {  // "$2b$12$" + 22자 = 29
+        log_err_db("솔트 생성 실패 — 해시 중단");
+        return "";
+    }
 
     struct crypt_data data;
     data.initialized = 0;

@@ -14,6 +14,7 @@
 
 #include "core/tcp_listener.h"
 #include "monitor/connection_registry.h"
+#include "security/ip_filter.h"
 #include "Protocol.h"
 
 #include "core/logger.h"
@@ -116,7 +117,7 @@ void TcpListener::run_accept_loop() {
         std::string client_ip(ip_buf);
 
         // IP 화이트리스트 검증 — 허용된 내부망 IP만 접속 가능
-        if (!is_allowed_ip(client_ip)) {
+        if (!factory::security::is_allowed_ip(client_ip)) {
             log_err_main("비인가 IP 차단 | ip=%s", client_ip.c_str());
             CLOSE_SOCK(client_fd);
             continue;

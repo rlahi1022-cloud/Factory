@@ -63,6 +63,13 @@ public:
     // 현재 연결된 세션 수
     std::size_t session_count() const;
 
+    /// 같은 username으로 이미 로그인된 세션의 fd를 반환 (없으면 -1)
+    /// 동시 로그인 방지를 위해 기존 세션을 찾아 강제 종료할 때 사용
+    int find_fd_by_username(const std::string& username) const;
+
+    /// 지정된 fd의 세션을 강제 종료 — 연결 끊고 세션 제거
+    void force_close(int client_fd);
+
 private:
     SessionManager() = default;
 

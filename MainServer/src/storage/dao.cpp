@@ -6,12 +6,12 @@
 // ============================================================================
 #include "storage/dao.h"
 #include "storage/password_hash.h"
+#include "security/input_validator.h"
 #include "core/logger.h"
 
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
-#include <regex>
 
 namespace factory {
 
@@ -511,11 +511,7 @@ void UserDao::update_last_login(const std::string& username) {
 // StatsDao
 // ============================================================================
 
-// 날짜 형식 검증: YYYY-MM-DD만 허용
-static bool is_valid_date(const std::string& d) {
-    static const std::regex date_re(R"(\d{4}-\d{2}-\d{2})");
-    return std::regex_match(d, date_re);
-}
+using factory::security::is_valid_date;
 
 StatsDao::StatsResult StatsDao::get_stats(int station_filter,
                                            const std::string& date_from,

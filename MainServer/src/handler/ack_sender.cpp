@@ -19,29 +19,15 @@
 
 #include "core/logger.h"
 #include "core/tcp_utils.h"
+#include "security/json_safety.h"
 
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <sstream>
+#include <thread>
 
-// JSON 문자열 이스케이프 — injection 방지
-static std::string escape_json(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) continue;
-                out += c;
-        }
-    }
-    return out;
-}
+using factory::security::escape_json;
 
 namespace factory {
 
@@ -112,7 +98,7 @@ bool AckSender::send_ack(const std::string& sender_addr,
     os << "{"
        << "\"protocol_no\":" << protocol_no << ","
        << "\"protocol_version\":\"" << FACTORY_PROTOCOL_VERSION << "\","
-       << "\"inspection_id\":\"" << inspection_id << "\","
+       << "\"inspection_id\":\"" << escape_json(inspection_id) << "\","
        << "\"ack\":" << (ack_ok ? "true" : "false");
     // 실패 시에만 error_message 필드를 추가하여 페이로드를 최소화
     if (!ack_ok) {
@@ -143,9 +129,21 @@ void AckSender::on_model_reload_requested(const std::any& payload) {
     log_train("MODEL_RELOAD_CMD 전송 시작 | 스테이션=%d 버전=%s 크기=%zu bytes",
               ev.station_id, ev.version.c_str(), ev.model_bytes.size());
 
-    if (!send_model_reload(ev.station_id, ev.model_path, ev.version, ev.model_bytes)) {
-        log_err_train("MODEL_RELOAD_CMD 전송 실패 | 스테이션=%d", ev.station_id);
+    // 최대 3회 재시도 — 일시적 네트워크 장애에 대한 복원력
+    constexpr int MAX_RETRY = 3;
+    for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
+        if (send_model_reload(ev.station_id, ev.model_path, ev.version, ev.model_bytes)) {
+            if (attempt > 1) {
+                log_train("MODEL_RELOAD_CMD 재시도 성공 | attempt=%d/%d", attempt, MAX_RETRY);
+            }
+            return;
+        }
+        if (attempt < MAX_RETRY) {
+            log_retry("TRAIN", "MODEL_RELOAD_CMD 재시도 | %d/%d", attempt, MAX_RETRY);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
+    log_err_train("MODEL_RELOAD_CMD 최종 실패 | 스테이션=%d (3회 시도)", ev.station_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,14 +165,14 @@ bool AckSender::send_model_reload(int station_id,
         return false;
     }
 
-    // JSON 본문 구성
+    // JSON 본문 구성 (model_path/version escape 적용)
     std::ostringstream os;
     os << "{"
        << "\"protocol_no\":" << static_cast<int>(ProtocolNo::MODEL_RELOAD_CMD) << ","
        << "\"protocol_version\":\"" << FACTORY_PROTOCOL_VERSION << "\","
        << "\"station_id\":" << station_id << ","
-       << "\"model_path\":\"" << model_path << "\","
-       << "\"version\":\"" << version << "\","
+       << "\"model_path\":\"" << escape_json(model_path) << "\","
+       << "\"version\":\"" << escape_json(version) << "\","
        << "\"image_size\":" << model_bytes.size()
        << "}";
     std::string json_body = os.str();

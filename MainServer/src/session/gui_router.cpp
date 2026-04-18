@@ -7,6 +7,7 @@
 #include "session/session_manager.h"
 #include "core/logger.h"
 #include "core/tcp_utils.h"
+#include "security/json_safety.h"
 #include "Protocol.h"
 
 #include <chrono>
@@ -60,13 +61,20 @@ void GuiRouter::handle_login(int fd, const std::string& json) {
     auto result = service_.login(username, password);
 
     if (result.success) {
+        // 동시 로그인 방지 — 같은 username의 기존 세션이 있으면 강제 종료
+        int existing_fd = SessionManager::instance().find_fd_by_username(username);
+        if (existing_fd >= 0 && existing_fd != fd) {
+            log_clt("중복 로그인 감지 | 사용자=%s 기존fd=%d → 종료",
+                    username.c_str(), existing_fd);
+            SessionManager::instance().force_close(existing_fd);
+        }
         SessionManager::instance().set_client_info(fd, username, 0);
     }
 
     std::ostringstream os;
     os << "{\"protocol_no\":101"
        << ",\"protocol_version\":\"" << FACTORY_PROTOCOL_VERSION << "\""
-       << ",\"request_id\":\"" << request_id << "\""
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
        << ",\"success\":" << (result.success ? "true" : "false")
        << ",\"username\":\"" << escape_json(username) << "\""
        << ",\"role\":\"" << escape_json(result.role) << "\""
@@ -93,7 +101,7 @@ void GuiRouter::handle_register(int fd, const std::string& json) {
     std::ostringstream os;
     os << "{\"protocol_no\":105"
        << ",\"protocol_version\":\"" << FACTORY_PROTOCOL_VERSION << "\""
-       << ",\"request_id\":\"" << request_id << "\""
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
        << ",\"success\":" << (result.success ? "true" : "false")
        << ",\"message\":\"" << escape_json(result.message) << "\""
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
@@ -134,18 +142,18 @@ void GuiRouter::handle_inspect_history(int fd, const std::string& json) {
         if (i > 0) items << ",";
         items << "{\"id\":" << r.id
               << ",\"station_id\":" << r.station_id
-              << ",\"timestamp\":\"" << r.timestamp << "\""
-              << ",\"result\":\"" << r.result << "\""
+              << ",\"timestamp\":\"" << escape_json(r.timestamp) << "\""
+              << ",\"result\":\"" << escape_json(r.result) << "\""
               << ",\"confidence\":" << r.confidence
-              << ",\"defect_type\":\"" << r.defect_type << "\""
-              << ",\"image_path\":\"" << r.image_path << "\""
+              << ",\"defect_type\":\"" << escape_json(r.defect_type) << "\""
+              << ",\"image_path\":\"" << escape_json(r.image_path) << "\""
               << ",\"latency_ms\":" << r.latency_ms
               << "}";
     }
 
     std::ostringstream os;
     os << "{\"protocol_no\":115"
-       << ",\"request_id\":\"" << request_id << "\""
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
        << ",\"count\":" << records.size()
        << ",\"items\":[" << items.str() << "]"
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
@@ -167,7 +175,7 @@ void GuiRouter::handle_stats(int fd, const std::string& json) {
     std::ostringstream os;
     os << std::fixed << std::setprecision(2);
     os << "{\"protocol_no\":131"
-       << ",\"request_id\":\"" << request_id << "\""
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
        << ",\"total\":" << s.total
        << ",\"ok_count\":" << s.ok_count
        << ",\"ng_count\":" << s.ng_count
@@ -194,17 +202,17 @@ void GuiRouter::handle_model_list(int fd, const std::string& json) {
         if (i > 0) items << ",";
         items << "{\"id\":" << m.id
               << ",\"station_id\":" << m.station_id
-              << ",\"model_type\":\"" << m.model_type << "\""
-              << ",\"version\":\"" << m.version << "\""
+              << ",\"model_type\":\"" << escape_json(m.model_type) << "\""
+              << ",\"version\":\"" << escape_json(m.version) << "\""
               << ",\"accuracy\":" << m.accuracy
-              << ",\"deployed_at\":\"" << m.deployed_at << "\""
+              << ",\"deployed_at\":\"" << escape_json(m.deployed_at) << "\""
               << ",\"is_active\":" << m.is_active
               << "}";
     }
 
     std::ostringstream os;
     os << "{\"protocol_no\":151"
-       << ",\"request_id\":\"" << request_id << "\""
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
        << ",\"count\":" << models.size()
        << ",\"items\":[" << items.str() << "]"
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
@@ -227,7 +235,7 @@ void GuiRouter::handle_retrain(int fd, const std::string& json) {
 
     std::ostringstream os;
     os << "{\"protocol_no\":153"
-       << ",\"request_id\":\"" << request_id << "\""
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
        << ",\"success\":" << (result.success ? "true" : "false")
        << ",\"station_id\":" << station_id
        << ",\"model_type\":\"" << model_type << "\""
@@ -253,14 +261,8 @@ std::string GuiRouter::get_timestamp() {
 }
 
 std::string GuiRouter::escape_json(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        if (c == '"') out += "\\\"";
-        else if (c == '\\') out += "\\\\";
-        else out += c;
-    }
-    return out;
+    // security 모듈의 통합 구현에 위임 — 제어문자/개행 처리 포함
+    return factory::security::escape_json(s);
 }
 
 bool GuiRouter::send_json(int fd, const std::string& json_body) {
@@ -277,7 +279,10 @@ std::string GuiRouter::extract_str(const std::string& json, const std::string& k
     if (fq == std::string::npos) return "";
     auto lq = json.find('"', fq + 1);
     if (lq == std::string::npos) return "";
-    return json.substr(fq + 1, lq - fq - 1);
+    std::string value = json.substr(fq + 1, lq - fq - 1);
+    // 입력 문자열 길이 제한 (512자) — 과도한 메모리 사용 차단
+    if (value.size() > 512) value.resize(512);
+    return value;
 }
 
 int GuiRouter::extract_int(const std::string& json, const std::string& key) {

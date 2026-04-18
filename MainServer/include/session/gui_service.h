@@ -36,7 +36,12 @@ struct RetrainResult {
 
 class GuiService {
 public:
-    explicit GuiService(ConnectionPool& pool);
+    /// @param pool        DB 커넥션 풀
+    /// @param train_host  학습서버 IP (의존성 주입 — 환경별 변경 가능)
+    /// @param train_port  학습서버 포트
+    GuiService(ConnectionPool& pool,
+               const std::string& train_host,
+               uint16_t train_port);
 
     // 인증
     LoginResult login(const std::string& username, const std::string& password);
@@ -70,6 +75,10 @@ private:
     UserDao  user_dao_;
     ModelDao model_dao_;
     StatsDao stats_dao_;
+
+    // 학습서버 주소 (생성자에서 주입)
+    std::string train_host_;
+    uint16_t    train_port_;
 
     // 동시 학습 요청 방지
     std::mutex train_mutex_;

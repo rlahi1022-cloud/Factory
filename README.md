@@ -78,14 +78,71 @@ Camera → AI Server → Main Server → DB → MFC Client
 
 * EventBus + Service 레이어 서버 아키텍처 (책임 분리)
 * Handler → Service → DAO 3계층 구조 (검증 + 트랜잭션 + 롤백)
-* ConnectionPool 기반 DB 커넥션 관리
+* ConnectionPool 기반 DB 커넥션 관리 (acquire 5초 타임아웃)
+* EventBus 워커 풀 4스레드 + 큐 상한 10000 (backpressure 대응)
 * asyncio.Queue 기반 비동기 처리 (Backpressure 대응)
 * NG 중심 전송 구조 (트래픽 최적화)
 * inspection_id 기반 end-to-end 추적
 * ACK / 재전송 기반 데이터 신뢰성 확보
 * MariaDB prepared statement (SQL injection 방지)
 * 모델 바이너리 TCP 전송 (학습서버 → 메인서버 → 추론서버)
+* 모델 파일 저장 시 임시파일 → atomic rename (race condition 방지)
 * SessionManager 기반 다중 GUI 클라이언트 broadcast
+* 보안 강화: IP 화이트리스트 + 입력 검증 + JSON escape + 해시 무결성
+
+---
+
+## 보안 강화 내역
+
+### 적용된 방어
+
+* **SQL Injection 차단**: 모든 DAO prepared statement 사용
+* **IP 화이트리스트**: AI 서버 포트 9000에 내부망(10.x, 192.168.x, 172.16~31.x)만 허용
+* **입력 크기 제한**: JSON 64KB, 이미지 50MB, 모델 500MB 상한
+* **partial send 재시도**: `tcp_utils.h`의 `send_all` / `send_json_frame` 사용
+* **동시 접속 제한**: AI 서버 10개, GUI 세션 20개
+* **동시 학습 방지**: `GuiService`에 mutex 기반 `is_training_` 플래그
+* **동시 로그인 차단**: 같은 username 기존 세션 `force_close`
+* **bcrypt 비밀번호 해시**: `/dev/urandom` 실패 시 `random_device` fallback + 엔트로피 검증
+* **모델 파일 무결성**: 저장 후 크기 검증 + atomic rename
+* **JSON escape**: 모든 사용자 입력을 이스케이프하여 JSON injection 방지
+* **Path traversal 차단**: 모델 version 문자열에서 `../` 검증
+* **디스크 여유 확인**: 이미지 저장 전 100MB 이상 여유 확인
+* **recv 타임아웃**: AI/GUI 클라이언트 소켓에 30초 타임아웃 (slow loris 방어)
+* **ConnectionPool 재연결**: mysql_ping 실패 시 안전한 재연결 + double-close 방지
+* **로그 파일**: `logs/YYYY-MM-DD.log` 자동 로테이션 (stdout + 파일 tee)
+
+### 상세 현황
+`SECURITY_TODO.txt` 참고 (CRITICAL 7 + HIGH 12 + MEDIUM 16 + LOW 10/12 완료)
+
+---
+
+## 운영 가이드
+
+### 환경 변수
+
+* `TRAIN_HOST` — 학습서버 IP (기본: `10.10.10.130`)
+  ```bash
+  TRAIN_HOST=192.168.0.50 ./factory_main_server
+  ```
+
+### 시각 동기화 (NTP)
+
+AI 서버, 메인 서버, 클라이언트 간 시각이 다르면 `inspection_id`의 timestamp 부분이 불일치해 로그 추적이 어려워진다. 운영 시 모든 PC에 NTP 동기화 설정 필수.
+
+```bash
+# Ubuntu / WSL
+sudo timedatectl set-ntp true
+
+# Windows
+w32tm /config /manualpeerlist:"time.windows.com" /syncfromflags:manual /update
+```
+
+### 로그 파일
+
+* 경로: `MainServer/build/logs/YYYY-MM-DD.log`
+* 자정 자동 로테이션
+* stdout과 동시 출력 (tee 방식)
 
 ---
 
@@ -190,5 +247,9 @@ python -m Station2.Station2Main      # 조립 검사
 
 * HealthChecker PING/PONG 프로토콜 완성
 * Pylon 카메라 SDK 연동 (현재 더미 이미지)
-* 비밀번호 bcrypt 해시 적용
 * 모델 정확도 개선 및 최적화
+* 실무 확장 (참고):
+  * `config.json` 단일 설정 파일로 IP/포트/경로 통합
+  * `SecurityUtils` 모듈로 보안 로직 집약
+  * Google Test + Mock DAO 기반 Service 레이어 단위 테스트
+  * `IConnection` 인터페이스로 TCP/TLS 교체 가능 구조

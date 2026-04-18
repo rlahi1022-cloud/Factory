@@ -18,8 +18,11 @@
 
 namespace factory {
 
-GuiService::GuiService(ConnectionPool& pool)
-    : user_dao_(pool), model_dao_(pool), stats_dao_(pool) {
+GuiService::GuiService(ConnectionPool& pool,
+                       const std::string& train_host,
+                       uint16_t train_port)
+    : user_dao_(pool), model_dao_(pool), stats_dao_(pool),
+      train_host_(train_host), train_port_(train_port) {
 }
 
 // ── 로그인 ──
@@ -113,9 +116,6 @@ RetrainResult GuiService::request_retrain(int station_id, const std::string& mod
     log_train("재학습 요청 접수 | 스테이션=%d 모델=%s 이미지=%d건",
               station_id, model_type.c_str(), image_count);
 
-    const char* train_host = "10.10.10.130";
-    uint16_t    train_port = 9100;
-
     int train_fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (train_fd < 0) {
         result.message = "소켓 생성 실패";
@@ -124,8 +124,8 @@ RetrainResult GuiService::request_retrain(int station_id, const std::string& mod
 
     struct sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port   = htons(train_port);
-    inet_pton(AF_INET, train_host, &addr.sin_addr);
+    addr.sin_port   = htons(train_port_);
+    inet_pton(AF_INET, train_host_.c_str(), &addr.sin_addr);
 
     struct timeval tv;
     tv.tv_sec = 3;
@@ -133,7 +133,7 @@ RetrainResult GuiService::request_retrain(int station_id, const std::string& mod
     setsockopt(train_fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
 
     if (::connect(train_fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) != 0) {
-        log_err_train("학습서버 연결 실패 | %s:%d", train_host, train_port);
+        log_err_train("학습서버 연결 실패 | %s:%d", train_host_.c_str(), train_port_);
         ::close(train_fd);
         {
             std::lock_guard<std::mutex> lock(train_mutex_);
