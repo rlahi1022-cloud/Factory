@@ -30,11 +30,79 @@ except ImportError:
 # PyTorch — 딥러닝 프레임워크 (없으면 None으로 대체)
 try:
     import torch
+    # torch.serialization을 미리 import해두어야 하위 모듈로 접근 가능
+    import torch.serialization  # noqa: F401
 except ImportError:
     torch = None  # 설치 안 됐으면 추론이 더미 모드로 동작
 
 # 이 모듈 전용 로거
 logger = logging.getLogger(__name__)
+
+
+# 이미 safe_globals 등록 여부를 추적하는 플래그 (한 번만 실행)
+_SAFE_GLOBALS_REGISTERED = False
+
+
+def _register_safe_globals() -> None:
+    """Anomalib 커스텀 클래스들을 PyTorch safe_globals에 등록한다.
+
+    PyTorch 2.6부터 torch.load의 weights_only 기본값이 True로 바뀌어,
+    커스텀 클래스가 포함된 체크포인트를 로드하려면 명시적으로 허용해야 한다.
+    이 함수는 Anomalib이 사용하는 클래스들을 허용 리스트에 추가한다.
+
+    한 번만 실행되도록 전역 플래그로 보호한다.
+    """
+    global _SAFE_GLOBALS_REGISTERED
+    if _SAFE_GLOBALS_REGISTERED or torch is None:
+        return
+
+    try:
+        # torch.serialization은 별도 import 없이 torch 하위 모듈로 접근 가능
+        # (import torch.serialization을 함수 안에서 쓰면 scope 문제 발생)
+        safe_classes = []
+
+        # anomalib.PrecisionType (가장 자주 오류가 나는 클래스)
+        try:
+            from anomalib import PrecisionType
+            safe_classes.append(PrecisionType)
+        except ImportError:
+            pass
+
+        # anomalib.TaskType
+        try:
+            from anomalib import TaskType
+            safe_classes.append(TaskType)
+        except ImportError:
+            pass
+
+        # anomalib.LearningType
+        try:
+            from anomalib import LearningType
+            safe_classes.append(LearningType)
+        except ImportError:
+            pass
+
+        # PreProcessor, PostProcessor 등 Anomalib의 다른 커스텀 클래스
+        try:
+            from anomalib.pre_processing import PreProcessor
+            safe_classes.append(PreProcessor)
+        except ImportError:
+            pass
+
+        try:
+            from anomalib.post_processing import PostProcessor
+            safe_classes.append(PostProcessor)
+        except ImportError:
+            pass
+
+        if safe_classes:
+            torch.serialization.add_safe_globals(safe_classes)
+            logger.info("Registered safe_globals: %s",
+                        [c.__name__ for c in safe_classes])
+
+        _SAFE_GLOBALS_REGISTERED = True
+    except Exception as exc:
+        logger.warning("Failed to register safe_globals: %s", exc)
 
 
 def _resolve_device(device_str: str) -> Any:
@@ -84,6 +152,48 @@ class BaseInferencer:
     def load_model(self) -> None:
         """모델 파일을 메모리에 로드한다. 하위 클래스에서 반드시 구현해야 한다."""
         raise NotImplementedError
+
+    def _try_load_threshold(self, model_path: str) -> None:
+        """모델 파일과 같은 폴더에 저장된 threshold JSON을 자동 로드한다.
+
+        파일 구조:
+          models/station1_patchcore_v20260418_150450.ckpt
+          models/station1_patchcore_v20260418_150450_threshold.json  ← 자동 탐색
+
+        또는 기본 이름으로 복사한 경우:
+          models/station1_patchcore.ckpt
+          models/station1_patchcore_threshold.json
+
+        JSON이 있으면 self._threshold를 덮어쓴다.
+        """
+        import json
+        model_path_obj = Path(model_path)
+        # JSON 파일 이름 후보 목록 (모델 파일명 + "_threshold.json")
+        json_candidates = [
+            model_path_obj.with_suffix("").with_name(
+                model_path_obj.stem + "_threshold.json"
+            ),
+        ]
+
+        for json_path in json_candidates:
+            if json_path.exists():
+                try:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        info = json.load(f)
+                    auto_threshold = info.get("threshold")
+                    if auto_threshold is not None:
+                        # 기존 _threshold 속성이 있으면 자동 임계값으로 덮어쓴다
+                        if hasattr(self, "_threshold"):
+                            self._threshold = float(auto_threshold)
+                        elif hasattr(self, "_anomaly_threshold"):
+                            self._anomaly_threshold = float(auto_threshold)
+                        logger.info(
+                            "Auto-loaded threshold from %s: %.4f (F1=%.4f)",
+                            json_path.name, auto_threshold, info.get("f1_score", 0)
+                        )
+                        return
+                except Exception as exc:
+                    logger.warning("Failed to load threshold JSON: %s", exc)
 
     def infer(self, image: Any) -> dict:
         """이미지 한 장을 추론한다. 하위 클래스에서 반드시 구현해야 한다.
@@ -142,6 +252,7 @@ class Station1Inferencer(BaseInferencer):
           1. Anomalib의 Patchcore.load_from_checkpoint() 시도
           2. 실패하면 torch.load() fallback 시도
           3. 모델 파일이 없으면 더미 모드 (항상 OK 반환)
+          4. threshold JSON 파일이 있으면 임계값 자동 적용
         """
         # config에서 모델 경로 가져오기
         model_path = getattr(self._config, "model_path", "")
@@ -152,9 +263,19 @@ class Station1Inferencer(BaseInferencer):
             self._model = None
             return
 
+        # ── threshold JSON 자동 로드 ──
+        # 모델 파일과 같은 폴더에 "{모델명}_threshold.json"이 있으면 임계값을 자동 적용한다.
+        # 학습 시 자동 탐색된 최적 임계값을 사용하기 위함.
+        self._try_load_threshold(model_path)
+
         try:
             # Anomalib 라이브러리를 사용한 모델 로드 (권장 방법)
             from anomalib.models import Patchcore
+
+            # PyTorch 2.6+: weights_only=True 기본값으로 인한 보안 오류 회피.
+            # Anomalib 커스텀 클래스들을 "안전한 글로벌"로 등록한다.
+            # 이렇게 하면 load_from_checkpoint 내부의 torch.load가 성공한다.
+            _register_safe_globals()
 
             # 체크포인트 파일에서 모델 복원
             # map_location: GPU/CPU 지정
@@ -169,25 +290,35 @@ class Station1Inferencer(BaseInferencer):
                         model_path, self._device)
 
         except Exception as exc:
-            # load_from_checkpoint 실패 시 (PyTorch 2.6 weights_only 문제 등)
-            # → torch.load(weights_only=False)로 fallback 시도
+            # load_from_checkpoint 실패 시 fallback 시도
             logger.warning("Anomalib load_from_checkpoint failed (%s) — trying torch.load fallback", exc)
             try:
-                # weights_only=False: Anomalib 커스텀 클래스(PrecisionType 등)를 역직렬화 허용
-                # PyTorch 2.6+에서 weights_only 기본값이 True로 바뀌어 명시적으로 False 지정
+                # weights_only=False로 체크포인트 전체 로드 (hyperparameters 포함)
                 checkpoint = torch.load(model_path, map_location=self._device, weights_only=False)
 
                 if isinstance(checkpoint, dict):
-                    # 체크포인트가 dict인 경우 → Anomalib/Lightning 체크포인트 형식
-                    # dict에서 PatchCore 모델을 복원해야 한다
                     from anomalib.models import Patchcore
-                    model = Patchcore()
-                    # state_dict 키 추출: "state_dict" 키에 모델 가중치가 저장되어 있다
+                    # 체크포인트에서 하이퍼파라미터 추출
+                    # PatchCore 학습 시 사용한 backbone, layers 등을 복원해야 한다.
+                    hparams = checkpoint.get("hyper_parameters", {})
+                    # 모델 생성 시 하이퍼파라미터 전달
+                    try:
+                        model = Patchcore(**hparams) if hparams else Patchcore()
+                    except TypeError:
+                        # hparams에 예상 못한 키가 있으면 기본 생성
+                        model = Patchcore()
+                    # state_dict 로드 (memory_bank 포함됨)
                     if "state_dict" in checkpoint:
-                        model.load_state_dict(checkpoint["state_dict"], strict=False)
+                        # strict=False: 일부 키 불일치도 허용 (버전 차이 대응)
+                        missing, unexpected = model.load_state_dict(
+                            checkpoint["state_dict"], strict=False
+                        )
+                        if missing:
+                            logger.warning("Station1 state_dict missing keys: %s", missing[:5])
+                        if unexpected:
+                            logger.warning("Station1 state_dict unexpected keys: %s", unexpected[:5])
                     self._model = model
                 else:
-                    # 모델 객체가 직접 저장된 경우
                     self._model = checkpoint
 
                 self._model.to(self._device)
@@ -219,17 +350,42 @@ class Station1Inferencer(BaseInferencer):
             input_tensor = self._preprocess(image)
 
             # 2단계: 추론 실행 (그래디언트 계산 불필요 → no_grad로 메모리 절약)
+            # Anomalib Lightning 모델의 PostProcessor는 이진화된 결과를 반환하므로,
+            # 내부 raw 모델(self._model.model)을 직접 호출하여 raw anomaly score를 얻는다.
             with torch.no_grad():
-                output = self._model(input_tensor)
+                # PatchCore Lightning 모델 내부에 있는 실제 추론 모듈을 직접 호출한다.
+                # 이렇게 하면 PostProcessor(이진화, 정규화)를 우회하고 원본 점수를 얻는다.
+                if hasattr(self._model, "model") and callable(self._model.model):
+                    # model.model = PatchcoreModel (torch.nn.Module)
+                    output = self._model.model(input_tensor)
+                else:
+                    # fallback: Lightning 모델 전체 호출
+                    output = self._model(input_tensor)
 
-            # 3단계: 모델 출력 파싱 (Anomalib 버전에 따라 형식이 다를 수 있음)
-            if isinstance(output, dict):
+            # 3단계: 모델 출력 파싱 (여러 형식 지원)
+            # ── NamedTuple (InferenceBatch 또는 AnomalibModel 내부 출력) ──
+            if hasattr(output, "_fields"):
+                # NamedTuple: pred_score, anomaly_map 속성 접근
+                raw_score = None
+                anomaly_map = None
+                # pred_score 또는 pred_scores 필드 탐색
+                for key in ("pred_score", "pred_scores"):
+                    if hasattr(output, key):
+                        raw_score = getattr(output, key)
+                        break
+                # anomaly_map 또는 anomaly_maps 필드 탐색
+                for key in ("anomaly_map", "anomaly_maps"):
+                    if hasattr(output, key):
+                        anomaly_map = getattr(output, key)
+                        break
+                anomaly_score = float(raw_score.max().cpu().item()) if raw_score is not None else 0.0
+            elif isinstance(output, dict):
                 # Anomalib dict 출력: {"pred_scores": tensor, "anomaly_maps": tensor}
-                raw_score = output.get("pred_scores", torch.tensor(0.0))
-                anomaly_score = float(raw_score.cpu().item()
+                raw_score = output.get("pred_scores") or output.get("pred_score") or torch.tensor(0.0)
+                anomaly_score = float(raw_score.max().cpu().item()
                                       if torch.is_tensor(raw_score)
                                       else raw_score)
-                anomaly_map = output.get("anomaly_maps", None)
+                anomaly_map = output.get("anomaly_maps") or output.get("anomaly_map")
             elif isinstance(output, (tuple, list)):
                 # 튜플/리스트 출력: (score, anomaly_map)
                 anomaly_score = float(output[0].cpu().item()
@@ -414,8 +570,12 @@ class Station2Inferencer(BaseInferencer):
         # ── PatchCore 모델 로드 (라벨 표면 품질 검사용) ──
         pc_path = getattr(self._config, "patchcore_model_path", "")
         if pc_path and Path(pc_path).exists():
+            # threshold JSON 자동 로드 (anomaly_threshold 덮어쓰기)
+            self._try_load_threshold(pc_path)
             try:
                 from anomalib.models import Patchcore
+                # Anomalib 커스텀 클래스들을 safe_globals에 등록 (PyTorch 2.6+ 호환)
+                _register_safe_globals()
                 self._patchcore_model = Patchcore.load_from_checkpoint(
                     pc_path, map_location=self._device,
                 )
@@ -429,7 +589,12 @@ class Station2Inferencer(BaseInferencer):
                     checkpoint = torch.load(pc_path, map_location=self._device, weights_only=False)
                     if isinstance(checkpoint, dict):
                         from anomalib.models import Patchcore as _PC
-                        model = _PC()
+                        # 하이퍼파라미터 추출 후 모델 생성
+                        hparams = checkpoint.get("hyper_parameters", {})
+                        try:
+                            model = _PC(**hparams) if hparams else _PC()
+                        except TypeError:
+                            model = _PC()
                         if "state_dict" in checkpoint:
                             model.load_state_dict(checkpoint["state_dict"], strict=False)
                         self._patchcore_model = model
