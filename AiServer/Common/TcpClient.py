@@ -395,22 +395,40 @@ class TcpClient:
         version = cmd_dict.get("version", "")
         model_bytes: bytes | None = cmd_dict.pop("_model_bytes", None)
 
-        # 모델 바이너리가 있으면 로컬에 저장한다
+        # 모델 바이너리가 있으면 로컬에 원자적으로 저장 (임시파일 → rename)
+        # 수신 도중 중단되거나 저장 실패 시 부분 파일이 남지 않도록 보장.
         if model_bytes:
-            import os
-            # 원본 확장자 유지 (예: .pt, .ckpt)
+            import os, time
             ext = os.path.splitext(model_path)[1] if model_path else ".bin"
             save_dir = os.path.join(".", "models")
             os.makedirs(save_dir, exist_ok=True)
             local_path = os.path.join(save_dir, f"{version}{ext}")
+            # 임시파일: PID + 나노초로 동시 수신 충돌 방지
+            tmp_path = f"{local_path}.tmp.{os.getpid()}.{time.time_ns()}"
             try:
-                with open(local_path, "wb") as f:
+                with open(tmp_path, "wb") as f:
                     f.write(model_bytes)
-                logger.info("모델 파일 저장 완료: %s (%d bytes)", local_path, len(model_bytes))
-                # 콜백에 전달할 경로를 로컬 저장 경로로 교체
+                    f.flush()
+                    os.fsync(f.fileno())  # 디스크 쓰기 완료 보장
+
+                # 저장 크기 검증
+                if os.path.getsize(tmp_path) != len(model_bytes):
+                    logger.error("모델 크기 불일치: 예상=%d 실제=%d",
+                                 len(model_bytes), os.path.getsize(tmp_path))
+                    os.remove(tmp_path)
+                    raise ValueError("size mismatch")
+
+                # atomic rename — 최종 경로로 이동
+                os.replace(tmp_path, local_path)
+                logger.info("모델 파일 저장 완료: %s (%d bytes)",
+                            local_path, len(model_bytes))
                 cmd_dict["model_path"] = local_path
             except Exception as exc:
                 logger.error("모델 파일 저장 실패: %s", exc)
+                # 실패 시 임시파일 정리
+                if os.path.exists(tmp_path):
+                    try: os.remove(tmp_path)
+                    except: pass
 
         success = False
         if self._on_model_reload is not None:

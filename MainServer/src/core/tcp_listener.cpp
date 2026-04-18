@@ -31,6 +31,7 @@
 #else
   #include <arpa/inet.h>
   #include <netinet/in.h>
+  #include <netinet/tcp.h>  // TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT
   #include <sys/socket.h>
   #include <unistd.h>
   #define CLOSE_SOCK ::close
@@ -148,10 +149,20 @@ void TcpListener::handle_client(int client_fd, const std::string& remote_addr) {
     ::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
                  reinterpret_cast<const char*>(&client_tv), sizeof(client_tv));
 
-    // TCP Keepalive — OS가 2시간 유휴 후 죽은 연결 자동 감지
+    // TCP Keepalive — 학습서버 같은 유휴 연결의 좀비화 방지
+    // 공장 환경에 맞춰 공격적 튜닝: 60초 유휴 후 10초 간격 probe, 3회 실패 시 dead
+    // → 최대 90초 내 좀비 연결 감지 (OS 기본 2시간 → 90초 단축)
     int keepalive = 1;
     ::setsockopt(client_fd, SOL_SOCKET, SO_KEEPALIVE,
                  reinterpret_cast<const char*>(&keepalive), sizeof(keepalive));
+#ifdef __linux__
+    int keepidle  = 60;   // 60초 유휴 후 probe 시작
+    int keepintvl = 10;   // probe 간격 10초
+    int keepcnt   = 3;    // 3회 무응답 시 dead 판정
+    ::setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle,  sizeof(keepidle));
+    ::setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+    ::setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPCNT,  &keepcnt,  sizeof(keepcnt));
+#endif
 
     ConnectionRegistry::instance().register_connection(remote_addr, client_fd);
     log_main("AI서버 연결 | fd=%d ip=%s", client_fd, remote_addr.c_str());
