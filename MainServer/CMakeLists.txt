@@ -22,6 +22,7 @@ set(SRC_FILES
     src/core/main.cpp
     src/core/event_bus.cpp
     src/core/tcp_listener.cpp
+    src/core/config.cpp
 
     # handler
     src/handler/router.cpp

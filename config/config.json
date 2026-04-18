@@ -1,0 +1,90 @@
+{
+  "network": {
+    "main_server_host": "10.10.10.130",
+    "main_server_ai_port": 9000,
+    "main_server_gui_port": 9010,
+    "training_server_port": 9100,
+    "allowed_ip_prefixes": ["10.", "192.168.", "172.16.", "127.0.0.1"]
+  },
+
+  "database": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "factorymanager",
+    "password": "1234",
+    "schema": "Factory",
+    "pool_size": 4,
+    "acquire_timeout_sec": 5
+  },
+
+  "storage": {
+    "image_root": "./storage",
+    "model_root": "./storage/models",
+    "log_dir": "./logs"
+  },
+
+  "limits": {
+    "json_max_bytes": 65536,
+    "image_max_bytes": 52428800,
+    "model_max_bytes": 524288000,
+    "event_queue_max": 10000,
+    "max_ai_connections": 10,
+    "max_gui_sessions": 20
+  },
+
+  "health_check": {
+    "interval_sec": 5,
+    "targets": [
+      { "name": "ai_inference_1", "ip": "10.10.10.130", "port": 9000 },
+      { "name": "ai_inference_2", "ip": "10.10.10.130", "port": 9000 },
+      { "name": "ai_training",    "ip": "10.10.10.120", "port": 9000 }
+    ]
+  },
+
+  "ai_server": {
+    "station1": {
+      "model_path": "./models/station1_patchcore.ckpt",
+      "patchcore_input_size": 224,
+      "anomaly_threshold": 0.5,
+      "device": "auto",
+      "grab_queue_max": 16,
+      "inference_workers": 1,
+      "sender_workers": 1
+    },
+    "station2": {
+      "model_path": "./models/station2_yolo.pt",
+      "patchcore_model_path": "./models/station2_patchcore.ckpt",
+      "yolo_conf_threshold": 0.5,
+      "yolo_iou_threshold": 0.45,
+      "yolo_input_size": 640,
+      "anomaly_threshold": 0.5,
+      "device": "auto",
+      "grab_queue_max": 16,
+      "inference_workers": 1,
+      "sender_workers": 1
+    }
+  },
+
+  "training": {
+    "listen_host": "0.0.0.0",
+    "device": "cuda",
+    "gpu_id": 0,
+    "data_root": "./data",
+    "model_output_dir": "./models",
+    "patchcore_backbone": "wide_resnet50_2",
+    "patchcore_input_size": 224,
+    "patchcore_batch_size": 32,
+    "yolo_base_model": "yolo11n.pt",
+    "yolo_input_size": 640,
+    "yolo_epochs": 100,
+    "yolo_batch_size": 16,
+    "yolo_patience": 20,
+    "augmentation_factor": 5,
+    "deploy_dir": "./deploy"
+  },
+
+  "client": {
+    "default_server_ip": "10.10.10.130",
+    "recv_buffer_size": 65536
+  }
+}

@@ -9,6 +9,7 @@
 #include "pch.h"
 #include "LoginDlg.h"
 #include "PacketBuilder.h"
+#include "ClientConfig.h"
 
 // ── RTTI + 메시지 맵 ─────────────────────────────────────────────────────
 IMPLEMENT_DYNAMIC(CLoginDlg, CDialogEx)
@@ -136,8 +137,8 @@ void CLoginDlg::OnBtnOK()
 
         // 서버에 연결하여 REGISTER_REQ 전송
         m_loginNet.Disconnect();
-        if (!m_loginNet.Connect(factory_client::DEFAULT_SERVER_IP,
-                                factory_client::GUI_PORT, m_hWnd)) {
+        if (!m_loginNet.Connect(factory_client::ClientConfig::GetServerIp(),
+                                factory_client::ClientConfig::GetServerPort(), m_hWnd)) {
             SetError(_T("서버에 연결할 수 없습니다. 네트워크를 확인하세요."));
             return;
         }
@@ -156,8 +157,8 @@ void CLoginDlg::OnBtnOK()
 
         // 서버에 연결하여 LOGIN_REQ 전송
         m_loginNet.Disconnect();
-        if (!m_loginNet.Connect(factory_client::DEFAULT_SERVER_IP,
-                                factory_client::GUI_PORT, m_hWnd)) {
+        if (!m_loginNet.Connect(factory_client::ClientConfig::GetServerIp(),
+                                factory_client::ClientConfig::GetServerPort(), m_hWnd)) {
             SetError(_T("서버에 연결할 수 없습니다. 네트워크를 확인하세요."));
             return;
         }

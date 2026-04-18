@@ -13,6 +13,7 @@
 #include "pch.h"
 #include "MainTabDlg.h"
 #include "LoginDlg.h"       // OnLogout()에서 로그인 다이얼로그 재표시용
+#include "ClientConfig.h"   // 서버 IP/포트 — config.json 기반
 
 // ── RTTI 매크로 ──────────────────────────────────────────────────────────
 // IMPLEMENT_DYNAMIC: MFC 런타임 클래스 정보 등록 (DECLARE_DYNAMIC과 쌍)
@@ -363,7 +364,7 @@ void CMainTabDlg::DrawStatus(CDC& dc)
     LeaveCriticalSection(&m_csRecs);
     CString leftText;
     leftText.Format(_T("TCP: :%d %s | DB: MariaDB | 마지막 검사: %s"),
-        factory_client::GUI_PORT,
+        factory_client::ClientConfig::GetServerPort(),
         m_bConnected ? _T("연결") : _T("미연결"),
         (LPCTSTR)last.time);
     CRect lr(6, rc.top, rc.right / 2, rc.bottom);
@@ -476,7 +477,8 @@ void CMainTabDlg::ConnectToServer()
 {
     if (m_net.IsConnected()) return;
 
-    if (m_net.Connect(factory_client::DEFAULT_SERVER_IP, factory_client::GUI_PORT, m_hWnd)) {
+    if (m_net.Connect(factory_client::ClientConfig::GetServerIp(),
+                      factory_client::ClientConfig::GetServerPort(), m_hWnd)) {
         // ── 접속 직후 LOGIN_REQ 전송 (서버 세션 유지 핵심!) ──
         // 서버의 handle_client()는 recv_one_request()로 첫 패킷을 기다리고 있음.
         // 이걸 안 보내면 서버가 "클라이언트가 아무 요청도 안 함" → 세션 제거.
@@ -505,7 +507,8 @@ void CMainTabDlg::OnNetConnect()
     if (!m_net.IsConnected()) {
         CString errMsg;
         errMsg.Format(_T("서버 접속 실패\n\n서버 IP: %s\n포트: %d"),
-            factory_client::DEFAULT_SERVER_IP, factory_client::GUI_PORT);
+            (LPCTSTR)factory_client::ClientConfig::GetServerIp(),
+            factory_client::ClientConfig::GetServerPort());
         MessageBox(errMsg, _T("접속 실패"), MB_OK | MB_ICONERROR);
     }
 }

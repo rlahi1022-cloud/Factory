@@ -119,9 +119,33 @@ Camera → AI Server → Main Server → DB → MFC Client
 
 ## 운영 가이드
 
-### 환경 변수
+### 통합 설정 파일 (config/config.json)
 
-* `TRAIN_HOST` — 학습서버 IP (기본: `10.10.10.130`)
+프로젝트의 모든 IP/포트/경로/DB 접속정보/AI 하이퍼파라미터가
+`config/config.json` 단일 파일로 통합됨 (MainServer + AiServer + MFC Client 공유).
+
+**주요 섹션:**
+* `network` — 서버 IP, AI/GUI/Training 포트, IP 화이트리스트
+* `database` — MariaDB 접속 정보, 풀 크기
+* `storage` — 이미지/모델/로그 저장 경로
+* `limits` — 네트워크/큐/세션 상한
+* `health_check` — 헬스체크 대상 목록
+* `ai_server.station1` / `ai_server.station2` — 추론서버 스테이션별 설정
+* `training` — 학습서버 하이퍼파라미터
+* `client` — MFC 클라이언트 설정
+
+**로드 경로 (우선순위):**
+
+| 컴포넌트 | 경로 지정 방식 |
+|---------|--------------|
+| MainServer | 인자 `./factory_main_server <path>` > `CONFIG_PATH` 환경변수 > `../../config/config.json` |
+| AiServer (Python) | `CONFIG_PATH` 환경변수 > `../config/config.json` 자동 탐색 |
+| MFC Client | 실행파일 기준 `..\..\config\config.json` 자동 탐색 |
+
+### 환경 변수 (선택)
+
+* `CONFIG_PATH` — config.json 경로 지정
+* `TRAIN_HOST` — 학습서버 IP (config.json보다 우선)
   ```bash
   TRAIN_HOST=192.168.0.50 ./factory_main_server
   ```
@@ -150,18 +174,28 @@ w32tm /config /manualpeerlist:"time.windows.com" /syncfromflags:manual /update
 
 ```
 Factory/
-├── MainServer/       # 메인 운영 서버 (C++17)
-│   ├── src/core/     # EventBus, TcpListener, main
-│   ├── src/handler/  # Router, StationHandler, AckSender
-│   ├── src/storage/  # DbManager, ImageStorage
-│   ├── src/session/  # SessionManager, GuiTcpListener, GuiNotifier
-│   └── src/monitor/  # HealthChecker, ConnectionRegistry
-└── AiServer/         # AI 추론/학습 서버 (Python)
-    ├── Common/       # 공통 모듈 (Protocol, Packet, TcpClient, Inferencer, StationRunner)
-    ├── Station1/     # 입고 검사 진입점
-    ├── Station2/     # 조립 검사 진입점
-    ├── Training/     # 학습 서버
-    └── tests/        # 테스트 스크립트
+├── config/
+│   └── config.json       # 통합 설정 (모든 IP/포트/경로/DB/하이퍼파라미터)
+├── MainServer/           # 메인 운영 서버 (C++17)
+│   ├── include/security/ # json_safety, input_validator, ip_filter
+│   ├── include/core/     # config.h, event_bus, tcp_listener, tcp_utils, logger
+│   ├── src/core/         # EventBus, TcpListener, Config
+│   ├── src/handler/      # Router, StationHandler, AckSender, TrainHandler
+│   ├── src/service/      # InspectionService, TrainService
+│   ├── src/storage/      # ConnectionPool, DAO, PasswordHash
+│   ├── src/session/      # GuiTcpListener, GuiRouter, GuiService, SessionManager
+│   └── src/monitor/      # HealthChecker, ConnectionRegistry
+├── AiServer/             # AI 추론/학습 서버 (Python)
+│   ├── Common/           # ConfigLoader, Protocol, TcpClient, Inferencer, StationRunner
+│   ├── Station1/         # 입고 검사 진입점
+│   ├── Station2/         # 조립 검사 진입점
+│   ├── Training/         # 학습 서버
+│   └── tests/            # 테스트 스크립트
+└── client/Factory_UI_CL/ # MFC 클라이언트
+    ├── ClientConfig.*    # config.json 로더
+    ├── NetworkClient.*   # TCP 통신
+    ├── PacketBuilder.*   # JSON 빌더 (이스케이프 포함)
+    └── Main/Login/Page* # UI
 ```
 
 상세 구조: `Directory_README.md` 참고
@@ -248,8 +282,8 @@ python -m Station2.Station2Main      # 조립 검사
 * HealthChecker PING/PONG 프로토콜 완성
 * Pylon 카메라 SDK 연동 (현재 더미 이미지)
 * 모델 정확도 개선 및 최적화
-* 실무 확장 (참고):
-  * `config.json` 단일 설정 파일로 IP/포트/경로 통합
-  * `SecurityUtils` 모듈로 보안 로직 집약
-  * Google Test + Mock DAO 기반 Service 레이어 단위 테스트
-  * `IConnection` 인터페이스로 TCP/TLS 교체 가능 구조
+* 실무 확장 적용 현황:
+  * ✅ `config.json` 단일 설정 파일로 IP/포트/경로 통합 (2026-04-18)
+  * ✅ `security/` 모듈로 보안 로직 집약 (json_safety, input_validator, ip_filter)
+  * ☐ Google Test + Mock DAO 기반 Service 레이어 단위 테스트
+  * ☐ `IConnection` 인터페이스로 TCP/TLS 교체 가능 구조

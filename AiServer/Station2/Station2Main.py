@@ -92,99 +92,13 @@ async def main() -> None:
     # -----------------------------------------------------------------------
 
     # StationConfig 객체를 생성한다. 각 매개변수의 역할은 아래와 같다.
-    config = StationConfig(
-
-        # station_id: 이 스테이션의 고유 번호. 2번은 '조립 검사' 공정을 뜻한다.
-        # 메인 서버에 결과를 보낼 때, 어느 공정에서 온 데이터인지 구분하는 데 쓰인다.
-        station_id=2,
-
-        # main_server_host: 검사 결과를 수신하는 메인 서버의 IP 주소이다.
-        # "127.0.0.1"은 '자기 자신(로컬호스트)'을 의미한다.
-        # 실제 공장 배포 시에는 메인 서버의 실제 IP로 변경해야 한다.
-        main_server_host="10.10.10.130",
-
-        # main_server_port: 메인 서버가 대기(listen)하고 있는 포트 번호이다.
-        # 포트는 하나의 IP에서 여러 서비스를 구분하는 '문 번호' 같은 것이다.
-        # Station1과 동일한 9000번 포트를 사용하여 같은 메인 서버로 결과를 보낸다.
-        main_server_port=9000,
-
-        # camera_serial: 산업용 카메라의 시리얼 번호이다.
-        # Station2는 Station1과 다른 카메라를 사용할 수 있으므로 별도로 지정한다.
-        # 빈 문자열("")이면 자동으로 첫 번째 카메라를 선택한다.
-        camera_serial="",
-
-        # model_path: YOLO11 객체 탐지 모델 파일(.pt)의 경로이다.
-        # .pt는 PyTorch 모델 파일 형식이다.
-        # YOLO11은 이미지에서 cap(뚜껑), label(라벨), liquid_level(수위) 등의
-        # 객체를 탐지(detection)하여, 조립 부품이 올바르게 있는지 확인한다.
-        model_path="./models/station2_yolo11.pt",               # YOLO11 모델
-
-        # patchcore_model_path: PatchCore 이상탐지 모델 파일(.ckpt)의 경로이다.
-        # YOLO가 라벨 영역을 검출하면, 그 부분을 잘라(crop)내어 PatchCore에 넣는다.
-        # PatchCore는 라벨 표면의 스크래치, 인쇄 불량 등 미세 결함을 탐지한다.
-        # Station1과 달리, Station2는 이 2차 모델도 활성화해야 하므로 경로를 지정한다.
-        patchcore_model_path="./models/station2_patchcore.ckpt", # 라벨 표면 PatchCore
-
-        # device: AI 모델이 연산을 수행할 하드웨어를 지정한다.
-        #   "auto" -> GPU(CUDA)가 있으면 GPU, 없으면 CPU를 자동 선택
-        #   "cuda" -> NVIDIA GPU 강제 사용 (없으면 에러)
-        #   "cpu"  -> CPU만 사용 (GPU가 있어도 무시)
-        # Station2는 YOLO + PatchCore 두 모델을 돌리므로 GPU 사용이 더욱 권장된다.
-        device="auto",                     # "auto" / "cuda" / "cpu"
-
-        # anomaly_threshold: PatchCore의 이상(anomaly) 점수 임계값이다.
-        # PatchCore가 매긴 점수가 이 값(0.5)보다 높으면 라벨 표면 '불량(NG)'으로 판정한다.
-        # Station1과 동일한 역할이며, 현장 테스트로 최적값을 조정해야 한다.
-        anomaly_threshold=0.5,             # PatchCore 이상 점수 임계값
-
-        # yolo_conf_threshold: YOLO 모델의 탐지 신뢰도(confidence) 임계값이다.
-        # YOLO가 객체를 탐지할 때 '이것이 cap일 확률은 0.85'처럼 신뢰도 점수를 매기는데,
-        # 이 값(0.5) 미만이면 탐지 결과를 무시한다.
-        # 낮추면 더 많이 탐지하지만 오탐(false positive)이 늘고,
-        # 높이면 정확하지만 미탐(false negative) 위험이 있다.
-        yolo_conf_threshold=0.5,           # YOLO 탐지 신뢰도 임계값
-
-        # yolo_iou_threshold: YOLO의 NMS(Non-Maximum Suppression) IoU 임계값이다.
-        # NMS는 겹치는 탐지 박스를 하나로 합치는 후처리 과정이다.
-        # IoU(Intersection over Union)는 두 박스의 겹침 정도를 0~1로 나타낸다.
-        # 0.45 이상 겹치면 같은 객체로 보고 신뢰도가 낮은 박스를 제거한다.
-        yolo_iou_threshold=0.45,           # YOLO NMS IoU 임계값
-
-        # yolo_input_size: YOLO 모델에 입력할 이미지의 가로/세로 크기(픽셀)이다.
-        # YOLO는 보통 정사각형 입력을 받으며, 640x640이 YOLOv8/v11의 표준 크기이다.
-        # 크기가 클수록 작은 객체도 잘 탐지하지만, 연산 시간이 늘어난다.
-        yolo_input_size=640,               # YOLO 입력 크기
-
-        # patchcore_input_size: PatchCore 모델에 입력할 이미지의 가로/세로 크기(픽셀)이다.
-        # YOLO가 검출한 라벨 영역을 이 크기로 리사이즈(resize)한 후 PatchCore에 넣는다.
-        # 224는 ImageNet 기반 모델에서 가장 흔히 쓰이는 표준 크기이다.
-        patchcore_input_size=224,          # PatchCore 입력 크기
-
-        # grab_queue_max: 카메라에서 촬영한 이미지를 임시 저장하는 큐(대기열)의 최대 크기이다.
-        # 큐가 가득 차면 새 이미지는 버려진다(오래된 이미지가 쌓이는 것을 방지).
-        # 16이면 최대 16장까지 대기열에 쌓을 수 있다.
-        grab_queue_max=16,
-
-        # inference_workers: 동시에 AI 추론을 수행하는 작업자(worker) 수이다.
-        # Station2는 YOLO + PatchCore 2단계 추론이지만, 순차적으로 실행되므로
-        # worker 1개가 두 모델을 모두 처리한다. GPU가 여러 개이면 늘릴 수 있다.
-        inference_workers=1,
-
-        # sender_workers: 추론 결과를 메인 서버로 전송하는 작업자 수이다.
-        # 네트워크 전송은 비교적 빠르므로 1이면 충분한 경우가 많다.
-        sender_workers=1,
-
-        # arduino_port: 아두이노(Arduino) 보드와 시리얼 통신할 포트 이름이다.
-        # 아두이노는 불량 판정 결과에 따라 물리적 장치(예: 솔레노이드, LED)를 제어한다.
-        # None이면 아두이노 연결을 사용하지 않는다.
-        # Station2는 Station1과 다른 아두이노를 사용할 수 있으므로 포트가 다를 수 있다.
-        arduino_port=None,                 # 예: "COM4" 또는 "/dev/ttyUSB1"
-
-        # arduino_baud: 아두이노와의 시리얼 통신 속도(baud rate)이다.
-        # 9600은 아두이노 기본값이며, 아두이노 코드와 동일하게 맞춰야 통신이 된다.
-        # 단위는 bps(bits per second)로, 초당 전송 비트 수를 의미한다.
-        arduino_baud=9600,
-    )
+    # -----------------------------------------------------------------------
+    # [설정 객체 생성] config/config.json에서 Station2 설정 로드
+    # -----------------------------------------------------------------------
+    # 모든 하드코딩된 값(IP/포트/모델 경로/임계값)은 프로젝트 루트의
+    # config/config.json에서 관리된다. 배포 환경이 바뀌어도 코드 수정 없이
+    # 설정 파일만 변경하면 된다.
+    config = StationConfig.from_json(station_id=2)
 
     # -----------------------------------------------------------------------
     # [추론 엔진 & 파이프라인 생성] 설정을 기반으로 핵심 객체들을 만든다.

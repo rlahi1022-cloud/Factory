@@ -720,17 +720,9 @@ async def main() -> None:
     반환값:
       없음 (None)
     """
-    # 학습 서버 설정 객체를 생성한다.
-    # 기본값을 사용하되, 필요한 값만 명시적으로 지정한다.
-    config = TrainingConfig(
-        listen_host="0.0.0.0",           # 모든 네트워크 인터페이스에서 접속 허용
-        listen_port=9100,                # 9100 포트에서 수신
-        main_server_host="10.10.10.130", # 운용서버 IP
-        main_server_port=9000,           # 운용서버의 포트
-        device="cuda",                   # GPU 사용
-        data_root="./data",              # 학습 데이터 폴더
-        model_output_dir="./models",     # 학습된 모델 저장 폴더
-    )
+    # config/config.json에서 학습 서버 설정 로드
+    # 모든 IP/포트/경로/하이퍼파라미터는 프로젝트 루트의 config 파일에서 관리된다.
+    config = TrainingConfig.from_json()
 
     # TrainingServer 인스턴스를 생성한다.
     server = TrainingServer(config)

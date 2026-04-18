@@ -141,10 +141,17 @@ void TcpListener::run_accept_loop() {
 }
 
 void TcpListener::handle_client(int client_fd, const std::string& remote_addr) {
-    // 클라이언트 소켓에 recv 타임아웃 설정 (30초) — 무한 블로킹 방지
-    struct timeval client_tv{30, 0};
+    // recv 타임아웃 1시간 — Training 서버 같은 유휴 연결 유지
+    // (Slow Loris 방어는 max_connections 상한으로 대체)
+    // AI 추론서버는 지속 통신, Training은 학습 주기 단위로 통신
+    struct timeval client_tv{3600, 0};
     ::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
                  reinterpret_cast<const char*>(&client_tv), sizeof(client_tv));
+
+    // TCP Keepalive — OS가 2시간 유휴 후 죽은 연결 자동 감지
+    int keepalive = 1;
+    ::setsockopt(client_fd, SOL_SOCKET, SO_KEEPALIVE,
+                 reinterpret_cast<const char*>(&keepalive), sizeof(keepalive));
 
     ConnectionRegistry::instance().register_connection(remote_addr, client_fd);
     log_main("AI서버 연결 | fd=%d ip=%s", client_fd, remote_addr.c_str());
