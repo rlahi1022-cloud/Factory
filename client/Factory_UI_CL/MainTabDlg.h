@@ -66,6 +66,7 @@ protected:
 
     // ── 검사 데이터 ──────────────────────────────────────────────────────
     std::vector<InspectionRecord> m_recs;  // 검사 이력 (시뮬레이션 + 서버 데이터)
+    CRITICAL_SECTION m_csRecs;             // m_recs 스레드 동기화 보호
     int m_nextId;   // 다음 검사 레코드 ID
     int m_tick;     // 타이머 틱 카운터
 

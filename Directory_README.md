@@ -7,8 +7,8 @@ Factory/
 ```
 
 학습 서버는 `AiServer/Training/` 디렉터리에 포함되어 있으며,
-학습 완료된 가중치(`*.ckpt`, `*.pt`)는 별도 경로(SCP/공유폴더)로
-추론 서버에 배포되어 `Common/Inferencer.py`의 `load_model()`에서 로드됩니다.
+학습 완료된 가중치(`*.ckpt`, `*.pt`)는 TCP 바이너리 전송으로
+메인서버(130)를 경유하여 추론서버에 배포됩니다 (MODEL_RELOAD_CMD).
 
 ## 명명 규칙
 
@@ -36,22 +36,31 @@ MainServer/
 │
 ├── include/
 │   ├── core/                           # 핵심 인프라
-│   │   ├── event_bus.h                 # std::function 기반 자체 이벤트 버스
+│   │   ├── event_bus.h                 # 워커 풀(4스레드) 기반 이벤트 버스
 │   │   ├── event_types.h               # EventType enum + 페이로드 struct
+│   │   ├── logger.h                    # 상태 중심 로그 유틸리티 (이모지 + 한글)
 │   │   └── tcp_listener.h              # 추론서버용 TCP 리스너 (포트 9000)
 │   │
 │   ├── handler/                        # 이벤트 핸들러
 │   │   ├── router.h                    # protocol_no 기반 이벤트 분기
-│   │   ├── station_handler.h           # Station1/2Handler (검증 + 후속 이벤트 발행)
-│   │   └── ack_sender.h               # 추론서버로 ACK/NACK 회신
+│   │   ├── station_handler.h           # Station1/2Handler → InspectionService 호출
+│   │   ├── train_handler.h             # 학습 완료 → TrainService 호출
+│   │   └── ack_sender.h               # 추론서버로 ACK/NACK 회신 + MODEL_RELOAD 전송
+│   │
+│   ├── service/                        # 비즈니스 로직 (검증 + 트랜잭션)
+│   │   ├── inspection_service.h        # 검증 → DB INSERT → 이미지 저장 (트랜잭션)
+│   │   └── train_service.h             # 검증 → 모델 파일 저장 → DB INSERT (롤백 지원)
 │   │
 │   ├── storage/                        # 저장 계층
-│   │   ├── db_manager.h                # MariaDB prepared statement INSERT
-│   │   └── image_storage.h             # NG 이미지 파일 저장
+│   │   ├── connection_pool.h           # MariaDB 커넥션 풀 (RAII, 4개 연결)
+│   │   ├── dao.h                       # 테이블별 DAO (Inspection/Assembly/Model/User/Stats)
+│   │   └── password_hash.h             # bcrypt 비밀번호 해시/검증
 │   │
 │   ├── session/                        # GUI 클라이언트 세션 관리
 │   │   ├── session_manager.h           # 세션 등록/해제/broadcast
-│   │   ├── gui_tcp_listener.h          # MFC 클라이언트 전용 TCP 리스너 (포트 9010)
+│   │   ├── gui_tcp_listener.h          # TCP 수신만 담당 (포트 9010)
+│   │   ├── gui_router.h               # protocol_no별 분기 → GuiService 호출
+│   │   ├── gui_service.h              # 비즈니스 로직 (DAO 호출 + 결과 반환)
 │   │   └── gui_notifier.h              # 이벤트 → SessionManager를 통해 클라이언트 push
 │   │
 │   └── monitor/                        # 모니터링
@@ -66,13 +75,20 @@ MainServer/
     ├── handler/
     │   ├── router.cpp
     │   ├── station_handler.cpp
+    │   ├── train_handler.cpp
     │   └── ack_sender.cpp
+    ├── service/
+    │   ├── inspection_service.cpp
+    │   └── train_service.cpp
     ├── storage/
-    │   ├── db_manager.cpp
-    │   └── image_storage.cpp
+    │   ├── connection_pool.cpp
+    │   ├── dao.cpp
+    │   └── password_hash.cpp
     ├── session/
     │   ├── session_manager.cpp
-    │   ├── gui_tcp_listener.cpp
+    │   ├── gui_tcp_listener.cpp        # TCP 수신만
+    │   ├── gui_router.cpp              # 프로토콜 라우팅 + JSON 응답
+    │   ├── gui_service.cpp             # DB 조회/저장 로직
     │   └── gui_notifier.cpp
     └── monitor/
         ├── health_checker.cpp

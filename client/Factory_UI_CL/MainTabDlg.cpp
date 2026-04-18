@@ -13,6 +13,7 @@
 #include "pch.h"
 #include "MainTabDlg.h"
 #include "LoginDlg.h"       // OnLogout()에서 로그인 다이얼로그 재표시용
+#include "ClientConfig.h"   // 서버 IP/포트 — config.json 기반
 
 // ── RTTI 매크로 ──────────────────────────────────────────────────────────
 // IMPLEMENT_DYNAMIC: MFC 런타임 클래스 정보 등록 (DECLARE_DYNAMIC과 쌍)
@@ -69,6 +70,7 @@ CMainTabDlg::CMainTabDlg(const UserSession& s, CWnd* p)
     , m_sv2(true)           // 추론 PC #2: 정상
     , m_bConnected(false)   // 네트워크: 미연결
 {
+    InitializeCriticalSection(&m_csRecs);
     // 초기 시뮬레이션 데이터 20건 생성
     m_recs = QCUtil::GenInitialHistory();
 }
@@ -82,6 +84,8 @@ CMainTabDlg::~CMainTabDlg()
 
     // 네트워크 연결 해제
     m_net.Disconnect();
+
+    DeleteCriticalSection(&m_csRecs);
 }
 
 // ============================================================================
@@ -139,9 +143,11 @@ BOOL CMainTabDlg::OnInitDialog()
     // IDT_STATUSBAR: 1초마다 상태바 시각 갱신
     SetTimer(IDT_STATUSBAR, 1000, nullptr);
 
+    // ── 각 페이지에 NetworkClient 주입 ──
+    if (m_stats) m_stats->SetNetworkClient(&m_net);
+    if (m_model) m_model->SetNetworkClient(&m_net);
+
     // ── 네트워크 자동 접속 시도 ──
-    // 서버 IP와 포트는 ClientProtocol.h의 DEFAULT_SERVER_IP에서 설정합니다.
-    // 실패 시 시뮬레이션 모드로 동작하며 10초마다 재접속을 시도합니다.
     ConnectToServer();
 
     // ── 최대화 표시 ──
@@ -208,10 +214,14 @@ void CMainTabDlg::LayoutPages()
 // PushUpdate: 최신 검사 데이터를 모든 페이지에 전달
 void CMainTabDlg::PushUpdate()
 {
-    m_home ->Update(m_recs);
-    m_st1  ->Update(m_recs);
-    m_st2  ->Update(m_recs);
-    m_stats->Update(m_recs);
+    EnterCriticalSection(&m_csRecs);
+    auto recs_copy = m_recs;  // 스냅샷 복사 후 락 해제
+    LeaveCriticalSection(&m_csRecs);
+
+    m_home ->Update(recs_copy);
+    m_st1  ->Update(recs_copy);
+    m_st2  ->Update(recs_copy);
+    m_stats->Update(recs_copy);
 }
 
 // ============================================================================
@@ -349,10 +359,12 @@ void CMainTabDlg::DrawStatus(CDC& dc)
     CFont* pf = dc.SelectObject(&m_fSmall);
 
     // 왼쪽: TCP/DB 상태 + 마지막 검사 시각
-    const auto& last = m_recs.back();
+    EnterCriticalSection(&m_csRecs);
+    InspectionRecord last = m_recs.empty() ? InspectionRecord{} : m_recs.back();
+    LeaveCriticalSection(&m_csRecs);
     CString leftText;
     leftText.Format(_T("TCP: :%d %s | DB: MariaDB | 마지막 검사: %s"),
-        factory_client::GUI_PORT,
+        factory_client::ClientConfig::GetServerPort(),
         m_bConnected ? _T("연결") : _T("미연결"),
         (LPCTSTR)last.time);
     CRect lr(6, rc.top, rc.right / 2, rc.bottom);
@@ -392,9 +404,12 @@ void CMainTabDlg::OnTimer(UINT_PTR id)
         if (!m_bConnected) {
             m_sv2 = (m_tick % 20 != 15);
         }
-        m_recs.push_back(QCUtil::GenRecord(m_nextId++));
-        if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
-
+        {
+            EnterCriticalSection(&m_csRecs);
+            m_recs.push_back(QCUtil::GenRecord(m_nextId++));
+            if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
+            LeaveCriticalSection(&m_csRecs);
+        }
         PushUpdate();
         m_st1->Tick();
         m_st2->Tick();
@@ -462,14 +477,19 @@ void CMainTabDlg::ConnectToServer()
 {
     if (m_net.IsConnected()) return;
 
-    if (m_net.Connect(factory_client::DEFAULT_SERVER_IP, factory_client::GUI_PORT, m_hWnd)) {
+    if (m_net.Connect(factory_client::ClientConfig::GetServerIp(),
+                      factory_client::ClientConfig::GetServerPort(), m_hWnd)) {
         // ── 접속 직후 LOGIN_REQ 전송 (서버 세션 유지 핵심!) ──
         // 서버의 handle_client()는 recv_one_request()로 첫 패킷을 기다리고 있음.
         // 이걸 안 보내면 서버가 "클라이언트가 아무 요청도 안 함" → 세션 제거.
         CString loginJson = CPacketBuilder::BuildLoginReq(
-            m_session.username, _T("local"));  // 비밀번호는 이미 인증됨
+            m_session.username, m_session.password);
         m_net.SendJson(loginJson);
-        TRACE(_T("[MainTabDlg] 서버 접속 + LOGIN_REQ 전송 완료\n"));
+
+        // 접속 직후 초기 데이터 요청
+        if (m_model) m_model->RequestModelList();
+
+        TRACE(_T("[MainTabDlg] 서버 접속 + LOGIN_REQ + 초기 데이터 요청 완료\n"));
     } else {
         TRACE(_T("[MainTabDlg] 서버 자동 접속 실패 — 시뮬레이션 모드\n"));
         SetTimer(IDT_RECONNECT, 10000, nullptr);
@@ -487,7 +507,8 @@ void CMainTabDlg::OnNetConnect()
     if (!m_net.IsConnected()) {
         CString errMsg;
         errMsg.Format(_T("서버 접속 실패\n\n서버 IP: %s\n포트: %d"),
-            factory_client::DEFAULT_SERVER_IP, factory_client::GUI_PORT);
+            (LPCTSTR)factory_client::ClientConfig::GetServerIp(),
+            factory_client::ClientConfig::GetServerPort());
         MessageBox(errMsg, _T("접속 실패"), MB_OK | MB_ICONERROR);
     }
 }
@@ -626,9 +647,11 @@ LRESULT CMainTabDlg::OnNetNgPush(WPARAM, LPARAM lParam)
     else if (defectA == "fill_low")   rec.defect = EDefect::FillLow;
     else                              rec.defect = EDefect::Anomaly;
 
-    // 이력에 추가
+    // 이력에 추가 (스레드 보호)
+    EnterCriticalSection(&m_csRecs);
     m_recs.push_back(rec);
     if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
+    LeaveCriticalSection(&m_csRecs);
 
     // 모든 페이지 업데이트
     PushUpdate();

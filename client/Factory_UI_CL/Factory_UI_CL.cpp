@@ -17,6 +17,7 @@
 #include "Factory_UI_CL.h"
 #include "LoginDlg.h"
 #include "MainTabDlg.h"
+#include "ClientConfig.h"
 
 #ifdef _DEBUG
 #define new DEBUG_NEW  // 디버그 모드: 메모리 누수 추적용 new 오버라이드
@@ -45,10 +46,13 @@ CFactoryUICLApp theApp;
 BOOL CFactoryUICLApp::InitInstance()
 {
     // ── 0단계: WinSock2 초기화 (프로그램 전체에서 1회만) ──
-    // WSAStartup/WSACleanup은 프로세스 단위로 관리해야 합니다.
-    // 여러 곳에서 호출하면 참조 카운트 불일치로 소켓이 무효화될 수 있습니다.
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
+
+    // ── 0-1단계: config/config.json 로드 ──
+    // 서버 IP/포트 등을 외부 설정 파일에서 가져온다.
+    // 실패 시 ClientProtocol.h의 기본값 사용.
+    factory_client::ClientConfig::Load();
 
     // ── 1단계: 공용 컨트롤 초기화 ──
     // Windows 공용 컨트롤(ListView, TabCtrl 등)을 사용하기 위해 필요합니다.

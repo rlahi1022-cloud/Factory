@@ -1,37 +1,28 @@
-// health_checker.cpp
-// 5초 주기 HEALTH_PING(1200) 송신 → HEALTH_PONG(1201) 수신 확인
+// ============================================================================
+// health_checker.cpp — ConnectionRegistry 기반 헬스체크 구현
+// ============================================================================
+// ConnectionRegistry에 등록된 연결 수를 확인하여 AI서버 생존을 판정한다.
+// AI서버가 메인서버(9000)에 접속하면 ConnectionRegistry에 자동 등록되므로,
+// 별도 포트 ping 없이 연결 유무만으로 생존 확인이 가능하다.
+// ============================================================================
 #include "monitor/health_checker.h"
-#include "Protocol.h"
+#include "monitor/connection_registry.h"
+#include "core/logger.h"
 
-#include <cstring>
-#include <iostream>
-#include <sstream>
-
-#ifdef _WIN32
-  #include <winsock2.h>
-  #include <ws2tcpip.h>
-  #define CLOSE_SOCK closesocket
-#else
-  #include <arpa/inet.h>
-  #include <sys/socket.h>
-  #include <unistd.h>
-  #define CLOSE_SOCK ::close
-#endif
+#include <algorithm>
 
 namespace factory {
 
 HealthChecker::HealthChecker(EventBus& bus,
                              std::vector<HealthTarget> targets,
-                             std::chrono::seconds interval,
-                             int fail_threshold)
+                             std::chrono::seconds interval)
     : event_bus_(bus),
       targets_(std::move(targets)),
       interval_(interval),
-      fail_threshold_(fail_threshold),
       is_running_(false) {
+    // 초기 상태: 모든 서버를 장애(미연결)로 간주
     for (const auto& t : targets_) {
-        fail_count_map_[t.name] = 0;
-        down_state_map_[t.name] = false;
+        down_state_map_[t.name] = true;
     }
 }
 
@@ -53,28 +44,51 @@ void HealthChecker::stop() {
 
 void HealthChecker::run_loop() {
     while (is_running_.load()) {
-        event_bus_.publish(EventType::HEALTH_CHECK_TICK, std::any{});
+        // ConnectionRegistry에서 현재 연결된 서버 목록 가져오기
+        auto connections = ConnectionRegistry::instance().get_all_connections();
+        int connected_count = static_cast<int>(connections.size());
 
         for (const auto& target : targets_) {
-            bool alive = ping_once(target);
+            // target.ip와 정확히 일치하는 연결이 있는지 확인
+            // addr 형식: "IP:PORT" — ':'까지의 prefix가 target.ip와 일치해야 함
+            bool alive = false;
+            std::string ip_prefix = target.ip + ":";
+            for (const auto& [addr, fd] : connections) {
+                if (addr.rfind(ip_prefix, 0) == 0) {
+                    alive = true;
+                    break;
+                }
+            }
+
             if (alive) {
                 if (down_state_map_[target.name]) {
+                    // 장애 → 복구 전환
+                    log_main("서버 복구 감지 | %s (%s)",
+                             target.name.c_str(), target.ip.c_str());
                     ServerStatusEvent ev{target.name, target.ip, target.port};
                     event_bus_.publish(EventType::SERVER_RECOVERED, ev);
                     down_state_map_[target.name] = false;
                 }
-                fail_count_map_[target.name] = 0;
+                log_main("서버 생존 확인 | %s (%s)",
+                         target.name.c_str(), target.ip.c_str());
             } else {
-                fail_count_map_[target.name]++;
-                if (fail_count_map_[target.name] >= fail_threshold_ &&
-                    !down_state_map_[target.name]) {
+                if (!down_state_map_[target.name]) {
+                    // 정상 → 장애 전환
+                    log_err_main("서버 장애 감지 | %s (%s)",
+                                 target.name.c_str(), target.ip.c_str());
                     ServerStatusEvent ev{target.name, target.ip, target.port};
                     event_bus_.publish(EventType::SERVER_DOWN, ev);
                     down_state_map_[target.name] = true;
+                } else {
+                    log_err_main("서버 미연결 | %s (%s)",
+                                 target.name.c_str(), target.ip.c_str());
                 }
             }
         }
-        // 종료 시 빠르게 탈출하기 위해 1초 단위로 대기
+
+        log_main("연결 현황 | 총 %d개 AI서버 접속 중", connected_count);
+
+        // interval_ 동안 1초 단위로 sleep (빠른 종료 지원)
         auto remaining = interval_;
         while (is_running_.load() && remaining.count() > 0) {
             auto step = std::min(remaining, std::chrono::seconds(1));
@@ -82,99 +96,6 @@ void HealthChecker::run_loop() {
             remaining -= step;
         }
     }
-}
-
-// 정확히 n바이트 수신
-static bool recv_n_timeout(int fd, void* buf, std::size_t n) {
-    std::size_t total = 0;
-    auto* p = static_cast<char*>(buf);
-    while (total < n) {
-        int got = static_cast<int>(::recv(fd, p + total, static_cast<int>(n - total), 0));
-        if (got <= 0) return false;
-        total += static_cast<std::size_t>(got);
-    }
-    return true;
-}
-
-bool HealthChecker::ping_once(const HealthTarget& target) {
-    int fd = static_cast<int>(::socket(AF_INET, SOCK_STREAM, 0));
-    if (fd < 0) return false;
-
-    // 연결 타임아웃 2초
-    struct timeval tv{2, 0};
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
-                 reinterpret_cast<const char*>(&tv), sizeof(tv));
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
-                 reinterpret_cast<const char*>(&tv), sizeof(tv));
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(target.port);
-    inet_pton(AF_INET, target.ip.c_str(), &addr.sin_addr);
-
-    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        CLOSE_SOCK(fd);
-        return false;
-    }
-
-    // HEALTH_PING(1200) JSON 패킷 송신
-    std::ostringstream os;
-    os << "{\"protocol_no\":1200"
-       << ",\"protocol_version\":\"" << FACTORY_PROTOCOL_VERSION << "\""
-       << ",\"server_name\":\"main_server\""
-       << "}";
-    std::string json_body = os.str();
-
-    uint32_t json_size = static_cast<uint32_t>(json_body.size());
-    uint8_t header[4] = {
-        static_cast<uint8_t>((json_size >> 24) & 0xFF),
-        static_cast<uint8_t>((json_size >> 16) & 0xFF),
-        static_cast<uint8_t>((json_size >>  8) & 0xFF),
-        static_cast<uint8_t>( json_size        & 0xFF),
-    };
-
-    if (::send(fd, reinterpret_cast<const char*>(header), 4, 0) != 4 ||
-        ::send(fd, json_body.c_str(), static_cast<int>(json_body.size()), 0) !=
-            static_cast<int>(json_body.size())) {
-        CLOSE_SOCK(fd);
-        return false;
-    }
-
-    // HEALTH_PONG(1201) 수신 대기 (2초 타임아웃)
-    uint8_t resp_header[4];
-    if (!recv_n_timeout(fd, resp_header, 4)) {
-        CLOSE_SOCK(fd);
-        return false;
-    }
-
-    uint32_t resp_size = (uint32_t)resp_header[0] << 24 |
-                         (uint32_t)resp_header[1] << 16 |
-                         (uint32_t)resp_header[2] << 8  |
-                         (uint32_t)resp_header[3];
-
-    if (resp_size == 0 || resp_size > 4096) {
-        CLOSE_SOCK(fd);
-        return false;
-    }
-
-    std::string resp_json(resp_size, '\0');
-    if (!recv_n_timeout(fd, resp_json.data(), resp_size)) {
-        CLOSE_SOCK(fd);
-        return false;
-    }
-
-    CLOSE_SOCK(fd);
-
-    // protocol_no가 1201(HEALTH_PONG)인지 확인
-    auto pos = resp_json.find("\"protocol_no\"");
-    if (pos != std::string::npos) {
-        auto colon = resp_json.find(':', pos);
-        if (colon != std::string::npos) {
-            int pno = static_cast<int>(std::strtol(resp_json.c_str() + colon + 1, nullptr, 10));
-            return (pno == static_cast<int>(ProtocolNo::HEALTH_PONG));
-        }
-    }
-    return false;
 }
 
 } // namespace factory

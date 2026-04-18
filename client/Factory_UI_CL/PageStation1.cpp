@@ -8,8 +8,10 @@ BEGIN_MESSAGE_MAP(CPageStation1, CDialogEx)
     ON_BN_CLICKED(IDC_BTN_S1_ARDUINO, OnBtnArduino)
 END_MESSAGE_MAP()
 
-CPageStation1::CPageStation1(CWnd* p) : CDialogEx(IDD_PAGE_STATION1, p) {
-    m_last={10000,1,_T("--:--:--"),false,0.12,EDefect::None,52};
+CPageStation1::CPageStation1(CWnd* p) : CDialogEx(IDD_PAGE_STATION1, p), m_last{} {
+    m_last.id = 10000; m_last.station = 1;
+    m_last.time = _T("--:--:--"); m_last.isNG = false;
+    m_last.score = 0.12; m_last.defect = EDefect::None; m_last.latency = 52;
 }
 void CPageStation1::DoDataExchange(CDataExchange* pDX) {
     CDialogEx::DoDataExchange(pDX);

@@ -58,14 +58,7 @@ BOOL CPageModel::OnInitDialog()
     m_progress.SetPos(0);
     m_progress.ShowWindow(SW_HIDE);
 
-    // 초기 더미 모델 데이터
-    m_models = {
-        {1, 1, _T("PatchCore"), _T("v1.2.0"), 97.3, _T("2026-04-20 09:00"), true},
-        {2, 1, _T("PatchCore"), _T("v1.1.0"), 95.1, _T("2026-04-18 14:30"), false},
-        {3, 2, _T("YOLO11"),    _T("v1.0.0"), 94.8, _T("2026-04-20 09:00"), true},
-        {4, 2, _T("PatchCore"), _T("v1.1.0"), 96.5, _T("2026-04-20 09:00"), true}
-    };
-    FillModels();
+    FillModels();  // 초기에는 비어있음 — 서버 연결 후 RequestModelList()로 채움
 
     auto set = [&](int id, LPCTSTR v) {
         CWnd* w = GetDlgItem(id);
@@ -110,26 +103,85 @@ void CPageModel::FillFiles()
 
 void CPageModel::OnBtnSelectFolder()
 {
-    m_files = {
-        {_T("normal_001.jpg"), _T("245 KB")},
-        {_T("normal_002.jpg"), _T("238 KB")},
-        {_T("normal_003.jpg"), _T("251 KB")},
-        {_T("normal_004.jpg"), _T("240 KB")},
-        {_T("normal_005.jpg"), _T("247 KB")}
-    };
+    // 실제 폴더 선택 다이얼로그
+    CFolderPickerDialog dlg(nullptr, OFN_FILEMUSTEXIST, this);
+    if (dlg.DoModal() != IDOK) return;
+
+    CString folderPath = dlg.GetPathName();
+    m_files.clear();
+
+    // 선택한 폴더의 이미지 파일 목록 수집
+    CFileFind finder;
+    BOOL found = finder.FindFile(folderPath + _T("\\*.jpg"));
+    if (!found) found = finder.FindFile(folderPath + _T("\\*.png"));
+
+    while (found) {
+        found = finder.FindNextFile();
+        if (finder.IsDots() || finder.IsDirectory()) continue;
+
+        UpFile f;
+        f.name = finder.GetFileName();
+        ULONGLONG size = finder.GetLength();
+        if (size >= 1024 * 1024)
+            f.size.Format(_T("%.1f MB"), size / (1024.0 * 1024.0));
+        else
+            f.size.Format(_T("%llu KB"), size / 1024);
+        m_files.push_back(f);
+    }
+    finder.Close();
+
+    if (m_files.empty()) {
+        MessageBox(_T("선택한 폴더에 이미지 파일이 없습니다."),
+                   _T("알림"), MB_OK | MB_ICONINFORMATION);
+    }
+
     FillFiles();
 }
 
 void CPageModel::OnBtnRetrain()
 {
     if (m_files.empty() || m_training) return;
-    m_training = true;
-    m_prog = 0;
-    m_progress.SetPos(0);
-    m_progress.ShowWindow(SW_SHOW);
-    CWnd* w = GetDlgItem(IDC_BTN_RETRAIN);
-    if (w) { w->SetWindowText(_T("학습 중...")); w->EnableWindow(FALSE); }
-    SetTimer(IDT_PAGEMODEL_TRAINING, 400, nullptr);
+
+    // 학습 대상 정보 추출
+    int station_id = 1;
+    CString model_type = _T("PatchCore");
+    CComboBox* cb = (CComboBox*)GetDlgItem(IDC_COMBO_TARGET);
+    if (cb) {
+        int sel = cb->GetCurSel();
+        if (sel == 1) { station_id = 2; model_type = _T("YOLO11"); }
+    }
+
+    CString product_name;
+    CEdit* ed = (CEdit*)GetDlgItem(IDC_EDIT_PRODUCT_NAME);
+    if (ed) ed->GetWindowText(product_name);
+
+    // 서버에 RETRAIN_REQ(152) 전송
+    if (m_net && m_net->IsConnected()) {
+        CString req = CPacketBuilder::BuildRetrainReq(
+            station_id, model_type, product_name, (int)m_files.size());
+        m_net->SendJson(req);
+
+        // UI 전환 — 서버 응답(153) 대기 상태
+        m_training = true;
+        m_prog = 0;
+        m_progress.SetPos(0);
+        m_progress.ShowWindow(SW_SHOW);
+        CWnd* w = GetDlgItem(IDC_BTN_RETRAIN);
+        if (w) { w->SetWindowText(_T("서버 요청 중...")); w->EnableWindow(FALSE); }
+        w = GetDlgItem(IDC_STATIC_TRAIN_STATUS);
+        if (w) w->SetWindowText(_T("서버에 재학습 요청 전송 중..."));
+    } else {
+        MessageBox(_T("서버에 연결되어 있지 않습니다."),
+                   _T("오류"), MB_OK | MB_ICONWARNING);
+    }
+}
+
+void CPageModel::RequestModelList()
+{
+    if (m_net && m_net->IsConnected()) {
+        CString req = CPacketBuilder::BuildModelListReq();
+        m_net->SendJson(req);
+    }
 }
 
 void CPageModel::OnBtnClear()
@@ -216,9 +268,10 @@ void CPageModel::OnModelListRes(const std::string& json)
 void CPageModel::OnRetrainRes(const std::string& json)
 {
     CStringA jsonA(json.c_str());
-    int result = CPacketBuilder::ExtractInt(jsonA, "result");
+    CStringA successStr = CPacketBuilder::ExtractString(jsonA, "success");
+    bool success = (successStr == "true");
 
-    if (result == 0) {
+    if (success) {
         KillTimer(IDT_PAGEMODEL_TRAINING);
         m_training = true;
         m_prog = 0;

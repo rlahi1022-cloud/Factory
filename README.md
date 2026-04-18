@@ -36,10 +36,12 @@ Camera → AI Server → Main Server → DB → MFC Client
 
 * **MainServer (C++17)**
 
-  * EventBus 아키텍처 (느슨한 결합, 확장 가능)
+  * EventBus (워커 풀 4스레드 병렬 처리) + Service 레이어 아키텍처
+  * Handler → Service(검증+트랜잭션) → DAO(DB) 계층 분리
+  * ConnectionPool (4개 DB 커넥션 공유)
+  * bcrypt 비밀번호 해시 (glibc crypt_r)
   * 추론서버 수신 (포트 9000) + GUI 클라이언트 수신 (포트 9010)
-  * MariaDB prepared statement INSERT
-  * NG 이미지 파일 저장
+  * 모델 바이너리 TCP 중계 (학습서버 → 메인서버 → 추론서버)
   * SessionManager를 통한 MFC 클라이언트 broadcast
 
 * **Training Server (Python)**
@@ -74,13 +76,97 @@ Camera → AI Server → Main Server → DB → MFC Client
 
 ## 핵심 설계 특징
 
-* EventBus 기반 서버 아키텍처 (확장성)
+* EventBus + Service 레이어 서버 아키텍처 (책임 분리)
+* Handler → Service → DAO 3계층 구조 (검증 + 트랜잭션 + 롤백)
+* ConnectionPool 기반 DB 커넥션 관리 (acquire 5초 타임아웃)
+* EventBus 워커 풀 4스레드 + 큐 상한 10000 (backpressure 대응)
 * asyncio.Queue 기반 비동기 처리 (Backpressure 대응)
 * NG 중심 전송 구조 (트래픽 최적화)
 * inspection_id 기반 end-to-end 추적
 * ACK / 재전송 기반 데이터 신뢰성 확보
 * MariaDB prepared statement (SQL injection 방지)
+* 모델 바이너리 TCP 전송 (학습서버 → 메인서버 → 추론서버)
+* 모델 파일 저장 시 임시파일 → atomic rename (race condition 방지)
 * SessionManager 기반 다중 GUI 클라이언트 broadcast
+* 보안 강화: IP 화이트리스트 + 입력 검증 + JSON escape + 해시 무결성
+
+---
+
+## 보안 강화 내역
+
+### 적용된 방어
+
+* **SQL Injection 차단**: 모든 DAO prepared statement 사용
+* **IP 화이트리스트**: AI 서버 포트 9000에 내부망(10.x, 192.168.x, 172.16~31.x)만 허용
+* **입력 크기 제한**: JSON 64KB, 이미지 50MB, 모델 500MB 상한
+* **partial send 재시도**: `tcp_utils.h`의 `send_all` / `send_json_frame` 사용
+* **동시 접속 제한**: AI 서버 10개, GUI 세션 20개
+* **동시 학습 방지**: `GuiService`에 mutex 기반 `is_training_` 플래그
+* **동시 로그인 차단**: 같은 username 기존 세션 `force_close`
+* **bcrypt 비밀번호 해시**: `/dev/urandom` 실패 시 `random_device` fallback + 엔트로피 검증
+* **모델 파일 무결성**: 저장 후 크기 검증 + atomic rename
+* **JSON escape**: 모든 사용자 입력을 이스케이프하여 JSON injection 방지
+* **Path traversal 차단**: 모델 version 문자열에서 `../` 검증
+* **디스크 여유 확인**: 이미지 저장 전 100MB 이상 여유 확인
+* **recv 타임아웃**: AI/GUI 클라이언트 소켓에 30초 타임아웃 (slow loris 방어)
+* **ConnectionPool 재연결**: mysql_ping 실패 시 안전한 재연결 + double-close 방지
+* **로그 파일**: `logs/YYYY-MM-DD.log` 자동 로테이션 (stdout + 파일 tee)
+
+### 상세 현황
+`SECURITY_TODO.txt` 참고 (CRITICAL 7 + HIGH 12 + MEDIUM 16 + LOW 10/12 완료)
+
+---
+
+## 운영 가이드
+
+### 통합 설정 파일 (config/config.json)
+
+프로젝트의 모든 IP/포트/경로/DB 접속정보/AI 하이퍼파라미터가
+`config/config.json` 단일 파일로 통합됨 (MainServer + AiServer + MFC Client 공유).
+
+**주요 섹션:**
+* `network` — 서버 IP, AI/GUI/Training 포트, IP 화이트리스트
+* `database` — MariaDB 접속 정보, 풀 크기
+* `storage` — 이미지/모델/로그 저장 경로
+* `limits` — 네트워크/큐/세션 상한
+* `health_check` — 헬스체크 대상 목록
+* `ai_server.station1` / `ai_server.station2` — 추론서버 스테이션별 설정
+* `training` — 학습서버 하이퍼파라미터
+* `client` — MFC 클라이언트 설정
+
+**로드 경로 (우선순위):**
+
+| 컴포넌트 | 경로 지정 방식 |
+|---------|--------------|
+| MainServer | 인자 `./factory_main_server <path>` > `CONFIG_PATH` 환경변수 > `../../config/config.json` |
+| AiServer (Python) | `CONFIG_PATH` 환경변수 > `../config/config.json` 자동 탐색 |
+| MFC Client | 실행파일 기준 `..\..\config\config.json` 자동 탐색 |
+
+### 환경 변수 (선택)
+
+* `CONFIG_PATH` — config.json 경로 지정
+* `TRAIN_HOST` — 학습서버 IP (config.json보다 우선)
+  ```bash
+  TRAIN_HOST=192.168.0.50 ./factory_main_server
+  ```
+
+### 시각 동기화 (NTP)
+
+AI 서버, 메인 서버, 클라이언트 간 시각이 다르면 `inspection_id`의 timestamp 부분이 불일치해 로그 추적이 어려워진다. 운영 시 모든 PC에 NTP 동기화 설정 필수.
+
+```bash
+# Ubuntu / WSL
+sudo timedatectl set-ntp true
+
+# Windows
+w32tm /config /manualpeerlist:"time.windows.com" /syncfromflags:manual /update
+```
+
+### 로그 파일
+
+* 경로: `MainServer/build/logs/YYYY-MM-DD.log`
+* 자정 자동 로테이션
+* stdout과 동시 출력 (tee 방식)
 
 ---
 
@@ -88,18 +174,28 @@ Camera → AI Server → Main Server → DB → MFC Client
 
 ```
 Factory/
-├── MainServer/       # 메인 운영 서버 (C++17)
-│   ├── src/core/     # EventBus, TcpListener, main
-│   ├── src/handler/  # Router, StationHandler, AckSender
-│   ├── src/storage/  # DbManager, ImageStorage
-│   ├── src/session/  # SessionManager, GuiTcpListener, GuiNotifier
-│   └── src/monitor/  # HealthChecker, ConnectionRegistry
-└── AiServer/         # AI 추론/학습 서버 (Python)
-    ├── Common/       # 공통 모듈 (Protocol, Packet, TcpClient, Inferencer, StationRunner)
-    ├── Station1/     # 입고 검사 진입점
-    ├── Station2/     # 조립 검사 진입점
-    ├── Training/     # 학습 서버
-    └── tests/        # 테스트 스크립트
+├── config/
+│   └── config.json       # 통합 설정 (모든 IP/포트/경로/DB/하이퍼파라미터)
+├── MainServer/           # 메인 운영 서버 (C++17)
+│   ├── include/security/ # json_safety, input_validator, ip_filter
+│   ├── include/core/     # config.h, event_bus, tcp_listener, tcp_utils, logger
+│   ├── src/core/         # EventBus, TcpListener, Config
+│   ├── src/handler/      # Router, StationHandler, AckSender, TrainHandler
+│   ├── src/service/      # InspectionService, TrainService
+│   ├── src/storage/      # ConnectionPool, DAO, PasswordHash
+│   ├── src/session/      # GuiTcpListener, GuiRouter, GuiService, SessionManager
+│   └── src/monitor/      # HealthChecker, ConnectionRegistry
+├── AiServer/             # AI 추론/학습 서버 (Python)
+│   ├── Common/           # ConfigLoader, Protocol, TcpClient, Inferencer, StationRunner
+│   ├── Station1/         # 입고 검사 진입점
+│   ├── Station2/         # 조립 검사 진입점
+│   ├── Training/         # 학습 서버
+│   └── tests/            # 테스트 스크립트
+└── client/Factory_UI_CL/ # MFC 클라이언트
+    ├── ClientConfig.*    # config.json 로더
+    ├── NetworkClient.*   # TCP 통신
+    ├── PacketBuilder.*   # JSON 빌더 (이스케이프 포함)
+    └── Main/Login/Page* # UI
 ```
 
 상세 구조: `Directory_README.md` 참고
@@ -157,19 +253,37 @@ python -m Station2.Station2Main      # 조립 검사
 * MariaDB 연동 (prepared statement)
 * SessionManager + GuiNotifier (MFC broadcast)
 * 학습 서버 (PatchCore / YOLO11)
+* 학습서버 ↔ 메인서버 연동 (TRAIN_PROGRESS/COMPLETE/FAIL 수신 → DB models INSERT → GUI 푸시)
+* 메인서버 → 학습서버 TRAIN_START_REQ 전송 (클라이언트 재학습 버튼 연동)
+* MFC 클라이언트 전체 프로토콜 구현 (100~199)
+  * 로그인/회원가입 — DB 기반 인증 (하드코딩 제거)
+  * 검사 이력 조회, 통계 조회, 모델 목록 조회
+  * 재학습 요청/진행률 실시간 수신
+* 한글 행동 중심 로그 시스템 (logger.h — 이모지 prefix, 역할별 분류)
+* 전체 메인서버 코드 한글 주석
 * 테스트 스크립트 + 더미 데이터 생성기
 
 ### 미완성
 
-* MFC 클라이언트 요청 처리 (protocol 100~199 파싱)
-* HealthChecker 실제 PING/PONG JSON 교환
-* DB 테이블 bottle_id, model_id NULL 허용 ALTER 필요
+* NG 이미지 CameraView 렌더링 (클라이언트)
+* 카메라 실시간 연동 (하드웨어)
 
 ---
 
 ## 향후 계획
 
-* MFC 클라이언트 요청 핸들러 구현 (로그인, 이력 조회, 통계)
+* Pylon 카메라 SDK 연동 (현재 더미 이미지)
+* Arduino 실제 시리얼 통신 연동
+
+---
+
+## 향후 계획
+
 * HealthChecker PING/PONG 프로토콜 완성
 * Pylon 카메라 SDK 연동 (현재 더미 이미지)
 * 모델 정확도 개선 및 최적화
+* 실무 확장 적용 현황:
+  * ✅ `config.json` 단일 설정 파일로 IP/포트/경로 통합 (2026-04-18)
+  * ✅ `security/` 모듈로 보안 로직 집약 (json_safety, input_validator, ip_filter)
+  * ☐ Google Test + Mock DAO 기반 Service 레이어 단위 테스트
+  * ☐ `IConnection` 인터페이스로 TCP/TLS 교체 가능 구조

@@ -7,8 +7,10 @@ BEGIN_MESSAGE_MAP(CPageStation2, CDialogEx)
     ON_BN_CLICKED(IDC_BTN_S2_REWORK, OnBtnRework)
 END_MESSAGE_MAP()
 
-CPageStation2::CPageStation2(CWnd* p) : CDialogEx(IDD_PAGE_STATION2,p) {
-    m_last={10000,2,_T("--:--:--"),false,0.15,EDefect::None,65};
+CPageStation2::CPageStation2(CWnd* p) : CDialogEx(IDD_PAGE_STATION2,p), m_last{} {
+    m_last.id = 10000; m_last.station = 2;
+    m_last.time = _T("--:--:--"); m_last.isNG = false;
+    m_last.score = 0.15; m_last.defect = EDefect::None; m_last.latency = 65;
 }
 void CPageStation2::DoDataExchange(CDataExchange* pDX) {
     CDialogEx::DoDataExchange(pDX);

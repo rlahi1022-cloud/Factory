@@ -141,16 +141,27 @@ class TcpClient:
                 pass  # 취소는 정상 동작
 
     async def _discard_writer(self) -> None:
-        """writer(송신 소켓)를 안전하게 닫는다."""
-        if self._writer is None:
-            return
-        try:
-            self._writer.close()          # 소켓 닫기 요청
-            await self._writer.wait_closed()  # 닫힘 완료 대기
-        except Exception:
-            pass  # 이미 닫혀있어도 무시
-        self._writer = None
-        self._reader = None
+        """writer(송신 소켓)를 안전하게 닫고 pending ACK를 모두 정리한다.
+
+        연결이 끊긴 상태에서 계속 대기 중인 Future는 TimeoutError로 해제하여
+        호출자가 깔끔하게 종료/재시도할 수 있게 한다.
+        """
+        if self._writer is not None:
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            except Exception:
+                pass
+            self._writer = None
+            self._reader = None
+
+        # 연결 끊김 — pending ACK 모두 취소 (orphan future 방지)
+        if self._pending_acks:
+            logger.warning("연결 끊김 | pending ACK %d건 정리", len(self._pending_acks))
+            for inspection_id, fut in list(self._pending_acks.items()):
+                if not fut.done():
+                    fut.set_exception(ConnectionError("connection lost"))
+            self._pending_acks.clear()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 송신
@@ -167,10 +178,12 @@ class TcpClient:
         3. ACK 미수신 시 재전송 (최대 3회)
         4. 3회 모두 실패하면 포기 (False 반환)
 
+        모든 경로에서 _pending_acks를 확실히 정리하여 메모리 누수 방지.
+
         Args:
-            packet_bytes: 전송할 패킷 (PacketBuilder로 만든 것)
-            protocol_no: 메시지 번호 (예: 1000)
-            inspection_id: 검사 ID (ACK 매칭에 사용)
+            packet_bytes: 전송할 패킷
+            protocol_no: 메시지 번호
+            inspection_id: 검사 ID (ACK 매칭 키)
         Returns:
             True: 전송 성공 (ACK 수신), False: 전송 실패
         """
@@ -180,44 +193,48 @@ class TcpClient:
 
         loop = asyncio.get_running_loop()
 
-        # 최대 3회 시도
-        for attempt in range(1, MAX_SEND_ATTEMPTS + 1):
-            # Future 생성: ACK가 오면 이 Future에 결과가 들어온다
-            future: asyncio.Future = loop.create_future()
-            self._pending_acks[inspection_id] = future  # ACK 대기 맵에 등록
+        try:
+            for attempt in range(1, MAX_SEND_ATTEMPTS + 1):
+                future: asyncio.Future = loop.create_future()
+                self._pending_acks[inspection_id] = future
 
-            # 패킷 전송
-            ok = await self._send_raw(packet_bytes)
-            if not ok:
-                # 전송 자체가 실패 (연결 끊김 등)
-                self._pending_acks.pop(inspection_id, None)
-                await asyncio.sleep(self._reconnect_delay_sec)
-                continue  # 다음 시도
+                try:
+                    # 패킷 전송
+                    ok = await self._send_raw(packet_bytes)
+                    if not ok:
+                        await asyncio.sleep(self._reconnect_delay_sec)
+                        continue
 
-            try:
-                # 1초간 ACK 대기
-                ack_dict = await asyncio.wait_for(future, timeout=ACK_TIMEOUT_SEC)
-            except asyncio.TimeoutError:
-                # 1초 내 ACK 미수신 → 재전송
-                self._pending_acks.pop(inspection_id, None)
-                logger.warning("ACK timeout inspection_id=%s attempt=%d/%d",
-                               inspection_id, attempt, MAX_SEND_ATTEMPTS)
-                continue  # 다음 시도
+                    # 1초간 ACK 대기
+                    try:
+                        ack_dict = await asyncio.wait_for(future, timeout=ACK_TIMEOUT_SEC)
+                    except asyncio.TimeoutError:
+                        logger.warning("ACK timeout inspection_id=%s attempt=%d/%d",
+                                       inspection_id, attempt, MAX_SEND_ATTEMPTS)
+                        continue
 
-            # ACK 수신 성공
-            if ack_dict.get("ack") is True:
-                logger.debug("ACK ok inspection_id=%s", inspection_id)
-                return True
+                    # ACK 수신 성공
+                    if ack_dict.get("ack") is True:
+                        logger.debug("ACK ok inspection_id=%s", inspection_id)
+                        return True
 
-            # NACK(처리 실패) 수신 → 재시도 의미 없음, 포기
-            logger.error("NACK received inspection_id=%s err=%s",
-                         inspection_id, ack_dict.get("error_message"))
+                    # NACK(처리 실패) 수신 → 재시도 의미 없음, 포기
+                    logger.error("NACK received inspection_id=%s err=%s",
+                                 inspection_id, ack_dict.get("error_message"))
+                    return False
+
+                finally:
+                    # 각 시도마다 확실히 pop — 예외 경로에서도 메모리 누수 방지
+                    self._pending_acks.pop(inspection_id, None)
+
+            # 3회 모두 실패
+            logger.error("send_with_ack giveup inspection_id=%s after %d attempts",
+                         inspection_id, MAX_SEND_ATTEMPTS)
             return False
 
-        # 3회 모두 실패
-        logger.error("send_with_ack giveup inspection_id=%s after %d attempts",
-                     inspection_id, MAX_SEND_ATTEMPTS)
-        return False
+        finally:
+            # 함수 종료 시 최종 보장 — 예상치 못한 예외 시에도 정리
+            self._pending_acks.pop(inspection_id, None)
 
     async def send_fire_and_forget(self, packet_bytes: bytes) -> bool:
         """ACK 없이 단순 전송한다 (OK 카운트, 메타데이터 등).
@@ -283,6 +300,13 @@ class TcpClient:
                 # 헤더에서 JSON 크기 추출 (big-endian 4바이트 정수)
                 json_size = struct.unpack(">I", header)[0]
 
+                # JSON 크기 제한: 최대 64KB (비정상 패킷 차단)
+                if json_size == 0 or json_size > 64 * 1024:
+                    logger.error("receiver: invalid json_size=%d — dropping connection", json_size)
+                    await self._discard_writer()
+                    await asyncio.sleep(self._reconnect_delay_sec)
+                    continue
+
                 # JSON 본문 읽기
                 body = await self._reader.readexactly(json_size)
                 try:
@@ -291,10 +315,18 @@ class TcpClient:
                     logger.error("receiver: invalid JSON: %s", exc)
                     continue
 
-                # 이미지 데이터가 있으면 읽어서 버리기 (ACK에는 이미지가 없지만 안전 처리)
+                # 바이너리 데이터 수신 (이미지 또는 모델 파일)
                 image_size = int(msg_dict.get("image_size", 0))
+                binary_data: bytes | None = None
+                # 바이너리 크기 제한: 최대 500MB (모델 파일 포함)
+                MAX_BINARY_SIZE = 500 * 1024 * 1024
+                if image_size > MAX_BINARY_SIZE:
+                    logger.error("receiver: binary too large=%d — dropping", image_size)
+                    await self._discard_writer()
+                    await asyncio.sleep(self._reconnect_delay_sec)
+                    continue
                 if image_size > 0:
-                    await self._reader.readexactly(image_size)
+                    binary_data = await self._reader.readexactly(image_size)
 
                 # 메시지 번호로 분기 처리
                 protocol_no = msg_dict.get("protocol_no", 0)
@@ -304,8 +336,11 @@ class TcpClient:
                     await self._handle_health_ping(msg_dict)
                     continue
 
-                # ── MODEL_RELOAD_CMD(1010) → 모델 리로드 + 응답 ──
+                # ── MODEL_RELOAD_CMD(1010) → 모델 파일 저장 + 리로드 + 응답 ──
                 if protocol_no == ProtocolNo.MODEL_RELOAD_CMD:
+                    # 모델 바이너리가 있으면 cmd_dict에 첨부하여 콜백에 전달
+                    if binary_data:
+                        msg_dict["_model_bytes"] = binary_data
                     await self._handle_model_reload(msg_dict)
                     continue
 
@@ -355,21 +390,56 @@ class TcpClient:
         Args:
             cmd_dict: 수신한 명령 내용 (model_path, version, request_id 포함)
         """
-        request_id = cmd_dict.get("request_id", "")  # 요청/응답 매칭용 ID
-        model_path = cmd_dict.get("model_path", "")  # 새 모델 파일 경로
-        version = cmd_dict.get("version", "")         # 모델 버전
+        request_id = cmd_dict.get("request_id", "")
+        model_path = cmd_dict.get("model_path", "")
+        version = cmd_dict.get("version", "")
+        model_bytes: bytes | None = cmd_dict.pop("_model_bytes", None)
+
+        # 모델 바이너리가 있으면 로컬에 원자적으로 저장 (임시파일 → rename)
+        # 수신 도중 중단되거나 저장 실패 시 부분 파일이 남지 않도록 보장.
+        if model_bytes:
+            import os, time
+            ext = os.path.splitext(model_path)[1] if model_path else ".bin"
+            save_dir = os.path.join(".", "models")
+            os.makedirs(save_dir, exist_ok=True)
+            local_path = os.path.join(save_dir, f"{version}{ext}")
+            # 임시파일: PID + 나노초로 동시 수신 충돌 방지
+            tmp_path = f"{local_path}.tmp.{os.getpid()}.{time.time_ns()}"
+            try:
+                with open(tmp_path, "wb") as f:
+                    f.write(model_bytes)
+                    f.flush()
+                    os.fsync(f.fileno())  # 디스크 쓰기 완료 보장
+
+                # 저장 크기 검증
+                if os.path.getsize(tmp_path) != len(model_bytes):
+                    logger.error("모델 크기 불일치: 예상=%d 실제=%d",
+                                 len(model_bytes), os.path.getsize(tmp_path))
+                    os.remove(tmp_path)
+                    raise ValueError("size mismatch")
+
+                # atomic rename — 최종 경로로 이동
+                os.replace(tmp_path, local_path)
+                logger.info("모델 파일 저장 완료: %s (%d bytes)",
+                            local_path, len(model_bytes))
+                cmd_dict["model_path"] = local_path
+            except Exception as exc:
+                logger.error("모델 파일 저장 실패: %s", exc)
+                # 실패 시 임시파일 정리
+                if os.path.exists(tmp_path):
+                    try: os.remove(tmp_path)
+                    except: pass
 
         success = False
         if self._on_model_reload is not None:
             try:
-                # 등록된 콜백 함수 호출 (StationRunner._handle_model_reload)
                 self._on_model_reload(cmd_dict)
                 success = True
-                logger.info("Model reload success: path=%s version=%s", model_path, version)
+                logger.info("모델 리로드 성공: path=%s version=%s", model_path, version)
             except Exception as exc:
-                logger.error("Model reload failed: %s", exc)
+                logger.error("모델 리로드 실패: %s", exc)
         else:
-            logger.warning("No model reload callback registered")
+            logger.warning("모델 리로드 콜백 미등록")
 
         # MODEL_RELOAD_RES(1011) 응답: 성공/실패 결과를 운용서버에 알림
         res_body = {

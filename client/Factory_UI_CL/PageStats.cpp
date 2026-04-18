@@ -81,6 +81,7 @@ void CPageStats::DrawPareto(CDC& dc, CRect rc){
     if(m_pareto.empty())return;
     static COLORREF cols[]={RGB(204,0,0),RGB(224,96,0),RGB(212,160,0),RGB(0,112,192),RGB(128,128,128)};
     int n=(int)m_pareto.size(),maxC=m_pareto[0].cnt;
+    if(maxC<=0) maxC=1;  // 0 나눗셈 방지
     CRect pl(rc.left+28,rc.top+4,rc.right-4,rc.bottom-20);
     int bw=(pl.Width()/n)-4;
     dc.SetBkMode(TRANSPARENT);
@@ -120,7 +121,21 @@ void CPageStats::DrawLatency(CDC& dc, CRect rc){
     for(int i=1;i<n;++i)dc.LineTo(pt(i,m_trend[i].lat));
 }
 
-void CPageStats::OnBtnQuery(){Rebuild();Invalidate();}
+void CPageStats::OnBtnQuery(){
+    // 서버에 검사 이력 + 통계 요청 전송
+    if (m_net && m_net->IsConnected()) {
+        CString histReq = CPacketBuilder::BuildInspectHistoryReq(
+            0, _T(""), _T(""), 100);  // 전체 스테이션, 날짜 필터 없음, 최대 100건
+        m_net->SendJson(histReq);
+
+        CString statsReq = CPacketBuilder::BuildStatsReq(0, _T(""), _T(""));
+        m_net->SendJson(statsReq);
+    } else {
+        // 서버 미연결 시 로컬 더미 데이터로 갱신
+        Rebuild();
+        Invalidate();
+    }
+}
 void CPageStats::OnBtnExportCSV(){
     CFileDialog dlg(FALSE,_T("csv"),_T("log.csv"),OFN_OVERWRITEPROMPT,_T("CSV|*.csv||"),this);
     if(dlg.DoModal()!=IDOK)return;

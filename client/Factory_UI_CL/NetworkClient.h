@@ -32,6 +32,7 @@
 // ============================================================================
 
 #include "ClientProtocol.h"
+#include <atomic>
 #include <vector>
 #include <string>
 
@@ -57,6 +58,8 @@
 #define WM_NET_RESPONSE         (WM_APP + 106)
 // 재학습 진행률 푸시 수신 (프로토콜 154)
 #define WM_NET_RETRAIN_PROGRESS (WM_APP + 107)
+// 회원가입 응답 수신 (프로토콜 105)
+#define WM_NET_REGISTER_RES     (WM_APP + 108)
 
 // ============================================================================
 // CNetworkClient 클래스
@@ -112,8 +115,8 @@ private:
     // m_hRecvThread: 백그라운드 수신 스레드의 핸들
     HANDLE m_hRecvThread;
     // m_bRunning: 수신 스레드의 실행 여부 플래그
-    // volatile: 다른 스레드에서 변경 시 즉시 반영되도록 최적화 방지
-    volatile bool m_bRunning;
+    // std::atomic: 스레드 간 안전한 동기화 보장 (volatile보다 안전)
+    std::atomic<bool> m_bRunning;
 
     // ── 스레드 안전 전송 ─────────────────────────────────────────────────
     // CRITICAL_SECTION: Windows의 뮤텍스 (상호 배제 잠금)

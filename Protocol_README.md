@@ -28,15 +28,24 @@
 
 | 번호 | 이름 | 방향 | 구현 상태 |
 |------|------|------|----------|
-| 100 | LOGIN_REQ | MFC → 운용 | 미구현 |
-| 101 | LOGIN_RES | 운용 → MFC | 미구현 |
-| 110 | INSPECT_NG_PUSH | 운용 → MFC | 완성 (GuiNotifier) |
-| 112 | INSPECT_OK_COUNT_PUSH | 운용 → MFC | 미구현 |
-| 114 | INSPECT_HISTORY_REQ | MFC → 운용 | 미구현 |
-| 115 | INSPECT_HISTORY_RES | 운용 → MFC | 미구현 |
-| 130 | STATS_REQ | MFC → 운용 | 미구현 |
-| 131 | STATS_RES | 운용 → MFC | 미구현 |
-| 170 | SERVER_HEALTH_PUSH | 운용 → MFC | 완성 (GuiNotifier) |
+| 100 | LOGIN_REQ | MFC → 운용 | ✅ 완성 (DB 인증) |
+| 101 | LOGIN_RES | 운용 → MFC | ✅ 완성 |
+| 102 | LOGOUT_REQ | MFC → 운용 | ✅ 완성 |
+| 103 | LOGOUT_RES | 운용 → MFC | ✅ 완성 |
+| 104 | REGISTER_REQ | MFC → 운용 | ✅ 완성 (DB INSERT) |
+| 105 | REGISTER_RES | 운용 → MFC | ✅ 완성 |
+| 110 | INSPECT_NG_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier, 이미지 바이너리 첨부) |
+| 112 | INSPECT_OK_COUNT_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
+| 114 | INSPECT_HISTORY_REQ | MFC → 운용 | ✅ 완성 (DB 조회) |
+| 115 | INSPECT_HISTORY_RES | 운용 → MFC | ✅ 완성 |
+| 130 | STATS_REQ | MFC → 운용 | ✅ 완성 (DB 집계) |
+| 131 | STATS_RES | 운용 → MFC | ✅ 완성 |
+| 150 | MODEL_LIST_REQ | MFC → 운용 | ✅ 완성 (DB 조회) |
+| 151 | MODEL_LIST_RES | 운용 → MFC | ✅ 완성 |
+| 152 | RETRAIN_REQ | MFC → 운용 | ✅ 완성 (학습서버 TCP 중계) |
+| 153 | RETRAIN_RES | 운용 → MFC | ✅ 완성 |
+| 154 | RETRAIN_PROGRESS_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
+| 170 | SERVER_HEALTH_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
 
 ### 내부 채널 (운용 ↔ 추론) — 1000~1099, 완성
 
@@ -55,11 +64,13 @@
 
 | 번호 | 이름 | 방향 | 구현 상태 |
 |------|------|------|----------|
-| 1100 | TRAIN_START_REQ | 운용 → 학습 | AI서버 완성 |
-| 1101 | TRAIN_START_RES | 학습 → 운용 | AI서버 완성 |
-| 1102 | TRAIN_PROGRESS | 학습 → 운용 | AI서버 완성 |
-| 1104 | TRAIN_COMPLETE | 학습 → 운용 | AI서버 완성 |
-| 1106 | TRAIN_FAIL | 학습 → 운용 | AI서버 완성 |
+| 1100 | TRAIN_START_REQ | 운용 → 학습 | ✅ 양쪽 완성 |
+| 1101 | TRAIN_START_RES | 학습 → 운용 | ✅ AI서버 완성 |
+| 1102 | TRAIN_PROGRESS | 학습 → 운용 | ✅ 양쪽 완성 (Router + GuiNotifier 푸시) |
+| 1104 | TRAIN_COMPLETE | 학습 → 운용 | ✅ 양쪽 완성 (Router + DbManager INSERT + ACK) |
+| 1105 | TRAIN_COMPLETE_ACK | 운용 → 학습 | ✅ 메인서버 완성 |
+| 1106 | TRAIN_FAIL | 학습 → 운용 | ✅ 양쪽 완성 (Router + GuiNotifier 푸시) |
+| 1107 | TRAIN_FAIL_ACK | 운용 → 학습 | ✅ 메인서버 완성 |
 
 ### 헬스체크 — 1200~
 

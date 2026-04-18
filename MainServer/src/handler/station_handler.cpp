@@ -1,14 +1,16 @@
-// StationHandler.cpp
+// ============================================================================
+// station_handler.cpp — 검사 이벤트 → Service 호출 → ACK/GUI 발행
+// ============================================================================
 #include "handler/station_handler.h"
-
-#include <iostream>
+#include "core/logger.h"
+#include "Protocol.h"
 
 namespace factory {
 
-// ===== Station1Handler (입고 검사) =====
+// ===== Station1Handler (입고검사) =============================================
 
-Station1Handler::Station1Handler(EventBus& bus)
-    : event_bus_(bus) {
+Station1Handler::Station1Handler(EventBus& bus, InspectionService& service)
+    : event_bus_(bus), service_(service) {
 }
 
 void Station1Handler::register_handlers() {
@@ -18,23 +20,31 @@ void Station1Handler::register_handlers() {
 
 void Station1Handler::on_inspection(const std::any& payload) {
     const auto& ev = std::any_cast<const InspectionEvent&>(payload);
-    std::cout << "[Station1Handler] NG inbound — score=" << ev.score
-              << " defect=" << ev.defect_type << std::endl;
+    log_ai("입고검사 NG 수신 | 점수=%.2f 결함=%s", ev.score, ev.defect_type.c_str());
 
-    // 검증 통과 → 후속 이벤트 발행
-    event_bus_.publish(EventType::INSPECTION_VALIDATED, ev);
+    auto result = service_.process(ev);
 
-    if (!ev.image_bytes.empty()) {
-        event_bus_.publish(EventType::IMAGE_SAVE_REQUESTED, ev);
+    if (result.success) {
+        // DB+이미지 성공 → ACK + GUI 푸시
+        event_bus_.publish(EventType::DB_WRITE_COMPLETED, ev);
+        event_bus_.publish(EventType::GUI_PUSH_REQUESTED, ev);
+    } else {
+        // 실패 → NACK
+        AckSendEvent nack{};
+        nack.protocol_no   = static_cast<int>(
+            ack_no_for(static_cast<ProtocolNo>(ev.protocol_no)));
+        nack.inspection_id = ev.inspection_id;
+        nack.sender_addr   = ev.sender_addr;
+        nack.ack_ok        = false;
+        nack.error_message = result.error_message;
+        event_bus_.publish(EventType::ACK_SEND_REQUESTED, nack);
     }
-    event_bus_.publish(EventType::DB_WRITE_REQUESTED, ev);
-    event_bus_.publish(EventType::GUI_PUSH_REQUESTED, ev);
 }
 
-// ===== Station2Handler (조립 검사) =====
+// ===== Station2Handler (조립검사) =============================================
 
-Station2Handler::Station2Handler(EventBus& bus)
-    : event_bus_(bus) {
+Station2Handler::Station2Handler(EventBus& bus, InspectionService& service)
+    : event_bus_(bus), service_(service) {
 }
 
 void Station2Handler::register_handlers() {
@@ -44,19 +54,23 @@ void Station2Handler::register_handlers() {
 
 void Station2Handler::on_inspection(const std::any& payload) {
     const auto& ev = std::any_cast<const InspectionEvent&>(payload);
-    std::cout << "[Station2Handler] NG assembly — score=" << ev.score
-              << " defect=" << ev.defect_type << std::endl;
+    log_ai("조립검사 NG 수신 | 점수=%.2f 결함=%s", ev.score, ev.defect_type.c_str());
 
-    // assemblies 테이블용 부가 정보(cap_ok/label_ok/fill_ok/yolo_detections)는
-    // ev.raw_json에서 추출하여 DbManager에 위임 — 여기서는 골격만 둠
+    auto result = service_.process(ev);
 
-    event_bus_.publish(EventType::INSPECTION_VALIDATED, ev);
-
-    if (!ev.image_bytes.empty()) {
-        event_bus_.publish(EventType::IMAGE_SAVE_REQUESTED, ev);
+    if (result.success) {
+        event_bus_.publish(EventType::DB_WRITE_COMPLETED, ev);
+        event_bus_.publish(EventType::GUI_PUSH_REQUESTED, ev);
+    } else {
+        AckSendEvent nack{};
+        nack.protocol_no   = static_cast<int>(
+            ack_no_for(static_cast<ProtocolNo>(ev.protocol_no)));
+        nack.inspection_id = ev.inspection_id;
+        nack.sender_addr   = ev.sender_addr;
+        nack.ack_ok        = false;
+        nack.error_message = result.error_message;
+        event_bus_.publish(EventType::ACK_SEND_REQUESTED, nack);
     }
-    event_bus_.publish(EventType::DB_WRITE_REQUESTED, ev);
-    event_bus_.publish(EventType::GUI_PUSH_REQUESTED, ev);
 }
 
 } // namespace factory

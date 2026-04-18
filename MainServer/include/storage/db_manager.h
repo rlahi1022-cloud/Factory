@@ -1,51 +1,41 @@
+// ============================================================================
+// db_manager.h — DB 이벤트 핸들러 (ConnectionPool + DAO 사용)
+// ============================================================================
+// 목적:
+//   EventBus 이벤트(DB_WRITE_REQUESTED, TRAIN_COMPLETE_RECEIVED)를 구독하여
+//   DAO를 통해 DB 작업을 수행한다.
+//   직접 SQL을 실행하지 않고, DAO에 위임한다.
+// ============================================================================
 #pragma once
-// db_manager.h
-// MariaDB 연동. DB_WRITE_REQUESTED 이벤트를 구독하여
-// inspections / assemblies 테이블에 INSERT.
-// mariadb/mysql.h (MariaDB Connector/C) 사용.
 
 #include "core/event_bus.h"
+#include "storage/connection_pool.h"
+#include "storage/dao.h"
 
-#include <mariadb/mysql.h>
-#include <mutex>
+#include <memory>
 #include <string>
 
 namespace factory {
 
 class DbManager {
 public:
-    DbManager(EventBus& bus,
-              const std::string& host,
-              const std::string& user,
-              const std::string& password,
-              const std::string& schema,
-              unsigned int port = 3306);
-    ~DbManager();
+    /// ConnectionPool을 외부에서 주입받는다
+    DbManager(EventBus& bus, ConnectionPool& pool);
+    ~DbManager() = default;
 
     void register_handlers();
 
-    bool connect();
-    void disconnect();
-
 private:
     void on_db_write(const std::any& payload);
+    void on_train_complete(const std::any& payload);
 
-    bool insert_inspection(const InspectionEvent& ev, long long& out_inspection_id);
-    bool insert_assembly(const InspectionEvent& ev, long long inspection_id);
+    EventBus&       event_bus_;
+    ConnectionPool& pool_;
 
-    // raw_json에서 int 필드 추출 (간이 파서)
-    static int extract_int(const std::string& json, const std::string& key);
-    static double extract_double(const std::string& json, const std::string& key);
-    static std::string extract_str(const std::string& json, const std::string& key);
-
-    EventBus&    event_bus_;
-    MYSQL*       conn_;
-    std::mutex   db_mutex_;     // DB 접근 직렬화
-    std::string  db_host_;
-    std::string  db_user_;
-    std::string  db_password_;
-    std::string  db_schema_;
-    unsigned int db_port_;
+    // 테이블별 DAO
+    InspectionDao inspection_dao_;
+    AssemblyDao   assembly_dao_;
+    ModelDao      model_dao_;
 };
 
 } // namespace factory

@@ -25,7 +25,7 @@ mysql -h 127.0.0.1 -u factorymanager -p Factory
 DbManager db_manager(event_bus, "127.0.0.1", "factorymanager", "1234", "Factory");
 ```
 
-(현재는 `127.0.0.1` / `factory` / `factory_pw` / `factory_qc`로 placeholder 상태)
+main.cpp에서 위 접속 정보가 설정되어 있음.
 
 ## 테이블 구조
 
@@ -58,13 +58,48 @@ DbManager db_manager(event_bus, "127.0.0.1", "factorymanager", "1234", "Factory"
 | patchcore_score | FLOAT | NOT NULL | PatchCore 이상 점수 |
 | timestamp | DATETIME | NOT NULL | 검사 시각 |
 
-### 기타 테이블
+#### users (사용자 계정)
+
+| 컬럼 | 타입 | NULL | 설명 |
+|------|------|------|------|
+| id | INT AUTO_INCREMENT | PK | 사용자 ID |
+| employee_id | VARCHAR(20) | NOT NULL | 사원 ID |
+| username | VARCHAR(50) UNIQUE | NOT NULL | 로그인 아이디 |
+| password_hash | VARCHAR(255) | NOT NULL | 비밀번호 (bcrypt 해시, $2b$12$...) |
+| role | VARCHAR(20) | NOT NULL | 권한 (Admin/Operator/Viewer) |
+| created_at | DATETIME | DEFAULT NOW() | 가입 시각 |
+| last_login_at | DATETIME | NULL | 마지막 로그인 시각 |
+
+클라이언트 LOGIN_REQ(100) → DB 조회 + bcrypt 검증, REGISTER_REQ(104) → bcrypt 해시 후 DB INSERT.
+
+초기 관리자 계정 등록 (bcrypt 해시):
+```sql
+-- 서버에서 회원가입 기능으로 등록하거나, 아래 SQL로 평문 INSERT 후
+-- 첫 로그인 시 서버가 bcrypt로 자동 검증
+INSERT INTO users (employee_id, username, password_hash, role)
+VALUES ('EMP-001', 'admin01', '$2b$12$...해시값...', 'Admin');
+```
+
+### models (AI 모델 버전 관리)
+
+| 컬럼 | 타입 | NULL | 설명 |
+|------|------|------|------|
+| id | INT AUTO_INCREMENT | PK | 모델 ID |
+| station_id | INT | NOT NULL | 스테이션 번호 (1 또는 2) |
+| model_type | VARCHAR(50) | NOT NULL | 모델 종류 (PatchCore / YOLO11) |
+| version | VARCHAR(50) | NOT NULL | 모델 버전 |
+| accuracy | DOUBLE | NOT NULL | 정확도 (AUROC 또는 mAP50) |
+| model_path | VARCHAR(255) | NULL | 모델 파일 경로 |
+| deployed_at | DATETIME | DEFAULT NOW() | 배포 시각 |
+| is_active | TINYINT(1) | DEFAULT 1 | 활성 여부 |
+
+학습서버 TRAIN_COMPLETE(1104) 수신 시 DbManager가 자동 INSERT.
+
+### bottles (용기 상태 추적)
 
 | 테이블 | 용도 |
 |--------|------|
-| users | 사용자 계정 (admin/operator/viewer) |
-| models | AI 모델 버전 관리 |
-| bottles | 용기 상태 추적 |
+| bottles | 용기 상태 추적 (추후 연동) |
 
 ## AI서버 필드 → DB 컬럼 매핑
 
