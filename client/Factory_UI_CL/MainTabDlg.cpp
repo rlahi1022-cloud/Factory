@@ -417,6 +417,22 @@ void CMainTabDlg::OnTimer(UINT_PTR id)
         InvalidateRect(StatusRect());
     }
     else if (id == IDT_STATUSBAR) {
+        // ── 연결 상태 실시간 동기화 ──
+        // UI의 m_bConnected는 WM_NET_CONNECTED/DISCONNECTED 메시지에 의존하는데,
+        // 네트워크 소리 없이 끊어진 경우(silent drop) 이 메시지가 안 올 수 있다.
+        // → 1초마다 실제 소켓 상태를 확인해 m_bConnected와 동기화한다.
+        bool actual = m_net.IsConnected();
+        if (actual != m_bConnected) {
+            m_bConnected = actual;
+            TRACE(_T("[MainTabDlg] 연결 상태 동기화: %s\n"),
+                  actual ? _T("연결됨") : _T("끊김 감지"));
+            if (!actual) {
+                // 끊김 감지 → 재접속 타이머 시작 (중복 방지 위해 KillTimer 선호출)
+                KillTimer(IDT_RECONNECT);
+                SetTimer(IDT_RECONNECT, 10000, nullptr);
+            }
+            InvalidateRect(ToolbarRect());  // LED/상태 그림 갱신
+        }
         InvalidateRect(StatusRect());
     }
     else if (id == IDT_RECONNECT) {

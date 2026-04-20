@@ -347,17 +347,19 @@ void CNetworkClient::RecvLoop()
         OnPacketReceived(jsonBuf);
     }
 
-    // 수신 루프 종료
-    TRACE(_T("[NetworkClient] 수신 스레드 종료 (running=%d)\n"), (int)m_bRunning);
+    // ── 루프 종료 이유 판별 ──
+    //  1) Disconnect() 호출: 이전에 m_bRunning=false + socket close → while 조건이 false로 바뀜
+    //  2) Silent drop (서버 측 끊기, 네트워크 끊김): recv 에러로 break → m_bRunning이 여전히 true
+    bool silent_drop = m_bRunning.load();
 
-    // ※ 소켓은 여기서 닫지 않음! Disconnect()가 관리합니다.
+    TRACE(_T("[NetworkClient] 수신 스레드 종료 (silent_drop=%d)\n"), silent_drop);
     m_bRunning = false;
 
-    // ※ WM_NET_DISCONNECTED는 Disconnect()에서만 발송합니다.
-    //    여기서 중복 발송하면 MainTabDlg의 재접속 타이머가 2번 등록되어
-    //    IDT_RECONNECT가 중복 실행되는 부작용이 생깁니다.
-    //    Disconnect()가 소켓을 닫아 이 루프를 종료시키므로
-    //    이후 Disconnect() 내부의 PostMessage가 반드시 호출됩니다.
+    // Silent drop인 경우에만 UI에 알림
+    // (Disconnect()가 호출된 경우에는 Disconnect()가 직접 발송함 → 중복 방지)
+    if (silent_drop && m_hNotifyWnd && ::IsWindow(m_hNotifyWnd)) {
+        ::PostMessage(m_hNotifyWnd, WM_NET_DISCONNECTED, 0, 0);
+    }
 }
 
 // ============================================================================
