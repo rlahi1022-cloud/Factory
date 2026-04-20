@@ -486,8 +486,16 @@ void CMainTabDlg::ConnectToServer()
             m_session.username, m_session.password);
         m_net.SendJson(loginJson);
 
-        // 접속 직후 초기 데이터 요청
+        // 접속 직후 초기 데이터 요청 (DB 기반 실데이터 로드)
         if (m_model) m_model->RequestModelList();
+
+        // 검사 이력 + 통계를 자동 조회 → 홈 화면에 실데이터 표시
+        CString histReq = CPacketBuilder::BuildInspectHistoryReq(
+            0, _T(""), _T(""), 100);  // 전체 스테이션, 최대 100건
+        m_net.SendJson(histReq);
+
+        CString statsReq = CPacketBuilder::BuildStatsReq(0, _T(""), _T(""));
+        m_net.SendJson(statsReq);
 
         TRACE(_T("[MainTabDlg] 서버 접속 + LOGIN_REQ + 초기 데이터 요청 완료\n"));
     } else {
