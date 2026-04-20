@@ -220,7 +220,8 @@ void CPageModel::OnModelListRes(const std::string& json)
 {
     CStringA jsonA(json.c_str());
 
-    int arrStart = jsonA.Find("\"models\"");
+    // 서버 실제 응답: {"protocol_no":151,"count":N,"items":[{...},...]}
+    int arrStart = jsonA.Find("\"items\"");
     if (arrStart < 0) return;
     int arrS = jsonA.Find('[', arrStart);
     int arrE = jsonA.Find(']', arrS);
@@ -239,20 +240,11 @@ void CPageModel::OnModelListRes(const std::string& json)
         ModelRow row;
         row.id       = CPacketBuilder::ExtractInt(obj, "id");
         row.station  = CPacketBuilder::ExtractInt(obj, "station_id");
-        row.type     = CString(CPacketBuilder::ExtractString(obj, "type"));
-        row.ver      = CString(CPacketBuilder::ExtractString(obj, "version"));
+        row.type     = CPacketBuilder::ExtractStringW(obj, "model_type");   // 서버 필드명 일치
+        row.ver      = CPacketBuilder::ExtractStringW(obj, "version");
         row.acc      = CPacketBuilder::ExtractDouble(obj, "accuracy");
-        row.deployed = CString(CPacketBuilder::ExtractString(obj, "deployed_at"));
-
-        CStringA activeKey = "\"active\":";
-        int aPos = obj.Find(activeKey);
-        if (aPos >= 0) {
-            CStringA rest = obj.Mid(aPos + activeKey.GetLength());
-            rest.TrimLeft();
-            row.active = (rest.Left(4) == "true");
-        } else {
-            row.active = false;
-        }
+        row.deployed = CPacketBuilder::ExtractStringW(obj, "deployed_at");
+        row.active   = (CPacketBuilder::ExtractInt(obj, "is_active") != 0);  // 서버는 0/1 정수
 
         m_models.push_back(row);
         pos = oe + 1;
@@ -287,8 +279,7 @@ void CPageModel::OnRetrainRes(const std::string& json)
         m_progress.ShowWindow(SW_HIDE);
         CWnd* w = GetDlgItem(IDC_BTN_RETRAIN);
         if (w) { w->SetWindowText(_T("재학습 실행")); w->EnableWindow(TRUE); }
-        CStringA msgA = CPacketBuilder::ExtractString(jsonA, "message");
-        CString msg(msgA);
+        CString msg = CPacketBuilder::ExtractStringW(jsonA, "message");  // UTF-8 → Unicode
         if (msg.IsEmpty()) msg = _T("서버에서 재학습 요청을 거부했습니다.");
         MessageBox(msg, _T("재학습 실패"), MB_OK | MB_ICONWARNING);
     }

@@ -53,9 +53,21 @@ void SessionManager::set_client_info(int client_fd,
     }
 }
 
-void SessionManager::broadcast(const std::string& json_message, int station_filter) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& [fd, session] : sessions_) {
+// 대상 세션 스냅샷 구조체 (mutex 해제 후 전송에 사용)
+struct BroadcastTarget {
+    int         fd;
+    std::string remote_addr;
+};
+
+// 필터링된 수신 대상 fd 목록을 mutex 보호 하에 "스냅샷" 복사한다.
+// 이후 실제 send()는 mutex 밖에서 수행 → 느린 클라이언트가 다른 세션에 영향을 주지 않음.
+static std::vector<BroadcastTarget> snapshot_targets(
+    std::unordered_map<int, GuiSession>& sessions,
+    int station_filter)
+{
+    std::vector<BroadcastTarget> targets;
+    targets.reserve(sessions.size());
+    for (const auto& [fd, session] : sessions) {
         // 필터링 규칙:
         //   station_filter==0 → 모든 클라이언트에 전송
         //   station_filter!=0 → 해당 station 구독자 + 전체 구독자(subscribed_station==0)에만 전송
@@ -64,9 +76,23 @@ void SessionManager::broadcast(const std::string& json_message, int station_filt
             session.subscribed_station != station_filter) {
             continue;
         }
-        if (!send_json(fd, json_message)) {
-            log_err_push("브로드캐스트 실패 | fd=%d ip=%s", fd,
-                         session.remote_addr.c_str());
+        targets.push_back({fd, session.remote_addr});
+    }
+    return targets;
+}
+
+void SessionManager::broadcast(const std::string& json_message, int station_filter) {
+    // 1) mutex 짧게 잡고 수신자 fd 목록만 스냅샷
+    std::vector<BroadcastTarget> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        targets = snapshot_targets(sessions_, station_filter);
+    }
+    // 2) mutex 해제 후 전송 → 한 클라이언트가 느려도 다른 세션 블로킹 없음
+    for (const auto& t : targets) {
+        if (!send_json(t.fd, json_message)) {
+            log_err_push("브로드캐스트 실패 | fd=%d ip=%s", t.fd,
+                         t.remote_addr.c_str());
         }
     }
 }
@@ -74,22 +100,22 @@ void SessionManager::broadcast(const std::string& json_message, int station_filt
 void SessionManager::broadcast_with_binary(const std::string& json_message,
                                             const std::vector<uint8_t>& binary_data,
                                             int station_filter) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& [fd, session] : sessions_) {
-        if (station_filter != 0 &&
-            session.subscribed_station != 0 &&
-            session.subscribed_station != station_filter) {
-            continue;
-        }
+    // 동일 스냅샷 패턴: fd 목록만 복사 후 mutex 해제
+    std::vector<BroadcastTarget> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        targets = snapshot_targets(sessions_, station_filter);
+    }
+    for (const auto& t : targets) {
         // [4바이트 헤더] + [JSON] + [이미지 바이너리]
-        if (!send_json(fd, json_message)) {
-            log_err_push("브로드캐스트 실패 | fd=%d ip=%s", fd,
-                         session.remote_addr.c_str());
+        if (!send_json(t.fd, json_message)) {
+            log_err_push("브로드캐스트 실패 | fd=%d ip=%s", t.fd,
+                         t.remote_addr.c_str());
             continue;
         }
         if (!binary_data.empty()) {
-            if (!send_all(fd, binary_data.data(), binary_data.size())) {
-                log_err_push("이미지 전송 실패 | fd=%d size=%zu", fd, binary_data.size());
+            if (!send_all(t.fd, binary_data.data(), binary_data.size())) {
+                log_err_push("이미지 전송 실패 | fd=%d size=%zu", t.fd, binary_data.size());
             }
         }
     }

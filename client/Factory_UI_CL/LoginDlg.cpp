@@ -238,7 +238,7 @@ LRESULT CLoginDlg::OnRegisterRes(WPARAM wParam, LPARAM lParam)
         SwitchMode(false);  // 로그인 모드로 복귀
     }
     else {
-        CString msg(CPacketBuilder::ExtractString(jsonA, "message"));
+        CString msg = CPacketBuilder::ExtractStringW(jsonA, "message");  // UTF-8 → Unicode
         if (msg.IsEmpty()) msg = _T("회원가입에 실패했습니다.");
         SetError(msg);
     }

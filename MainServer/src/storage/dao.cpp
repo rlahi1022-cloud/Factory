@@ -19,9 +19,22 @@ namespace factory {
 // InspectionDao
 // ============================================================================
 
+// ISO8601 → MySQL DATETIME 변환
+//   입력: "2026-04-20T10:36:31.916+00:00"
+//   출력: "2026-04-20 10:36:31"
+static std::string iso8601_to_mysql(const std::string& ts) {
+    if (ts.size() < 19) return ts;
+    std::string out = ts.substr(0, 19);     // "YYYY-MM-DDTHH:MM:SS"
+    if (out.size() >= 11 && out[10] == 'T') out[10] = ' ';  // 'T' → ' '
+    return out;
+}
+
 long long InspectionDao::insert(const InspectionEvent& ev) {
     PooledConnection conn(pool_);
     if (!conn.get()) return -1;
+
+    // ISO8601을 MySQL DATETIME 형식으로 변환
+    std::string ts_mysql = iso8601_to_mysql(ev.timestamp);
 
     // 이미지 경로 구성
     std::string image_path;
@@ -54,9 +67,9 @@ long long InspectionDao::insert(const InspectionEvent& ev) {
     bind[0].buffer_type = MYSQL_TYPE_LONG;
     bind[0].buffer = &p_station_id;
 
-    unsigned long ts_len = static_cast<unsigned long>(ev.timestamp.size());
+    unsigned long ts_len = static_cast<unsigned long>(ts_mysql.size());
     bind[1].buffer_type = MYSQL_TYPE_STRING;
-    bind[1].buffer = const_cast<char*>(ev.timestamp.c_str());
+    bind[1].buffer = const_cast<char*>(ts_mysql.c_str());
     bind[1].buffer_length = ts_len;
     bind[1].length = &ts_len;
 

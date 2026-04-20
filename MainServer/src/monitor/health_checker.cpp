@@ -88,8 +88,17 @@ void HealthChecker::run_loop() {
 
         log_main("연결 현황 | 총 %d개 AI서버 접속 중", connected_count);
 
-        // interval_ 동안 1초 단위로 sleep (빠른 종료 지원)
-        auto remaining = interval_;
+        // 체크 주기 동적 조정:
+        //   모든 타겟이 연결됨 → 긴 주기 (30초) — 로그 노이즈 최소화
+        //   하나라도 미연결 → 짧은 주기 (5초) — 빠른 복구 감지
+        // TCP keepalive(60s 유휴 후 probe)가 실제 좀비 연결 감지를 담당하므로
+        // HealthChecker는 "등록 여부"만 확인하면 충분함.
+        bool all_alive = true;
+        for (const auto& target : targets_) {
+            if (down_state_map_[target.name]) { all_alive = false; break; }
+        }
+        auto remaining = all_alive ? std::chrono::seconds(30) : interval_;
+
         while (is_running_.load() && remaining.count() > 0) {
             auto step = std::min(remaining, std::chrono::seconds(1));
             std::this_thread::sleep_for(step);

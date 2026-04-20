@@ -252,8 +252,8 @@ def test_ng_packet(sock: socket.socket, station_id: int, seq: int) -> bool:
         "inspection_id": inspection_id,
         "station_id": station_id,
         "result": "ng",
-        # Station1은 일반적인 이상, Station2는 캡 느슨함을 예시로 사용
-        "defect_type": "anomaly" if station_id == 1 else "cap_loose",
+        # Inferencer.py와 동일 필드명 사용 ("defect", defect_type 아님)
+        "defect": "anomaly" if station_id == 1 else "cap_loose",
         "score": 0.87,           # 예시 이상 점수
         "latency_ms": 45,        # 추론 소요 시간 (밀리초)
         "timestamp": ts,
