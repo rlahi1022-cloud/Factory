@@ -81,6 +81,20 @@ public:
     // 예) {"score":0.87} 에서 ExtractDouble(json, "score") → 0.87
     static double ExtractDouble(const CStringA& json, const CStringA& key);
 
+    // ExtractBool: JSON에서 불리언 값 추출
+    // 예) {"success":true} 에서 ExtractBool(json, "success") → true
+    // 주의: ExtractString은 따옴표 없는 값(true/false)을 잘못 파싱하므로 반드시 이것 사용
+    static bool ExtractBool(const CStringA& json, const CStringA& key);
+
+    // ExtractStringW: UTF-8 JSON에서 문자열 값을 Unicode CString으로 추출
+    // ExtractString의 결과(CStringA)를 UTF-8 → CString 변환하여 반환
+    // 한글 등 비-ASCII 문자열을 안전하게 표시하려면 반드시 이걸 사용해야 함
+    static CString ExtractStringW(const CStringA& json, const CStringA& key);
+
+    // Utf8ToWide: UTF-8 바이트 시퀀스를 Unicode CString으로 변환
+    // 서버가 보낸 JSON의 한글을 MFC 컨트롤에 표시하기 전에 사용
+    static CString Utf8ToWide(const CStringA& utf8);
+
     // ── 요청 메시지 빌더 (각 프로토콜별 JSON 생성) ────────────────────────
 
     // BuildLoginReq: 로그인 요청 JSON 생성 (프로토콜 100)

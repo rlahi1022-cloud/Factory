@@ -268,8 +268,7 @@ void CPageModel::OnModelListRes(const std::string& json)
 void CPageModel::OnRetrainRes(const std::string& json)
 {
     CStringA jsonA(json.c_str());
-    CStringA successStr = CPacketBuilder::ExtractString(jsonA, "success");
-    bool success = (successStr == "true");
+    bool success = CPacketBuilder::ExtractBool(jsonA, "success");
 
     if (success) {
         KillTimer(IDT_PAGEMODEL_TRAINING);

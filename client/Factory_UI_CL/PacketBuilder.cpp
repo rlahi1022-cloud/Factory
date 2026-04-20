@@ -220,6 +220,76 @@ CStringA CPacketBuilder::GenerateRequestId()
 }
 
 // ============================================================================
+// ExtractBool — JSON의 불리언 값(true/false) 추출
+// ============================================================================
+// 중요: ExtractString은 따옴표 없는 원시값(true/false/123)을 잘못 파싱하므로
+//       boolean 필드는 반드시 이 함수를 사용해야 한다.
+//
+// 예) "success":true,"username":"admin123"
+//   ExtractString("success") → "username" (잘못됨!)
+//   ExtractBool("success")   → true (정상)
+bool CPacketBuilder::ExtractBool(const CStringA& json, const CStringA& key)
+{
+    if (json.IsEmpty() || key.IsEmpty()) return false;
+
+    CStringA needle;
+    needle.Format("\"%s\"", (LPCSTR)key);
+
+    int pos = json.Find(needle);
+    if (pos < 0) return false;
+
+    int colon = json.Find(':', pos + needle.GetLength());
+    if (colon < 0) return false;
+
+    // 콜론 다음부터 원시값 확인 (공백 스킵)
+    int i = colon + 1;
+    while (i < json.GetLength() &&
+           (json[i] == ' ' || json[i] == '\t')) ++i;
+
+    // "true" 시작이면 true, 그 외는 false
+    return (i + 3 < json.GetLength()) &&
+           json[i]   == 't' &&
+           json[i+1] == 'r' &&
+           json[i+2] == 'u' &&
+           json[i+3] == 'e';
+}
+
+// ============================================================================
+// Utf8ToWide — UTF-8 바이트 → Unicode CString 변환
+// ============================================================================
+// 목적:
+//   서버가 보낸 UTF-8 JSON에서 추출한 CStringA(ANSI)를
+//   Unicode CString으로 변환해 MFC 컨트롤에 올바르게 표시한다.
+//
+// 문제:
+//   CString(CStringA) 생성자는 CP949(한국어 Windows 기본 ANSI)로 해석 →
+//   UTF-8 바이트를 잘못 매핑하여 "溢웴헿???" 같은 깨진 문자 발생.
+//
+// 해결:
+//   MultiByteToWideChar(CP_UTF8, ...)로 UTF-8 → UTF-16 명시적 변환.
+CString CPacketBuilder::Utf8ToWide(const CStringA& utf8)
+{
+    if (utf8.IsEmpty()) return CString();
+
+    int wlen = MultiByteToWideChar(CP_UTF8, 0,
+        (LPCSTR)utf8, utf8.GetLength(), nullptr, 0);
+    if (wlen <= 0) return CString((LPCSTR)utf8);  // 변환 실패 시 폴백
+
+    CString result;
+    MultiByteToWideChar(CP_UTF8, 0,
+        (LPCSTR)utf8, utf8.GetLength(),
+        result.GetBuffer(wlen), wlen);
+    result.ReleaseBuffer(wlen);
+    return result;
+}
+
+// ExtractStringW: ExtractString + UTF-8 변환 (편의 함수)
+CString CPacketBuilder::ExtractStringW(const CStringA& json, const CStringA& key)
+{
+    return Utf8ToWide(ExtractString(json, key));
+}
+
+// ============================================================================
 // JSON 이스케이프 — 서버 측 security::escape_json과 동일 기준으로 정렬
 //   처리: " \ \n \r \t \b \f + 제어문자(0x00~0x1F) → \uXXXX
 // ============================================================================
