@@ -129,21 +129,31 @@ void AckSender::on_model_reload_requested(const std::any& payload) {
     log_train("MODEL_RELOAD_CMD 전송 시작 | 스테이션=%d 버전=%s 크기=%zu bytes",
               ev.station_id, ev.version.c_str(), ev.model_bytes.size());
 
-    // 최대 3회 재시도 — 일시적 네트워크 장애에 대한 복원력
-    constexpr int MAX_RETRY = 3;
-    for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
+    // 지수 백오프 재시도 — 일시적 네트워크 순단에 대한 복원력 강화
+    // 대기 시간: 1 → 5 → 30 → 120 → 300초 (최대 총 ~8분 대기)
+    // 의도:
+    //   - 짧은 순단(1~5초): 1~2회차에서 복구
+    //   - 긴 장애(수십 초): 3회차 이후 네트워크 회복 기다림
+    //   - 영구 장애: 5회 후 포기하고 에러 로그
+    constexpr int delays[]   = {1, 5, 30, 120, 300};    // 각 시도 후 대기 시간(초)
+    constexpr int MAX_RETRY  = sizeof(delays) / sizeof(delays[0]);  // 5회
+
+    for (int attempt = 0; attempt < MAX_RETRY; ++attempt) {
         if (send_model_reload(ev.station_id, ev.model_path, ev.version, ev.model_bytes)) {
-            if (attempt > 1) {
-                log_train("MODEL_RELOAD_CMD 재시도 성공 | attempt=%d/%d", attempt, MAX_RETRY);
+            if (attempt > 0) {
+                log_train("MODEL_RELOAD_CMD 재시도 성공 | attempt=%d/%d",
+                          attempt + 1, MAX_RETRY);
             }
             return;
         }
-        if (attempt < MAX_RETRY) {
-            log_retry("TRAIN", "MODEL_RELOAD_CMD 재시도 | %d/%d", attempt, MAX_RETRY);
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+        // 마지막 시도가 아니면 지수 백오프 대기
+        if (attempt < MAX_RETRY - 1) {
+            log_retry("TRAIN", "MODEL_RELOAD_CMD 재시도 | %d/%d (다음 %d초 대기)",
+                      attempt + 1, MAX_RETRY, delays[attempt]);
+            std::this_thread::sleep_for(std::chrono::seconds(delays[attempt]));
         }
     }
-    log_err_train("MODEL_RELOAD_CMD 최종 실패 | 스테이션=%d (3회 시도)", ev.station_id);
+    log_err_train("MODEL_RELOAD_CMD 최종 실패 | 스테이션=%d (5회 시도)", ev.station_id);
 }
 
 // ---------------------------------------------------------------------------
