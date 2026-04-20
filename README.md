@@ -76,19 +76,35 @@ Camera → AI Server → Main Server → DB → MFC Client
 
 ## 핵심 설계 특징
 
-* EventBus + Service 레이어 서버 아키텍처 (책임 분리)
-* Handler → Service → DAO 3계층 구조 (검증 + 트랜잭션 + 롤백)
-* ConnectionPool 기반 DB 커넥션 관리 (acquire 5초 타임아웃)
-* EventBus 워커 풀 4스레드 + 큐 상한 10000 (backpressure 대응)
-* asyncio.Queue 기반 비동기 처리 (Backpressure 대응)
+### 아키텍처
+* **3계층 아키텍처**: Handler → Service → DAO (SRP 적용)
+* **이벤트 기반**: EventBus + Worker Pool 4스레드 병렬 처리
+* **Hub-and-Spoke**: MainServer가 모든 통신의 중앙 허브
+* **관심사 분리**: 통신/로직/저장/세션/보안 계층 완전 분리
+
+### 신뢰성
+* **TCP Keepalive 공격적 튜닝**: 60초 유휴 → 10초 × 3회 probe → 90초 내 좀비 감지
+* **지수 백오프 재시도**: MODEL_RELOAD 1 → 5 → 30 → 120 → 300초 (5회 시도)
+* **Atomic File Write**: 임시파일 → fsync → rename (부분 파일 방지)
+* **Snapshot-then-Release**: broadcast 시 mutex 내 스냅샷만, send는 락 밖에서
+* **ConnectionPool 재연결**: mysql_ping 실패 시 자동 복구 + double-close 방지
+* **UI 연결 상태 실시간 동기화**: 1초 타이머로 소켓 상태 검증
+
+### 데이터 흐름
 * NG 중심 전송 구조 (트래픽 최적화)
 * inspection_id 기반 end-to-end 추적
 * ACK / 재전송 기반 데이터 신뢰성 확보
-* MariaDB prepared statement (SQL injection 방지)
 * 모델 바이너리 TCP 전송 (학습서버 → 메인서버 → 추론서버)
-* 모델 파일 저장 시 임시파일 → atomic rename (race condition 방지)
-* SessionManager 기반 다중 GUI 클라이언트 broadcast
-* 보안 강화: IP 화이트리스트 + 입력 검증 + JSON escape + 해시 무결성
+* asyncio.Queue 기반 비동기 처리 (Backpressure 대응)
+
+### 보안 (Defense in Depth)
+* MariaDB Prepared Statement (SQL injection 원천 차단)
+* IP 화이트리스트 (내부망만 허용)
+* Input Validation + Output Escaping (JSON injection 방지)
+* bcrypt + Salt (/dev/urandom 기반 암호학적 난수)
+* Path Traversal 차단 (version 문자열 검증)
+
+상세 설계 원칙은 [ARCHITECTURE_PRINCIPLES.txt](ARCHITECTURE_PRINCIPLES.txt) 참고
 
 ---
 
@@ -112,8 +128,19 @@ Camera → AI Server → Main Server → DB → MFC Client
 * **ConnectionPool 재연결**: mysql_ping 실패 시 안전한 재연결 + double-close 방지
 * **로그 파일**: `logs/YYYY-MM-DD.log` 자동 로테이션 (stdout + 파일 tee)
 
+### 추가 신뢰성 개선 (v0.8.0)
+
+* **로그인 시 서버 상태 초기 동기화**: 접속 직후 `HEALTH_PUSH(170)` 자동 전송 → UI LED 즉시 반영
+* **UI 연결 상태 실시간 체크**: IDT_STATUSBAR 1초 타이머가 실제 소켓 상태 검증 → silent drop 자동 감지
+* **RecvLoop 에러 감지 시 WM_NET_DISCONNECTED 발송**: 네트워크 끊김 시 UI 자동 갱신
+* **HealthChecker 동적 주기**: 모든 서버 정상 → 30초 주기, 장애 발생 → 5초 주기 (로그 노이즈 감소)
+* **TRAIN_COMPLETE station_id/model_type 필수 포함**: DB INSERT 실패 방지 (이전 버그 수정)
+* **ISO8601 → MySQL DATETIME 자동 변환**: DAO에서 timestamp 파싱 처리
+* **DB 스키마 개선**: `bottle_id`, `model_id` NULL 허용 (AI 시스템 설계상)
+
 ### 상세 현황
-`SECURITY_TODO.txt` 참고 (CRITICAL 7 + HIGH 12 + MEDIUM 16 + LOW 10/12 완료)
+보안 수정 현황은 프로젝트 문서 참고
+(CRITICAL 7 + HIGH 12 + MEDIUM 16 + LOW 11 = 총 46/47 완료)
 
 ---
 
@@ -272,18 +299,32 @@ python -m Station2.Station2Main      # 조립 검사
 
 ## 향후 계획
 
+### 하드웨어 연동
 * Pylon 카메라 SDK 연동 (현재 더미 이미지)
-* Arduino 실제 시리얼 통신 연동
+* Arduino 시리얼 통신 연동
+* HealthChecker PING/PONG 프로토콜 완성
+
+### 확장 기능
+* 모델 정확도 개선 및 최적화
+* NG 이미지 CameraView 실시간 렌더링 (클라이언트)
+
+### 실무 수준 확장 (참고)
+* ✅ `config.json` 단일 설정 파일로 IP/포트/경로 통합 (2026-04-18)
+* ✅ `security/` 모듈로 보안 로직 집약 (json_safety, input_validator, ip_filter)
+* ✅ 파일 로거 (logs/YYYY-MM-DD.log 자동 로테이션) (2026-04-18)
+* ✅ UI 연결 상태 실시간 동기화 (2026-04-20)
+* ☐ `logrotate` 설정 (장기 운영 디스크 관리)
+* ☐ Google Test + Mock DAO 기반 Service 레이어 단위 테스트
+* ☐ `IConnection` 인터페이스로 TCP/TLS 교체 가능 구조
+* ☐ 청크 단위 모델 전송 + Resume (GB급 PatchCore 모델 대응)
 
 ---
 
-## 향후 계획
+## 📚 참고 문서
 
-* HealthChecker PING/PONG 프로토콜 완성
-* Pylon 카메라 SDK 연동 (현재 더미 이미지)
-* 모델 정확도 개선 및 최적화
-* 실무 확장 적용 현황:
-  * ✅ `config.json` 단일 설정 파일로 IP/포트/경로 통합 (2026-04-18)
-  * ✅ `security/` 모듈로 보안 로직 집약 (json_safety, input_validator, ip_filter)
-  * ☐ Google Test + Mock DAO 기반 Service 레이어 단위 테스트
-  * ☐ `IConnection` 인터페이스로 TCP/TLS 교체 가능 구조
+* [Protocol_README.md](Protocol_README.md) — 프로토콜 상세 스펙
+* [DB_README.md](DB_README.md) — DB 스키마, 쿼리 예시
+* [AiServer_README.md](AiServer_README.md) — AI 서버 파이프라인
+* [Client_README.md](Client_README.md) — MFC 클라이언트 구조
+* [Directory_README.md](Directory_README.md) — 디렉터리 상세
+* [ARCHITECTURE_PRINCIPLES.txt](ARCHITECTURE_PRINCIPLES.txt) — SOLID/패턴 정리

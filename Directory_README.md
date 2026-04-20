@@ -2,8 +2,18 @@
 
 ```
 Factory/
+├── config/           # 통합 설정 (v0.7.0+)
+│   └── config.json   # 모든 IP/포트/경로/DB/하이퍼파라미터 단일 소스
 ├── MainServer/       # 메인 운영 서버 (C++17, 이벤트 버스 아키텍처)
-└── AiServer/         # AI 추론 서버 (Python 3.10+, asyncio.Queue 비동기 큐)
+├── AiServer/         # AI 추론 서버 (Python 3.10+, asyncio.Queue 비동기 큐)
+├── client/           # MFC Windows 클라이언트 (Visual Studio)
+├── README.md
+├── Protocol_README.md
+├── DB_README.md
+├── Client_README.md
+├── AiServer_README.md
+├── Directory_README.md
+└── ARCHITECTURE_PRINCIPLES.txt  # SOLID/패턴 정리 (이력서/면접용)
 ```
 
 학습 서버는 `AiServer/Training/` 디렉터리에 포함되어 있으며,
@@ -36,10 +46,17 @@ MainServer/
 │
 ├── include/
 │   ├── core/                           # 핵심 인프라
+│   │   ├── config.h                    # ⭐ JSON 통합 설정 로더 (v0.7.0+)
 │   │   ├── event_bus.h                 # 워커 풀(4스레드) 기반 이벤트 버스
 │   │   ├── event_types.h               # EventType enum + 페이로드 struct
-│   │   ├── logger.h                    # 상태 중심 로그 유틸리티 (이모지 + 한글)
-│   │   └── tcp_listener.h              # 추론서버용 TCP 리스너 (포트 9000)
+│   │   ├── logger.h                    # 상태 중심 로그 + 파일 로거 (logs/YYYY-MM-DD.log)
+│   │   ├── tcp_listener.h              # 추론서버용 TCP 리스너 (포트 9000)
+│   │   └── tcp_utils.h                 # ⭐ send_all / send_json_frame (partial send 재시도)
+│   │
+│   ├── security/                       # ⭐ 보안 유틸 모듈 (v0.7.0+)
+│   │   ├── json_safety.h               # escape_json (JSON injection 방지)
+│   │   ├── input_validator.h           # is_valid_date, is_safe_inspection_id, ...
+│   │   └── ip_filter.h                 # is_allowed_ip (사설망 화이트리스트)
 │   │
 │   ├── handler/                        # 이벤트 핸들러
 │   │   ├── router.h                    # protocol_no 기반 이벤트 분기
@@ -69,9 +86,10 @@ MainServer/
 │
 └── src/
     ├── core/
-    │   ├── main.cpp                    # 진입점, 컴포넌트 생성 및 구동
-    │   ├── event_bus.cpp
-    │   └── tcp_listener.cpp
+    │   ├── main.cpp                    # 진입점 (config.json 로드 + 컴포넌트 DI)
+    │   ├── event_bus.cpp               # 큐 상한 10000, backpressure 대응
+    │   ├── tcp_listener.cpp            # IP 화이트리스트 + TCP keepalive 튜닝
+    │   └── config.cpp                  # ⭐ JSON 스택 파서 (v0.7.0+)
     ├── handler/
     │   ├── router.cpp
     │   ├── station_handler.cpp
@@ -122,40 +140,72 @@ Windows(MFC와 동일 환경)에서는 `ws2_32.lib` 링크가 필요하며,
 ```
 AiServer/
 ├── Common/
-│   ├── Config.py               # StationConfig dataclass
+│   ├── ConfigLoader.py         # ⭐ config.json 통합 로더 (v0.7.0+)
+│   ├── Config.py               # StationConfig dataclass + from_json() 팩토리
 │   ├── Protocol.py             # ProtocolNo IntEnum (C++와 동기화)
 │   ├── Packet.py               # PacketBuilder (protocol_no/inspection_id 자동 주입)
-│   ├── TcpClient.py            # send_with_ack / send_fire_and_forget
+│   ├── TcpClient.py            # send_with_ack / 원자적 모델 저장 (fsync + rename)
 │   ├── SerialCtrl.py           # Arduino 시리얼 (골격)
 │   ├── Inferencer.py           # Station1/2Inferencer (PatchCore / YOLO11+PatchCore)
 │   └── StationRunner.py        # 비동기 큐 파이프라인 + OK카운트 reporter + INSPECT_META 송신
 ├── Station1/
-│   └── Station1Main.py         # 입고 검사 진입점
+│   └── Station1Main.py         # 입고 검사 진입점 (config.json 자동 로드)
 ├── Station2/
-│   └── Station2Main.py         # 조립 검사 진입점
+│   └── Station2Main.py         # 조립 검사 진입점 (config.json 자동 로드)
 ├── Training/
-│   ├── TrainingMain.py         # 학습 서버 진입점 (TCP 포트 9100)
-│   ├── TrainingConfig.py       # 학습 설정 dataclass
+│   ├── TrainingMain.py         # 학습 서버 진입점 (station_id/model_type 필수 포함)
+│   ├── TrainingConfig.py       # 학습 설정 dataclass + from_json() 팩토리
 │   ├── TrainPatchcore.py       # PatchCore 비지도 학습 (anomalib)
 │   └── TrainYolo.py            # YOLO11 전이학습 (ultralytics)
 └── tests/
-    ├── test_inference.py       # 추론 테스트 스크립트
-    ├── test_training.py        # 학습 테스트 스크립트
-    └── generate_dummy_data.py  # 더미 이미지 데이터 생성
+    ├── TestPipeline.py         # ⭐ 실제 NG/OK/META 송신 시뮬레이션 (통합 테스트)
+    ├── TestInference.py        # 추론 테스트 스크립트
+    ├── TestTraining.py         # 학습 테스트 스크립트
+    ├── DebugInference.py       # 추론 디버깅
+    ├── TestBatchInference.py   # 배치 추론 테스트
+    └── GenerateDummyData.py    # 더미 이미지 데이터 생성
 ```
 
 ### 실행
 
 ```
 cd AiServer
-python -m Station1.Station1Main      # 입고
-python -m Station2.Station2Main      # 조립
+source .venv/bin/activate              # venv 활성화 (권장)
+python -m Station1.Station1Main        # 입고
+python -m Station2.Station2Main        # 조립
+python -m Training.TrainingMain        # 학습 서버
 ```
 
-별도 의존성 없이 즉시 실행됩니다 (모델은 placeholder, 카메라는 더미 0.5초 주기).
+### venv 환경 준비 (Ubuntu 24.04+ PEP 668 대응)
+
+```
+cd AiServer
+python3 -m venv .venv
+source .venv/bin/activate
+pip install numpy opencv-python pillow scikit-learn timm einops
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+```
 
 실제 운영 시 추가 설치:
 
 ```
-pip install pypylon opencv-python pyserial torch ultralytics anomalib
+pip install pypylon pyserial ultralytics anomalib
+```
+
+## MFC Client (Windows)
+
+```
+client/
+├── Factory_UI_CL.slnx                 # Visual Studio 솔루션
+├── Factory_UI_CL/
+│   ├── ClientConfig.h/cpp             # ⭐ config.json 로더 (v0.7.0+)
+│   ├── ClientProtocol.h               # 프로토콜 번호 + fallback 기본값
+│   ├── PacketBuilder.h/cpp            # JSON 빌더 (ExtractBool, Utf8ToWide, EscapeJson)
+│   ├── NetworkClient.h/cpp            # TCP 통신 + silent drop 감지
+│   ├── MainTabDlg.h/cpp               # 5개 탭 + IDT_STATUSBAR 실시간 동기화
+│   ├── LoginDlg.h/cpp                 # 로그인/회원가입 (서버 DB 인증)
+│   ├── PageHome/Station1/Station2/Stats/Model.cpp
+│   └── ...
+└── tests/
+    └── TestPacketBuilder.exe
 ```

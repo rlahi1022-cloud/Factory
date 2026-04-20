@@ -2,14 +2,31 @@
 
 ## 접속 정보
 
-| 항목 | 값 |
-|------|-----|
-| Host | `127.0.0.1` (로컬) / `10.10.10.130` (외부 접속 시) |
-| User | `factorymanager` |
-| Password | `1234` |
-| Database | `Factory` |
+DB 접속 정보는 **`config/config.json`의 `database` 섹션**에서 관리됩니다 (v0.7.0+).
 
-## 접속 명령어
+```json
+"database": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "factorymanager",
+    "password": "1234",
+    "schema": "Factory",
+    "pool_size": 4,
+    "acquire_timeout_sec": 5
+}
+```
+
+| 항목 | 기본값 | 설명 |
+|------|--------|------|
+| Host | `127.0.0.1` | MariaDB 호스트 (로컬) |
+| Port | `3306` | MariaDB 포트 |
+| User | `factorymanager` | 접속 계정 |
+| Password | `1234` | 접속 비밀번호 (⚠️ 운영 시 변경 필수) |
+| Database | `Factory` | 스키마명 |
+| Pool Size | `4` | ConnectionPool 크기 |
+| Acquire Timeout | `5초` | 풀 대기 타임아웃 |
+
+## 접속 명령어 (수동)
 
 ```
 mysql -h 127.0.0.1 -u factorymanager -p Factory
@@ -17,15 +34,24 @@ mysql -h 127.0.0.1 -u factorymanager -p Factory
 
 비밀번호 입력 프롬프트가 뜨면 `1234` 입력.
 
-## 코드에 반영
+## 코드에 반영 (자동 로드)
 
-`MainServer/src/core/main.cpp`의 `DbManager` 생성자:
+`MainServer/src/core/main.cpp`:
 
 ```cpp
-DbManager db_manager(event_bus, "127.0.0.1", "factorymanager", "1234", "Factory");
+auto& cfg = Config::instance();
+cfg.load("../../config/config.json");
+
+std::string db_host     = cfg.get_str("database.host");
+std::string db_user     = cfg.get_str("database.user");
+std::string db_password = cfg.get_str("database.password");
+std::string db_schema   = cfg.get_str("database.schema");
+int         pool_size   = cfg.get_int("database.pool_size", 4);
+
+ConnectionPool db_pool(db_host, db_user, db_password, db_schema, 3306, pool_size);
 ```
 
-main.cpp에서 위 접속 정보가 설정되어 있음.
+**하드코딩 제거됨** — config.json에서 읽어옴.
 
 ## 테이블 구조
 
@@ -35,14 +61,19 @@ main.cpp에서 위 접속 정보가 설정되어 있음.
 |------|------|------|------|
 | id | INT AUTO_INCREMENT | PK | 검사 ID |
 | station_id | INT | NOT NULL | 스테이션 번호 (1 또는 2) |
-| bottle_id | INT | NULL | 용기 FK (AI서버 미전송, 추후 연동) |
-| model_id | INT | NULL | 모델 FK (AI서버 미전송, 추후 연동) |
-| timestamp | DATETIME | NOT NULL | 검사 시각 |
-| result | ENUM('ok','ng') | NOT NULL | 판정 결과 |
+| bottle_id | INT | **NULL 허용** ✅ | 용기 FK (v0.7.0+ NULL 허용) |
+| model_id | INT | **NULL 허용** ✅ | 모델 FK (v0.7.0+ NULL 허용) |
+| timestamp | DATETIME | NOT NULL | 검사 시각 (ISO8601 자동 변환) |
+| result | ENUM('ok','ng') | NOT NULL | 판정 결과 (소문자) |
 | confidence | FLOAT | NULL | 이상 점수 (AI서버 score 필드) |
 | defect_type | VARCHAR(100) | NULL | 결함 유형 (AI서버 defect 필드) |
 | image_path | VARCHAR(255) | NULL | NG 이미지 저장 경로 |
 | latency_ms | INT | NOT NULL | 추론 소요 시간 (ms) |
+
+**⚠️ timestamp 형식 자동 변환 (v0.8.0+):**
+- AI서버 전송: ISO8601 `"2026-04-20T12:34:56.789+00:00"`
+- MainServer DAO: MySQL DATETIME으로 자동 변환 `"2026-04-20 12:34:56"`
+- 구현: `iso8601_to_mysql()` in [dao.cpp](MainServer/src/storage/dao.cpp)
 
 ### assemblies (조립 검사 상세 — Station2 전용)
 
@@ -129,7 +160,9 @@ VALUES ('EMP-001', 'admin01', '$2b$12$...해시값...', 'Admin');
 
 ## 필요한 ALTER (bottle_id, model_id NULL 허용)
 
-AI서버가 bottle_id, model_id를 보내지 않으므로 NOT NULL 제약을 해제해야 합니다:
+AI서버가 bottle_id, model_id를 보내지 않으므로 NOT NULL 제약을 해제해야 합니다.
+
+**v0.7.0부터 기본 스키마에서 이미 NULL 허용**. 구버전 DB 마이그레이션 시에만 실행:
 
 ```sql
 ALTER TABLE inspections
@@ -138,4 +171,65 @@ ALTER TABLE inspections
 
 ALTER TABLE assemblies
     MODIFY bottle_id INT NULL;
+```
+
+## ConnectionPool (v0.7.0+)
+
+MainServer는 **4개 DB 커넥션을 풀**로 관리하여 재사용합니다.
+
+### 특징
+- **풀 크기**: `config.json`의 `database.pool_size` (기본 4)
+- **Acquire 타임아웃**: 5초 (전부 사용 중일 때 최대 5초 대기)
+- **자동 재연결**: mysql_ping 실패 시 재연결 시도
+- **Double-close 방지**: 재연결 실패 시 old 포인터를 안전하게 교체
+- **RAII 래퍼**: `PooledConnection` 사용 — 스코프 벗어나면 자동 반납
+
+### 사용 예 (C++)
+```cpp
+PooledConnection conn(pool_);    // 획득 (또는 5초 대기)
+if (!conn.get()) return -1;      // 타임아웃 시 null
+// ... mysql_query 등 사용
+// ← 스코프 종료 시 자동 release
+```
+
+## 비밀번호 해시 규칙 (중요)
+
+### bcrypt만 허용
+- `password_hash` 필드에는 **반드시 bcrypt 해시** (`$2b$12$...` 60자)
+- 평문으로 INSERT하면 `PasswordHash::verify()` 실패 → 로그인 거부
+
+### bcrypt 해시 생성
+```bash
+# Python
+python3 -c "import crypt; print(crypt.crypt('password', crypt.mksalt(crypt.METHOD_BLOWFISH)))"
+
+# 결과 예시:
+# $2b$12$0AzNHhCkFvNKZ/2rEDt8auON.dOx.0BLDVUZlfZBwuDH6BTvIZk1W
+```
+
+### 권장 방법
+MFC 클라이언트의 **회원가입** 기능 사용 (서버가 자동 해싱).
+
+## DB 스키마 생성 (처음 설정 시)
+
+```sql
+CREATE DATABASE IF NOT EXISTS Factory DEFAULT CHARACTER SET utf8mb4;
+USE Factory;
+
+-- inspections
+CREATE TABLE IF NOT EXISTS inspections (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    station_id INT NOT NULL,
+    bottle_id INT NULL,
+    model_id INT NULL,
+    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    result ENUM('ok','ng') NOT NULL,
+    confidence FLOAT,
+    defect_type VARCHAR(100),
+    image_path VARCHAR(255),
+    latency_ms INT NOT NULL,
+    INDEX(station_id), INDEX(result), INDEX(timestamp)
+);
+
+-- 나머지 테이블 스키마도 유사...
 ```
