@@ -22,6 +22,7 @@ public:
     void OnRetrainProgress(int progress);
 
     void SetNetworkClient(CNetworkClient* net) { m_net = net; }
+    void RequestModelList();  // 서버에 모델 목록 요청 (MainTabDlg에서 호출)
 
 protected:
     CNetworkClient* m_net = nullptr;
@@ -43,7 +44,6 @@ protected:
 
     void FillModels();
     void FillFiles();
-    void RequestModelList();  // 서버에 모델 목록 요청
 
     virtual BOOL OnInitDialog() override;
     virtual void DoDataExchange(CDataExchange* pDX) override;

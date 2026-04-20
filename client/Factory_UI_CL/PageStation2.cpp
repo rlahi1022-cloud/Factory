@@ -10,7 +10,7 @@ END_MESSAGE_MAP()
 CPageStation2::CPageStation2(CWnd* p) : CDialogEx(IDD_PAGE_STATION2,p), m_last{} {
     m_last.id = 10000; m_last.station = 2;
     m_last.time = _T("--:--:--"); m_last.isNG = false;
-    m_last.score = 0.15; m_last.defect = EDefect::None; m_last.latency = 65;
+    m_last.score = 0.15; m_last.defect = EDefect::None; m_last.latencyMs = 65;
 }
 void CPageStation2::DoDataExchange(CDataExchange* pDX) {
     CDialogEx::DoDataExchange(pDX);
