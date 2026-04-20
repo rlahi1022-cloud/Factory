@@ -43,19 +43,28 @@ void HealthChecker::stop() {
 }
 
 void HealthChecker::run_loop() {
+    // is_running_.load(): atomic 변수를 안전하게 읽기
+    //   멀티스레드 환경에서 값을 원자적으로 가져옴 (컴파일러 최적화/캐시 무시)
     while (is_running_.load()) {
         // ConnectionRegistry에서 현재 연결된 서버 목록 가져오기
+        //   instance() = 싱글턴 패턴 (전역 유일 인스턴스)
+        //   get_all_connections() = {주소→fd} 맵 복사본 반환 (스레드 안전)
         auto connections = ConnectionRegistry::instance().get_all_connections();
         int connected_count = static_cast<int>(connections.size());
 
         for (const auto& target : targets_) {
             // target.ip와 정확히 일치하는 연결이 있는지 확인
-            // addr 형식: "IP:PORT" — ':'까지의 prefix가 target.ip와 일치해야 함
+            // addr 형식: "IP:PORT" (예: "10.10.10.130:45678")
+            // 과거 버그: find(ip) 사용 시 "10.10.10.130"이 "10.10.10.131"에도 매치됨
+            // 수정: 뒤에 ':'가 붙은 prefix로 검증 → 정확한 IP 매칭 보장
             bool alive = false;
-            std::string ip_prefix = target.ip + ":";
+            std::string ip_prefix = target.ip + ":";  // "10.10.10.130:"
+
+            // 모든 활성 연결 순회하며 해당 IP 찾기
             for (const auto& [addr, fd] : connections) {
+                // rfind(prefix, 0) == 0: addr이 prefix로 시작하는지 검사 (starts_with 대용)
                 if (addr.rfind(ip_prefix, 0) == 0) {
-                    alive = true;
+                    alive = true;  // 찾았으면 더 볼 필요 없음
                     break;
                 }
             }

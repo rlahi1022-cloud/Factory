@@ -20,12 +20,26 @@ namespace factory {
 // ============================================================================
 
 // ISO8601 → MySQL DATETIME 변환
-//   입력: "2026-04-20T10:36:31.916+00:00"
-//   출력: "2026-04-20 10:36:31"
+//   입력 예시: "2026-04-20T10:36:31.916+00:00"  (ISO8601 with milliseconds + timezone)
+//   출력 예시: "2026-04-20 10:36:31"            (MySQL DATETIME 표준)
+//
+// 변환 이유: MariaDB의 DATETIME 컬럼은 ISO8601의 'T' 구분자와 timezone 표기를
+//           직접 받지 못해 "Incorrect datetime value" 에러 발생.
+//           파싱하여 표준 포맷으로 변환 필요.
 static std::string iso8601_to_mysql(const std::string& ts) {
+    // 최소 길이 체크: "YYYY-MM-DDTHH:MM:SS"는 19자
+    //                 이보다 짧으면 비정상 입력 → 그대로 반환 (DB 레벨에서 에러 처리)
     if (ts.size() < 19) return ts;
-    std::string out = ts.substr(0, 19);     // "YYYY-MM-DDTHH:MM:SS"
-    if (out.size() >= 11 && out[10] == 'T') out[10] = ' ';  // 'T' → ' '
+
+    // 앞 19자만 잘라냄: 밀리초와 timezone 무시
+    //   "2026-04-20T10:36:31.916+00:00" → "2026-04-20T10:36:31"
+    std::string out = ts.substr(0, 19);
+
+    // ISO의 'T'(위치 10)를 공백으로 교체 → MySQL 표준
+    //   "2026-04-20T10:36:31" → "2026-04-20 10:36:31"
+    // 안전성 체크: size() >= 11 조건으로 범위 밖 접근 방지
+    if (out.size() >= 11 && out[10] == 'T') out[10] = ' ';
+
     return out;
 }
 
