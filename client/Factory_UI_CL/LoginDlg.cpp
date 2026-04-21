@@ -189,13 +189,13 @@ LRESULT CLoginDlg::OnLoginRes(WPARAM wParam, LPARAM lParam)
     m_waitingResponse = false;
     GetDlgItem(IDOK)->EnableWindow(TRUE);
 
-    CStringA successStr = CPacketBuilder::ExtractString(jsonA, "success");
-    bool success = (successStr == "true");
+    bool success = CPacketBuilder::ExtractBool(jsonA, "success");
 
     if (success) {
-        m_session.username   = CString(CPacketBuilder::ExtractString(jsonA, "username"));
-        m_session.role       = CString(CPacketBuilder::ExtractString(jsonA, "role"));
-        m_session.employeeId = CString(CPacketBuilder::ExtractString(jsonA, "employee_id"));
+        // 서버 UTF-8 JSON → Unicode CString 변환 (한글 깨짐 방지)
+        m_session.username   = CPacketBuilder::ExtractStringW(jsonA, "username");
+        m_session.role       = CPacketBuilder::ExtractStringW(jsonA, "role");
+        m_session.employeeId = CPacketBuilder::ExtractStringW(jsonA, "employee_id");
 
         m_loginNet.Disconnect();
 
@@ -205,7 +205,7 @@ LRESULT CLoginDlg::OnLoginRes(WPARAM wParam, LPARAM lParam)
     }
     else {
         m_session.password.Empty();
-        CString msg(CPacketBuilder::ExtractString(jsonA, "message"));
+        CString msg = CPacketBuilder::ExtractStringW(jsonA, "message");
         if (msg.IsEmpty()) msg = _T("사용자 이름 또는 암호가 올바르지 않습니다.");
         SetError(msg);
         m_loginNet.Disconnect();
@@ -228,8 +228,7 @@ LRESULT CLoginDlg::OnRegisterRes(WPARAM wParam, LPARAM lParam)
     m_waitingResponse = false;
     GetDlgItem(IDOK)->EnableWindow(TRUE);
 
-    CStringA successStr = CPacketBuilder::ExtractString(jsonA, "success");
-    bool success = (successStr == "true");
+    bool success = CPacketBuilder::ExtractBool(jsonA, "success");
 
     m_loginNet.Disconnect();
 
@@ -239,7 +238,7 @@ LRESULT CLoginDlg::OnRegisterRes(WPARAM wParam, LPARAM lParam)
         SwitchMode(false);  // 로그인 모드로 복귀
     }
     else {
-        CString msg(CPacketBuilder::ExtractString(jsonA, "message"));
+        CString msg = CPacketBuilder::ExtractStringW(jsonA, "message");  // UTF-8 → Unicode
         if (msg.IsEmpty()) msg = _T("회원가입에 실패했습니다.");
         SetError(msg);
     }

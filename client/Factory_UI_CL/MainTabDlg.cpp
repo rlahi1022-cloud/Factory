@@ -417,6 +417,22 @@ void CMainTabDlg::OnTimer(UINT_PTR id)
         InvalidateRect(StatusRect());
     }
     else if (id == IDT_STATUSBAR) {
+        // ── 연결 상태 실시간 동기화 ──
+        // UI의 m_bConnected는 WM_NET_CONNECTED/DISCONNECTED 메시지에 의존하는데,
+        // 네트워크 소리 없이 끊어진 경우(silent drop) 이 메시지가 안 올 수 있다.
+        // → 1초마다 실제 소켓 상태를 확인해 m_bConnected와 동기화한다.
+        bool actual = m_net.IsConnected();
+        if (actual != m_bConnected) {
+            m_bConnected = actual;
+            TRACE(_T("[MainTabDlg] 연결 상태 동기화: %s\n"),
+                  actual ? _T("연결됨") : _T("끊김 감지"));
+            if (!actual) {
+                // 끊김 감지 → 재접속 타이머 시작 (중복 방지 위해 KillTimer 선호출)
+                KillTimer(IDT_RECONNECT);
+                SetTimer(IDT_RECONNECT, 10000, nullptr);
+            }
+            InvalidateRect(ToolbarRect());  // LED/상태 그림 갱신
+        }
         InvalidateRect(StatusRect());
     }
     else if (id == IDT_RECONNECT) {
@@ -486,8 +502,16 @@ void CMainTabDlg::ConnectToServer()
             m_session.username, m_session.password);
         m_net.SendJson(loginJson);
 
-        // 접속 직후 초기 데이터 요청
+        // 접속 직후 초기 데이터 요청 (DB 기반 실데이터 로드)
         if (m_model) m_model->RequestModelList();
+
+        // 검사 이력 + 통계를 자동 조회 → 홈 화면에 실데이터 표시
+        CString histReq = CPacketBuilder::BuildInspectHistoryReq(
+            0, _T(""), _T(""), 100);  // 전체 스테이션, 최대 100건
+        m_net.SendJson(histReq);
+
+        CString statsReq = CPacketBuilder::BuildStatsReq(0, _T(""), _T(""));
+        m_net.SendJson(statsReq);
 
         TRACE(_T("[MainTabDlg] 서버 접속 + LOGIN_REQ + 초기 데이터 요청 완료\n"));
     } else {

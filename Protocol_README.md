@@ -91,11 +91,46 @@
 
 ## ACK / 재전송 정책
 
-- **ACK 필수 메시지**: STATION1/2_NG, MODEL_RELOAD_CMD, TRAIN_COMPLETE/FAIL, INSPECT_NG_PUSH, MODEL_DEPLOY_NOTIFY
+### 일반 메시지 (AI ↔ MainServer)
+- **ACK 필수 메시지**: STATION1/2_NG, TRAIN_COMPLETE/FAIL, INSPECT_NG_PUSH, MODEL_DEPLOY_NOTIFY
 - **타임아웃**: 1초
 - **최대 재전송**: 3회
 - **NACK 수신 시**: 재전송하지 않고 drop + 에러 로그
 - **메인서버 동작**: NG 패킷 수신 → DB INSERT 성공 시 같은 connection으로 ACK 회신, 실패 시 NACK
+
+### MODEL_RELOAD_CMD (1010) — 지수 백오프 적용 (v0.8.0)
+
+일시적 네트워크 순단에 대한 복원력 강화.
+
+| 시도 | 재시도 전 대기 |
+|-----|--------------|
+| 1 | (즉시) |
+| 2 | 1초 |
+| 3 | 5초 |
+| 4 | 30초 |
+| 5 | 120초 |
+| 실패 | 300초 후 최종 포기 |
+
+**최대 8분 동안 재시도** — 짧은 순단(1~5초) 및 중기 장애(수십 초) 모두 복구 가능.
+
+## 필수 필드 (중요)
+
+### TRAIN_COMPLETE (1104) 본문 필수 필드
+MainServer `TrainService.validate()`가 검증하므로 누락 시 DB INSERT 실패:
+- `station_id` (int, 1 또는 2)
+- `model_type` (str, 예: "PatchCore", "YOLO11")
+- `version` (str)
+- `accuracy` (float, 0.0~1.0)
+- `model_path` (str)
+
+### TRAIN_FAIL (1106) 본문 필수 필드
+GuiNotifier가 클라이언트 푸시 시 사용:
+- `station_id`, `model_type`, `error_code`, `message`, `version`
+
+### Timestamp 형식
+- 송신 측: ISO8601 (예: `"2026-04-20T12:34:56.789+00:00"`)
+- 수신 측: MainServer가 MySQL DATETIME으로 자동 변환
+  - `"2026-04-20 12:34:56"` 형식으로 저장
 
 ## 포트 할당
 
@@ -107,6 +142,28 @@
 | 9101 | 헬스체크 대상 (추론#1) | AiServer (Station1) |
 | 9102 | 헬스체크 대상 (추론#2) | AiServer (Station2) |
 | 9201 | 헬스체크 대상 (학습) | AiServer (Training) |
+
+## 연결 안정성 (v0.7.0~v0.8.0)
+
+### TCP Keepalive (MainServer 수신 소켓)
+```
+60초 유휴 → probe 시작
+10초 간격으로 3회 probe
+3회 무응답 시 dead 판정 (최악 90초 내 좀비 감지)
+```
+
+### 로그인 시 서버 상태 초기 동기화
+- 클라이언트 로그인 직후, 현재 접속된 AI 서버 상태를 `HEALTH_PUSH(170)`로 즉시 전송
+- UI LED 3개(학습/추론#1/추론#2)가 초기값이 아닌 실제 상태로 갱신
+
+### UI 연결 상태 실시간 동기화 (클라이언트)
+- IDT_STATUSBAR 1초 타이머가 `m_net.IsConnected()` 실측
+- silent drop 시 WM_NET_DISCONNECTED 자동 발송
+- 10초 후 자동 재접속 시도
+
+### JSON Escape 정책
+모든 서버 응답 문자열 필드는 `factory::security::escape_json` 적용 필수.
+- `"`, `\`, `\n`, `\r`, `\t`, `\b`, `\f`, 제어문자 → `\uXXXX`
 
 ## 송신 예시 (Python)
 

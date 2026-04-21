@@ -1,5 +1,19 @@
 # AiServer — Python asyncio.Queue 파이프라인
 
+## 설정 (v0.7.0+)
+
+모든 설정값은 프로젝트 루트의 `config/config.json`에서 자동 로드됩니다.
+`Common/ConfigLoader.py`가 자동 탐색 후 `StationConfig.from_json(station_id)` 팩토리로 주입.
+
+**주요 섹션:**
+- `network.main_server_host` — MainServer IP
+- `network.main_server_ai_port` — 수신 포트 (9000)
+- `network.training_server_port` — 학습 서버 포트 (9100)
+- `ai_server.station1` / `ai_server.station2` — 스테이션별 하이퍼파라미터
+- `training` — 학습 서버 설정
+
+**환경변수 오버라이드:** `CONFIG_PATH=/path/to/config.json python -m Station1.Station1Main`
+
 ## 파이프라인
 
 ```
@@ -25,6 +39,14 @@
 - HEALTH_PING(1200) 수신 시 HEALTH_PONG(1201) 자동 응답.
 - MODEL_RELOAD_CMD(1010) 수신 시 콜백 실행 + MODEL_RELOAD_RES(1011) 응답.
 - 종료는 sentinel 객체를 큐에 주입 → 워커가 자연 종료.
+
+## 신뢰성 개선 (v0.8.0)
+
+- **원자적 모델 저장**: 수신 → 임시파일(`tmp.{pid}.{ns}`) → `fsync` → `os.replace` → 원자적 rename
+  - 네트워크 순단으로 중단돼도 부분 파일 남지 않음
+  - 크기 검증까지 통과해야 최종 파일로 승격
+- **Pending ACK 정리**: 연결 끊김 시 `_pending_acks` 전체 `cancel()` (orphan Future 방지)
+- **`send_with_ack` finally 보장**: 모든 코드 경로에서 `_pending_acks.pop()` 실행
 
 ## inspection_id 발급 규칙
 
@@ -117,7 +139,27 @@
 | `Training/TrainingMain.py` | TCP 서버 (포트 9100), 학습 요청 수신/진행률 송신 |
 | `Training/TrainPatchcore.py` | PatchCore 비지도 학습 (anomalib) |
 | `Training/TrainYolo.py` | YOLO11 전이학습 (ultralytics) |
-| `Training/TrainingConfig.py` | 학습 설정 dataclass |
+| `Training/TrainingConfig.py` | 학습 설정 dataclass + `from_json()` 팩토리 |
+
+### TRAIN_COMPLETE 필수 필드 (v0.7.0+)
+
+학습 완료 패킷은 MainServer의 `TrainService.validate()` 검증을 통과해야 하므로
+다음 필드가 반드시 포함되어야 합니다 (이전 버그 수정):
+
+```python
+body = {
+    "station_id": 1,              # 필수 (1 또는 2)
+    "model_type": "PatchCore",    # 필수 (PatchCore 또는 YOLO11)
+    "version": "v1.2.0",
+    "accuracy": 0.95,
+    "model_path": "...",
+    "message": "학습 완료",
+}
+# + image_bytes (모델 바이너리, 최대 500MB)
+```
+
+**구현:** `_run_training()`이 `result["station_id"]`, `result["model_type"]` 주입 후
+`_send_train_complete()` / `_send_train_fail()` 호출.
 
 ## 모델 주입 지점
 

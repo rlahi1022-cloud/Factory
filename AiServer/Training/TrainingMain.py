@@ -476,6 +476,9 @@ class TrainingServer:
                 )
 
             # 학습 결과에 따라 완료 또는 실패 알림을 운용서버에 전송한다.
+            # station_id와 model_type을 result에 주입 → MainServer의 TrainService.validate() 통과 보장
+            result["station_id"] = station_id
+            result["model_type"] = model_type
             if result["success"]:
                 # 학습 성공 -> TRAIN_COMPLETE(1104) 전송
                 await self._send_train_complete(result, request_id)
@@ -487,7 +490,8 @@ class TrainingServer:
             # 예상치 못한 에러 발생 시 실패 알림을 전송한다.
             logger.exception("Training task error: %s", exc)
             await self._send_train_fail(
-                {"message": str(exc), "version": "", "model_path": ""},
+                {"message": str(exc), "version": "", "model_path": "",
+                 "station_id": station_id, "model_type": model_type},
                 request_id,
             )
         finally:
@@ -635,12 +639,15 @@ class TrainingServer:
           없음 (None)
         """
         # 학습 완료 정보를 패킷 본문으로 구성한다.
+        # MainServer TrainService.validate()가 station_id/model_type 검증하므로 반드시 포함
         model_path = result.get("model_path", "")
         body = {
+            "station_id": result.get("station_id", 0),    # 스테이션 ID (1 또는 2)
+            "model_type": result.get("model_type", ""),   # 모델 종류 (PatchCore/YOLO11)
             "model_path": model_path,                     # 원본 모델 파일 경로 (학습서버 로컬)
             "version": result.get("version", ""),         # 모델 버전
             "accuracy": result.get("accuracy", 0.0),      # 정확도 (AUROC 또는 mAP50)
-            "message": result.get("message", ""),          # 결과 설명 메시지
+            "message": result.get("message", ""),         # 결과 설명 메시지
         }
 
         # 모델 파일을 바이너리로 읽어서 패킷에 첨부한다.
@@ -685,7 +692,10 @@ class TrainingServer:
           없음 (None)
         """
         # 학습 실패 정보를 패킷 본문으로 구성한다.
+        # GuiNotifier가 클라이언트에 푸시할 때 station_id/model_type이 필요하므로 포함
         body = {
+            "station_id": result.get("station_id", 0),
+            "model_type": result.get("model_type", ""),
             "error_code": "TRAIN_ERROR",                    # 에러 코드 (고정값)
             "message": result.get("message", "Unknown error"),  # 에러 메시지
             "version": result.get("version", ""),               # 모델 버전 (실패해도 기록)

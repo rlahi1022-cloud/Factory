@@ -6,11 +6,14 @@
 // ============================================================================
 #include "session/gui_notifier.h"
 #include "session/session_manager.h"
+#include "security/json_safety.h"
 
 #include "core/logger.h"
 
 #include <iostream>
 #include <sstream>
+
+using factory::security::escape_json;
 
 namespace factory {
 
@@ -41,13 +44,13 @@ void GuiNotifier::on_gui_push(const std::any& payload) {
 
     std::ostringstream os;
     os << "{\"protocol_no\":110"
-       << ",\"inspection_id\":\"" << ev.inspection_id << "\""
+       << ",\"inspection_id\":\"" << escape_json(ev.inspection_id) << "\""
        << ",\"station_id\":" << ev.station_id
-       << ",\"result\":\"" << ev.result << "\""
-       << ",\"defect_type\":\"" << ev.defect_type << "\""
+       << ",\"result\":\"" << escape_json(ev.result) << "\""
+       << ",\"defect_type\":\"" << escape_json(ev.defect_type) << "\""
        << ",\"score\":" << ev.score
        << ",\"latency_ms\":" << ev.latency_ms
-       << ",\"timestamp\":\"" << ev.timestamp << "\""
+       << ",\"timestamp\":\"" << escape_json(ev.timestamp) << "\""
        << ",\"image_size\":" << ev.image_bytes.size()
        << "}";
 
@@ -67,8 +70,8 @@ void GuiNotifier::on_server_status(const std::any& payload, bool is_down) {
 
     std::ostringstream os;
     os << "{\"protocol_no\":170"
-       << ",\"server_name\":\"" << ev.server_name << "\""
-       << ",\"ip\":\"" << ev.ip << "\""
+       << ",\"server_name\":\"" << escape_json(ev.server_name) << "\""
+       << ",\"ip\":\"" << escape_json(ev.ip) << "\""
        << ",\"port\":" << ev.port
        << ",\"status\":\"" << (is_down ? "down" : "recovered") << "\""
        << "}";
@@ -90,7 +93,7 @@ void GuiNotifier::on_ok_count(const std::any& payload) {
        << ",\"ok_count\":" << ev.ok_count
        << ",\"ng_count\":" << ev.ng_count
        << ",\"latency_avg\":" << ev.latency_avg
-       << ",\"period\":\"" << ev.period << "\""
+       << ",\"period\":\"" << escape_json(ev.period) << "\""
        << "}";
 
     SessionManager::instance().broadcast(os.str());
@@ -102,13 +105,13 @@ void GuiNotifier::on_train_progress(const std::any& payload) {
 
     std::ostringstream os;
     os << "{\"protocol_no\":154"
-       << ",\"request_id\":\"" << ev.request_id << "\""
+       << ",\"request_id\":\"" << escape_json(ev.request_id) << "\""
        << ",\"station_id\":" << ev.station_id
-       << ",\"model_type\":\"" << ev.model_type << "\""
+       << ",\"model_type\":\"" << escape_json(ev.model_type) << "\""
        << ",\"progress\":" << ev.progress
        << ",\"epoch\":" << ev.epoch
        << ",\"loss\":" << ev.loss
-       << ",\"status\":\"" << ev.status << "\""
+       << ",\"status\":\"" << escape_json(ev.status) << "\""
        << "}";
 
     SessionManager::instance().broadcast(os.str());
@@ -121,14 +124,14 @@ void GuiNotifier::on_train_complete(const std::any& payload) {
 
     std::ostringstream os;
     os << "{\"protocol_no\":154"
-       << ",\"request_id\":\"" << ev.request_id << "\""
+       << ",\"request_id\":\"" << escape_json(ev.request_id) << "\""
        << ",\"station_id\":" << ev.station_id
-       << ",\"model_type\":\"" << ev.model_type << "\""
+       << ",\"model_type\":\"" << escape_json(ev.model_type) << "\""
        << ",\"progress\":100"
        << ",\"status\":\"완료\""
-       << ",\"version\":\"" << ev.version << "\""
+       << ",\"version\":\"" << escape_json(ev.version) << "\""
        << ",\"accuracy\":" << ev.accuracy
-       << ",\"message\":\"" << ev.message << "\""
+       << ",\"message\":\"" << escape_json(ev.message) << "\""
        << "}";
 
     SessionManager::instance().broadcast(os.str());
@@ -141,12 +144,12 @@ void GuiNotifier::on_train_fail(const std::any& payload) {
 
     std::ostringstream os;
     os << "{\"protocol_no\":154"
-       << ",\"request_id\":\"" << ev.request_id << "\""
+       << ",\"request_id\":\"" << escape_json(ev.request_id) << "\""
        << ",\"station_id\":" << ev.station_id
-       << ",\"model_type\":\"" << ev.model_type << "\""
+       << ",\"model_type\":\"" << escape_json(ev.model_type) << "\""
        << ",\"progress\":-1"
        << ",\"status\":\"실패\""
-       << ",\"message\":\"" << ev.message << "\""
+       << ",\"message\":\"" << escape_json(ev.message) << "\""
        << "}";
 
     SessionManager::instance().broadcast(os.str());

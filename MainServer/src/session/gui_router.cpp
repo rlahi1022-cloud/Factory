@@ -5,6 +5,8 @@
 // ============================================================================
 #include "session/gui_router.h"
 #include "session/session_manager.h"
+#include "monitor/connection_registry.h"
+#include "core/config.h"
 #include "core/logger.h"
 #include "core/tcp_utils.h"
 #include "security/json_safety.h"
@@ -83,6 +85,36 @@ void GuiRouter::handle_login(int fd, const std::string& json) {
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 
     send_json(fd, os.str());
+
+    // ── 로그인 성공 시 현재 서버 상태(LED) 초기 동기화 ──
+    // 목적: 클라이언트가 접속한 시점에는 HealthChecker의 "상태 전환" 이벤트를
+    //       놓친 상태이므로 초기 LED를 알 수 없다.
+    //       config의 health_check 타겟별로 현재 ConnectionRegistry 조회하여
+    //       현재 상태(alive/down)를 HEALTH_PUSH(170)로 즉시 전송한다.
+    if (result.success) {
+        auto& cfg = Config::instance();
+        auto connections = ConnectionRegistry::instance().get_all_connections();
+
+        for (const auto& target : cfg.get_health_targets()) {
+            // target.ip로 시작하는 연결이 있는지 확인 (HealthChecker와 동일 규칙)
+            std::string ip_prefix = target.ip + ":";
+            bool alive = false;
+            for (const auto& [addr, conn_fd] : connections) {
+                if (addr.rfind(ip_prefix, 0) == 0) { alive = true; break; }
+            }
+
+            // HEALTH_PUSH(170) 전송 — 방금 로그인한 이 클라이언트에게만
+            std::ostringstream hp;
+            hp << "{\"protocol_no\":170"
+               << ",\"server_name\":\"" << escape_json(target.name) << "\""
+               << ",\"ip\":\""          << escape_json(target.ip)   << "\""
+               << ",\"port\":"          << target.port
+               << ",\"status\":\""      << (alive ? "recovered" : "down") << "\""
+               << "}";
+            send_json(fd, hp.str());
+        }
+        log_clt("초기 서버 상태 동기화 완료 | fd=%d", fd);
+    }
 }
 
 // ── REGISTER ─────────────────────────────────────────────────────────
