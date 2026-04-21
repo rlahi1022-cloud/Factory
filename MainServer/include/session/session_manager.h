@@ -67,6 +67,9 @@ public:
     /// 동시 로그인 방지를 위해 기존 세션을 찾아 강제 종료할 때 사용
     int find_fd_by_username(const std::string& username) const;
 
+    /// fd로부터 "IP:PORT" 문자열 조회 (없으면 빈 문자열)
+    std::string get_remote_addr(int client_fd) const;
+
     /// 지정된 fd의 세션을 강제 종료 — 연결 끊고 세션 제거
     void force_close(int client_fd);
 

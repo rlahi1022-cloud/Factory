@@ -150,6 +150,12 @@ int SessionManager::find_fd_by_username(const std::string& username) const {
     return -1;
 }
 
+std::string SessionManager::get_remote_addr(int client_fd) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = sessions_.find(client_fd);
+    return (it != sessions_.end()) ? it->second.remote_addr : std::string{};
+}
+
 void SessionManager::force_close(int client_fd) {
     // 소켓 강제 종료 → handle_client의 recv가 실패하며 자연스럽게 unregister됨
     ::shutdown(client_fd, SHUT_RDWR);

@@ -63,12 +63,43 @@ void GuiRouter::handle_login(int fd, const std::string& json) {
     auto result = service_.login(username, password);
 
     if (result.success) {
-        // 동시 로그인 방지 — 같은 username의 기존 세션이 있으면 강제 종료
+        // 중복 로그인 정책:
+        //   - 같은 IP에서 온 중복 (LoginDlg→MainTabDlg 전환) → 조용히 교체
+        //   - 다른 IP에서 온 중복 (실제 다중접속 시도) → 새 요청 거부, 기존 세션 유지
         int existing_fd = SessionManager::instance().find_fd_by_username(username);
         if (existing_fd >= 0 && existing_fd != fd) {
-            log_clt("중복 로그인 감지 | 사용자=%s 기존fd=%d → 종료",
-                    username.c_str(), existing_fd);
-            SessionManager::instance().force_close(existing_fd);
+            auto existing_addr = SessionManager::instance().get_remote_addr(existing_fd);
+            auto new_addr      = SessionManager::instance().get_remote_addr(fd);
+
+            // "IP:PORT" → "IP"만 추출 (마지막 ':' 앞까지)
+            auto ip_of = [](const std::string& addr) {
+                auto pos = addr.rfind(':');
+                return (pos != std::string::npos) ? addr.substr(0, pos) : addr;
+            };
+            std::string existing_ip = ip_of(existing_addr);
+            std::string new_ip      = ip_of(new_addr);
+
+            if (existing_ip == new_ip && !existing_ip.empty()) {
+                // 같은 PC에서 재연결 — 브로드캐스트 타겟에서 기존 세션 제거만
+                SessionManager::instance().unregister_session(existing_fd);
+            } else {
+                // 다른 PC에서 동시 로그인 시도 — 거부
+                log_clt("동시접속 거부 | 사용자=%s 기존ip=%s 신규ip=%s",
+                        username.c_str(), existing_ip.c_str(), new_ip.c_str());
+
+                std::ostringstream rej;
+                rej << "{\"protocol_no\":101"
+                    << ",\"protocol_version\":\"" << FACTORY_PROTOCOL_VERSION << "\""
+                    << ",\"request_id\":\"" << escape_json(request_id) << "\""
+                    << ",\"success\":false"
+                    << ",\"username\":\"" << escape_json(username) << "\""
+                    << ",\"role\":\"\""
+                    << ",\"employee_id\":\"\""
+                    << ",\"message\":\"다른 위치에서 이미 로그인된 계정입니다.\""
+                    << ",\"timestamp\":\"" << get_timestamp() << "\"}";
+                send_json(fd, rej.str());
+                return;
+            }
         }
         SessionManager::instance().set_client_info(fd, username, 0);
     }
