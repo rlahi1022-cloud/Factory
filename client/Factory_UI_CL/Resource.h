@@ -57,6 +57,7 @@
 #define IDC_CAM1_VIEW                   2200
 #define IDC_HEATMAP1_VIEW               2201
 #define IDC_PREDMASK1_VIEW              2214    // Pred Mask 뷰 (3번째 패널)
+#define IDC_NG_LIST1                    2215    // NG 이벤트 이력 세로 리스트 (스테이션1)
 #define IDC_STATIC_S1_RESULT            2202
 #define IDC_STATIC_S1_SCORE             2203
 #define IDC_BTN_S1_OK                   2204

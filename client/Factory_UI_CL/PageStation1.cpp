@@ -18,6 +18,7 @@ void CPageStation1::DoDataExchange(CDataExchange* pDX) {
     DDX_Control(pDX, IDC_CAM1_VIEW,      m_cam);
     DDX_Control(pDX, IDC_HEATMAP1_VIEW,  m_heat);
     DDX_Control(pDX, IDC_PREDMASK1_VIEW, m_mask);  // 패널 3 연결
+    DDX_Control(pDX, IDC_NG_LIST1,       m_ngList); // 하단 NG 이벤트 리스트
 }
 BOOL CPageStation1::OnInitDialog() {
     CDialogEx::OnInitDialog();
@@ -74,4 +75,13 @@ void CPageStation1::SetImages(const std::vector<BYTE>& image,
     m_cam.SetImage(image);
     m_heat.SetImage(heatmap);
     m_mask.SetImage(pred_mask);
+}
+
+// AddNgEntry: 하단 NG 이력 리스트에 누적. 상단 SetImages와 독립 — 둘 다 호출하면
+// 최신 1건은 상단 대형, 최대 10건은 하단 리스트.
+void CPageStation1::AddNgEntry(int id, double score, const CString& timeLabel,
+                               const std::vector<BYTE>& image,
+                               const std::vector<BYTE>& heatmap,
+                               const std::vector<BYTE>& pred_mask) {
+    m_ngList.AddEntry(id, 1 /*stationId*/, score, timeLabel, image, heatmap, pred_mask);
 }

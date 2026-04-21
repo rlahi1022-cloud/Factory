@@ -68,10 +68,11 @@
 // NG_PUSH(110) 수신 시 JSON 뒤에 붙어온 3장 이미지를 UI 스레드에 전달하기 위한 패킷
 // image/heatmap/pred_mask 각각 비어있을 수 있음(서버가 0 size로 보낸 경우)
 struct NgImagePacket {
-    int                station_id;   // 1=입고검사, 2=조립검사
-    std::vector<BYTE>  image;        // 원본 JPEG
-    std::vector<BYTE>  heatmap;      // Anomaly Map PNG
-    std::vector<BYTE>  pred_mask;    // Pred Mask PNG
+    int                station_id    = 0;  // 1=입고검사, 2=조립검사
+    int                inspection_id = 0;  // DB 레코드 id — NG_PUSH(110)/INSPECT_IMAGE_RES(117) 모두 포함
+    std::vector<BYTE>  image;              // 원본 JPEG
+    std::vector<BYTE>  heatmap;            // Anomaly Map PNG
+    std::vector<BYTE>  pred_mask;          // Pred Mask PNG
 };
 
 // ============================================================================

@@ -137,7 +137,7 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 // 스테이션 1
-IDD_PAGE_STATION1 DIALOGEX 0, 0, 900, 490
+IDD_PAGE_STATION1 DIALOGEX 0, 0, 900, 720
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Tahoma", 0, 0, 0x1
 BEGIN
@@ -180,6 +180,13 @@ BEGIN
     GROUPBOX "Arduino - Station1",    IDC_STATIC,           4, 282, 890, 36
     LTEXT    "Serial OK (COM3)",      IDC_STATIC,          12, 294, 110, 10
     LTEXT    "Standby",               IDC_STATIC_S1_LED,  130, 294, 220, 10
+
+    // ── NG 이벤트 이력 (최대 10건, 세로 리스트, 스크롤) ─────────────────
+    // 각 행: [라벨][원본][히트맵][마스크] — CNgHistoryList가 소유드로우.
+    LTEXT    "NG 이벤트 이력 (최근 10건)", IDC_STATIC,    10, 324,250, 10
+    CONTROL  "", IDC_NG_LIST1, "STATIC",
+             SS_BLACKFRAME | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP,
+             4, 336, 890, 380
 END
 
 /////////////////////////////////////////////////////////////////////////////

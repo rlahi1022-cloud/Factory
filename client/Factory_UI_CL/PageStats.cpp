@@ -267,6 +267,43 @@ int CPageStats::GetLastNgInspectionIdByStation(int station) const
     return 0;
 }
 
+// 특정 스테이션의 최신 inspection_id 리스트 (시간 역순, 최대 count개).
+// NG 우선으로 채우고 부족하면 OK로 보충 — 그래야 리스트가 비어보이지 않음.
+std::vector<int> CPageStats::GetRecentInspectionIdsByStation(int station, int count) const
+{
+    std::vector<int> out;
+    if (count <= 0) return out;
+    out.reserve(count);
+    // 1순위: NG 우선 (시간 역순 유지)
+    for (const auto& r : m_recs) {
+        if (r.station == station && r.isNG) {
+            out.push_back(r.id);
+            if (static_cast<int>(out.size()) >= count) return out;
+        }
+    }
+    // 2순위: OK로 보충
+    for (const auto& r : m_recs) {
+        if (r.station == station && !r.isNG) {
+            out.push_back(r.id);
+            if (static_cast<int>(out.size()) >= count) return out;
+        }
+    }
+    return out;
+}
+
+// inspection_id → (time, score) 조회. m_recs는 로그인 직후 히스토리 응답으로 채워짐.
+bool CPageStats::LookupInspectionMeta(int id, CString& outTime, double& outScore) const
+{
+    for (const auto& r : m_recs) {
+        if (r.id == id) {
+            outTime  = r.time;
+            outScore = r.score;
+            return true;
+        }
+    }
+    return false;
+}
+
 // ============================================================================
 // OnStatsRes — 통계 응답 수신 (프로토콜 131)
 // ============================================================================

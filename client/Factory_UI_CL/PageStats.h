@@ -36,6 +36,14 @@ public:
     // 로그인 직후 각 스테이션 페이지의 3장 이미지를 자동 로드할 때 사용.
     int GetLastNgInspectionIdByStation(int station) const;
 
+    // 특정 스테이션의 최신 NG들 inspection_id 목록 (최대 count개, 시간 역순).
+    // NG가 부족하면 OK도 포함하여 채움. 로그인 직후 10건 이력 리스트 채우기용.
+    std::vector<int> GetRecentInspectionIdsByStation(int station, int count) const;
+
+    // inspection_id로 해당 레코드의 timestamp/score 조회.
+    // 발견 시 true, 미발견 시 false (out 파라미터는 변경 안 됨).
+    bool LookupInspectionMeta(int id, CString& outTime, double& outScore) const;
+
 protected:
     CNetworkClient* m_net = nullptr;
     std::vector<InspectionRecord> m_recs;

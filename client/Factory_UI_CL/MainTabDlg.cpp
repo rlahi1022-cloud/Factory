@@ -776,21 +776,24 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
         // 검사 이력 응답 → 통계 페이지에 전달
         if (m_stats) m_stats->OnInspectHistoryRes(*pJson);
 
-        // 접속 직후 1회만: 스테이션별 최신 NG 이미지를 자동 요청하여
-        // Station1/2 페이지의 3개 뷰(Image / Anomaly Map / Pred Mask)에
-        // 서버 DB 기반 실데이터를 즉시 표시. 라이브 NG_PUSH가 오면 그걸로 덮어씀.
+        // 접속 직후 1회만: 스테이션별 최신 N건(기본 10)의 이미지를 자동 요청하여
+        // 상단 대형 3뷰 + 하단 이력 리스트에 DB 기반 실데이터를 즉시 표시.
+        // 라이브 NG_PUSH가 오면 상단은 덮어쓰고, 하단 리스트에는 추가됨.
         if (!m_initialImagesLoaded && m_stats) {
             m_initialImagesLoaded = true;
-            int id1 = m_stats->GetLastNgInspectionIdByStation(1);
-            int id2 = m_stats->GetLastNgInspectionIdByStation(2);
-            if (id1 > 0) {
-                m_net.SendJson(CPacketBuilder::BuildInspectImageReq(id1));
-                TRACE(_T("[MainTabDlg] 스테이션1 초기 이미지 요청 | id=%d\n"), id1);
+            constexpr int kHistoryImagesPerStation = 10;  // 리스트 상한과 일치
+            auto ids1 = m_stats->GetRecentInspectionIdsByStation(1, kHistoryImagesPerStation);
+            auto ids2 = m_stats->GetRecentInspectionIdsByStation(2, kHistoryImagesPerStation);
+            // 역순으로 보냄(오래된 것 먼저) — 응답이 오는 순서대로 리스트 앞에 prepend되면
+            // 최종적으로 시간 역순(최신이 맨 위)으로 정렬됨.
+            for (auto it = ids1.rbegin(); it != ids1.rend(); ++it) {
+                m_net.SendJson(CPacketBuilder::BuildInspectImageReq(*it));
             }
-            if (id2 > 0) {
-                m_net.SendJson(CPacketBuilder::BuildInspectImageReq(id2));
-                TRACE(_T("[MainTabDlg] 스테이션2 초기 이미지 요청 | id=%d\n"), id2);
+            for (auto it = ids2.rbegin(); it != ids2.rend(); ++it) {
+                m_net.SendJson(CPacketBuilder::BuildInspectImageReq(*it));
             }
+            TRACE(_T("[MainTabDlg] 초기 이력 이미지 요청 | s1=%d건 s2=%d건\n"),
+                  (int)ids1.size(), (int)ids2.size());
         }
         break;
 
@@ -877,13 +880,24 @@ LRESULT CMainTabDlg::OnNetNgImage(WPARAM, LPARAM lParam)
     NgImagePacket* pkt = reinterpret_cast<NgImagePacket*>(lParam);
     if (!pkt) return 0;
 
-    TRACE(_T("[MainTabDlg] NG 이미지 수신 | station=%d img=%zu heat=%zu mask=%zu\n"),
-          pkt->station_id, pkt->image.size(), pkt->heatmap.size(), pkt->pred_mask.size());
+    TRACE(_T("[MainTabDlg] NG 이미지 수신 | station=%d id=%d img=%zu heat=%zu mask=%zu\n"),
+          pkt->station_id, pkt->inspection_id,
+          pkt->image.size(), pkt->heatmap.size(), pkt->pred_mask.size());
+
+    // 메타데이터(timestamp/score)는 PageStats의 히스토리 캐시에서 조회 — 미발견 시 기본값.
+    CString timeLabel = _T("--:--:--");
+    double  score     = 0.0;
+    if (m_stats) m_stats->LookupInspectionMeta(pkt->inspection_id, timeLabel, score);
 
     if (pkt->station_id == 1 && m_st1) {
+        // 상단 대형 3뷰 — 최신 1건만 유지 (덮어쓰기)
         m_st1->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
+        // 하단 이력 리스트 — 최대 10건까지 누적 (동일 id는 교체)
+        m_st1->AddNgEntry(pkt->inspection_id, score, timeLabel,
+                          pkt->image, pkt->heatmap, pkt->pred_mask);
     } else if (pkt->station_id == 2 && m_st2) {
         m_st2->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
+        // 스테이션2는 후속 커밋에서 리스트 연결 예정
     }
 
     delete pkt;

@@ -78,3 +78,56 @@ protected:
 namespace CameraViewUtil {
     bool LoadImageFromBytes(const std::vector<BYTE>& bytes, CImage& out);
 }
+
+// NG 이벤트 이력 리스트 뷰 ───────────────────────────────────────────────────
+// 최신 NG가 맨 위, 오래된 것이 아래쪽에 쌓이는 세로 스크롤 리스트.
+// 각 행 = [라벨 영역][원본 썸네일][히트맵 썸네일][마스크 썸네일].
+// 최대 m_maxEntries(기본 10)개만 유지하고, 초과 시 가장 오래된 항목을 버림.
+// 마우스 휠 / 수직 스크롤바로 뷰포트 이동.
+// 순수 UI — 네트워크 직접 호출 없음. PageStation1/2의 AddNgEntry를 통해 주입.
+class CNgHistoryList : public CStatic {
+    DECLARE_DYNAMIC(CNgHistoryList)
+public:
+    CNgHistoryList();
+
+    struct Entry {
+        int     id        = 0;
+        int     stationId = 0;
+        double  score     = 0.0;
+        CString time;                // 표시용 문자열 ("HH:MM:SS" 또는 "#id")
+        CImage  img;                 // 디코드된 원본
+        CImage  heat;                // 디코드된 히트맵
+        CImage  mask;                // 디코드된 마스크
+    };
+
+    // 새 NG 1건을 리스트 맨 위에 추가. 초과분은 꼬리부터 버림.
+    // 빈 bytes는 해당 이미지 비움 처리(플레이스홀더).
+    void AddEntry(int id, int stationId, double score,
+                  const CString& timeLabel,
+                  const std::vector<BYTE>& img,
+                  const std::vector<BYTE>& heat,
+                  const std::vector<BYTE>& mask);
+
+    void Clear();
+    int  Count() const { return static_cast<int>(m_entries.size()); }
+
+protected:
+    std::vector<Entry> m_entries;
+    int m_maxEntries = 10;
+    int m_rowH       = 58;           // 각 행 높이 (px)
+    int m_scrollY    = 0;            // 현재 세로 스크롤 오프셋 (px)
+
+    void UpdateScrollInfo();
+    int  TotalContentHeight() const { return m_rowH * static_cast<int>(m_entries.size()); }
+    void DrawRow(CDC& dc, const Entry& e, const CRect& rowRc);
+
+    virtual void PreSubclassWindow() override;
+
+    afx_msg void OnPaint();
+    afx_msg BOOL OnEraseBkgnd(CDC* pDC);
+    afx_msg void OnSize(UINT nType, int cx, int cy);
+    afx_msg void OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pSB);
+    afx_msg BOOL OnMouseWheel(UINT fFlags, short zDelta, CPoint pt);
+
+    DECLARE_MESSAGE_MAP()
+};

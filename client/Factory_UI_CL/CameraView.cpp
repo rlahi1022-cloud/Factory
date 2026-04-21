@@ -325,3 +325,252 @@ void CPredMaskView::draw_label(CDC& dc, CRect& rc) {
     dc.DrawText(_T("Pred Mask"), &lr, DT_CENTER | DT_SINGLELINE);
     dc.SelectObject(p_old_lf);
 }
+
+// ── CNgHistoryList ───────────────────────────────────────────────────────────
+IMPLEMENT_DYNAMIC(CNgHistoryList, CStatic)
+BEGIN_MESSAGE_MAP(CNgHistoryList, CStatic)
+    ON_WM_PAINT()
+    ON_WM_ERASEBKGND()
+    ON_WM_SIZE()
+    ON_WM_VSCROLL()
+    ON_WM_MOUSEWHEEL()
+END_MESSAGE_MAP()
+
+CNgHistoryList::CNgHistoryList() {}
+
+void CNgHistoryList::PreSubclassWindow() {
+    CStatic::PreSubclassWindow();
+    // 리소스에서 WS_VSCROLL을 지정하지 않아도 런타임에 부여 — 스크롤바 강제 표시 가능.
+    ModifyStyle(0, WS_VSCROLL);
+    UpdateScrollInfo();
+}
+
+void CNgHistoryList::AddEntry(int id, int stationId, double score,
+                              const CString& timeLabel,
+                              const std::vector<BYTE>& img,
+                              const std::vector<BYTE>& heat,
+                              const std::vector<BYTE>& mask) {
+    Entry e;
+    e.id        = id;
+    e.stationId = stationId;
+    e.score     = score;
+    e.time      = timeLabel;
+    CameraViewUtil::LoadImageFromBytes(img,  e.img);
+    CameraViewUtil::LoadImageFromBytes(heat, e.heat);
+    CameraViewUtil::LoadImageFromBytes(mask, e.mask);
+
+    // 동일 id가 이미 있으면 교체(중복 요청 대비). 없으면 맨 앞에 prepend.
+    for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
+        if (it->id == id) {
+            *it = std::move(e);
+            UpdateScrollInfo();
+            Invalidate();
+            return;
+        }
+    }
+    m_entries.insert(m_entries.begin(), std::move(e));
+    // 상한 유지 — 꼬리부터 제거
+    while (static_cast<int>(m_entries.size()) > m_maxEntries) {
+        m_entries.pop_back();
+    }
+    UpdateScrollInfo();
+    Invalidate();
+}
+
+void CNgHistoryList::Clear() {
+    m_entries.clear();
+    m_scrollY = 0;
+    UpdateScrollInfo();
+    Invalidate();
+}
+
+void CNgHistoryList::UpdateScrollInfo() {
+    if (!GetSafeHwnd()) return;
+    CRect rc; GetClientRect(&rc);
+    int viewportH = rc.Height();
+    int totalH    = TotalContentHeight();
+
+    SCROLLINFO si{};
+    si.cbSize = sizeof(si);
+    si.fMask  = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMin   = 0;
+    si.nMax   = (totalH > 0) ? (totalH - 1) : 0;
+    si.nPage  = (viewportH > 0) ? viewportH : 1;
+
+    // 스크롤 범위가 줄어들었으면 현재 위치도 보정
+    int maxPos = (totalH > viewportH) ? (totalH - viewportH) : 0;
+    if (m_scrollY > maxPos) m_scrollY = maxPos;
+    si.nPos = m_scrollY;
+
+    SetScrollInfo(SB_VERT, &si, TRUE);
+}
+
+BOOL CNgHistoryList::OnEraseBkgnd(CDC* /*pDC*/) {
+    // OnPaint에서 전체 배경을 채우므로 깜빡임 방지를 위해 기본 지움 생략
+    return TRUE;
+}
+
+void CNgHistoryList::OnSize(UINT nType, int cx, int cy) {
+    CStatic::OnSize(nType, cx, cy);
+    UpdateScrollInfo();
+    Invalidate();
+}
+
+void CNgHistoryList::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pSB) {
+    CRect rc; GetClientRect(&rc);
+    int viewportH = rc.Height();
+    int maxPos    = (std::max)(0, TotalContentHeight() - viewportH);
+    int delta     = 0;
+
+    switch (nSBCode) {
+        case SB_LINEUP:       delta = -m_rowH / 2; break;
+        case SB_LINEDOWN:     delta =  m_rowH / 2; break;
+        case SB_PAGEUP:       delta = -viewportH;  break;
+        case SB_PAGEDOWN:     delta =  viewportH;  break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION: {
+            SCROLLINFO si{}; si.cbSize = sizeof(si); si.fMask = SIF_TRACKPOS;
+            GetScrollInfo(SB_VERT, &si);
+            m_scrollY = si.nTrackPos;
+            if (m_scrollY < 0)      m_scrollY = 0;
+            if (m_scrollY > maxPos) m_scrollY = maxPos;
+            SetScrollPos(SB_VERT, m_scrollY, TRUE);
+            Invalidate();
+            CStatic::OnVScroll(nSBCode, nPos, pSB);
+            return;
+        }
+        default: CStatic::OnVScroll(nSBCode, nPos, pSB); return;
+    }
+
+    m_scrollY += delta;
+    if (m_scrollY < 0)      m_scrollY = 0;
+    if (m_scrollY > maxPos) m_scrollY = maxPos;
+    SetScrollPos(SB_VERT, m_scrollY, TRUE);
+    Invalidate();
+    CStatic::OnVScroll(nSBCode, nPos, pSB);
+}
+
+BOOL CNgHistoryList::OnMouseWheel(UINT /*fFlags*/, short zDelta, CPoint /*pt*/) {
+    CRect rc; GetClientRect(&rc);
+    int viewportH = rc.Height();
+    int maxPos    = (std::max)(0, TotalContentHeight() - viewportH);
+    // 휠 한 노치(120) = 한 행 분량 스크롤
+    int step = (zDelta / WHEEL_DELTA) * m_rowH;
+    m_scrollY -= step;
+    if (m_scrollY < 0)      m_scrollY = 0;
+    if (m_scrollY > maxPos) m_scrollY = maxPos;
+    SetScrollPos(SB_VERT, m_scrollY, TRUE);
+    Invalidate();
+    return TRUE;
+}
+
+void CNgHistoryList::DrawRow(CDC& dc, const Entry& e, const CRect& rowRc) {
+    // 배경 — NG이면 약간 붉은 톤, 구분선
+    dc.FillSolidRect(&rowRc, RGB(22, 22, 26));
+    CPen sep(PS_SOLID, 1, RGB(45, 45, 50));
+    CPen* p_old = dc.SelectObject(&sep);
+    dc.MoveTo(rowRc.left,  rowRc.bottom - 1);
+    dc.LineTo(rowRc.right, rowRc.bottom - 1);
+    dc.SelectObject(p_old);
+
+    // 레이아웃: [라벨 90px] [img] [heat] [mask], 패딩 4
+    const int pad      = 4;
+    const int labelW   = 90;
+    const int thumbW   = (rowRc.Width() - labelW - pad * 5) / 3;
+    const int thumbH   = rowRc.Height() - pad * 2;
+
+    // 라벨 텍스트 ("#42" / "14:33:21" / "Score 0.87")
+    dc.SetBkMode(TRANSPARENT);
+    dc.SetTextColor(RGB(220, 220, 230));
+    CFont f1; f1.CreatePointFont(75, _T("Tahoma"));
+    CFont* p_f1 = dc.SelectObject(&f1);
+
+    CString line1; line1.Format(_T("#%d"), e.id);
+    CString line2 = e.time;
+    CString line3; line3.Format(_T("Score %.2f"), e.score);
+
+    CRect tr(rowRc.left + pad, rowRc.top + pad, rowRc.left + pad + labelW, rowRc.top + pad + 14);
+    dc.DrawText(line1, &tr, DT_LEFT | DT_SINGLELINE);
+    dc.SetTextColor(RGB(160, 180, 220));
+    tr.OffsetRect(0, 14);
+    dc.DrawText(line2, &tr, DT_LEFT | DT_SINGLELINE);
+    dc.SetTextColor(RGB(255, 140, 140));
+    tr.OffsetRect(0, 14);
+    dc.DrawText(line3, &tr, DT_LEFT | DT_SINGLELINE);
+    dc.SelectObject(p_f1);
+
+    // 썸네일 3장
+    auto drawThumb = [&](const CImage& img, int colIndex, LPCTSTR caption) {
+        int x = rowRc.left + pad + labelW + pad + (thumbW + pad) * colIndex;
+        int y = rowRc.top + pad;
+        CRect tc(x, y, x + thumbW, y + thumbH);
+        // 배경
+        dc.FillSolidRect(&tc, RGB(10, 10, 14));
+        if (!img.IsNull() && thumbW > 4 && thumbH > 4) {
+            int oldMode = ::SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
+            ::SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, nullptr);
+            const_cast<CImage&>(img).StretchBlt(
+                dc.GetSafeHdc(),
+                tc.left, tc.top, tc.Width(), tc.Height(),
+                0, 0, img.GetWidth(), img.GetHeight(),
+                SRCCOPY);
+            ::SetStretchBltMode(dc.GetSafeHdc(), oldMode);
+        }
+        // 외곽선 + 캡션
+        CPen pen(PS_SOLID, 1, RGB(68, 68, 78));
+        CPen* p_o = dc.SelectObject(&pen);
+        CBrush* p_ob = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
+        dc.Rectangle(&tc);
+        dc.SelectObject(p_o);
+        dc.SelectObject(p_ob);
+        // 좌상단 캡션
+        dc.SetTextColor(RGB(170, 170, 180));
+        CFont f2; f2.CreatePointFont(60, _T("Tahoma"));
+        CFont* p_f2 = dc.SelectObject(&f2);
+        CRect cr(tc.left + 2, tc.top + 1, tc.left + 90, tc.top + 13);
+        dc.DrawText(caption, &cr, DT_LEFT | DT_SINGLELINE);
+        dc.SelectObject(p_f2);
+    };
+
+    drawThumb(e.img,  0, _T("Image"));
+    drawThumb(e.heat, 1, _T("Anomaly Map"));
+    drawThumb(e.mask, 2, _T("Pred Mask"));
+}
+
+void CNgHistoryList::OnPaint() {
+    CPaintDC dc(this);
+    CRect rc; GetClientRect(&rc);
+
+    // 더블 버퍼링
+    CDC mem; CBitmap bmp;
+    mem.CreateCompatibleDC(&dc);
+    bmp.CreateCompatibleBitmap(&dc, rc.Width(), rc.Height());
+    CBitmap* p_old = mem.SelectObject(&bmp);
+
+    // 배경
+    mem.FillSolidRect(&rc, RGB(17, 17, 20));
+
+    if (m_entries.empty()) {
+        mem.SetBkMode(TRANSPARENT);
+        mem.SetTextColor(RGB(80, 80, 90));
+        CFont f; f.CreatePointFont(80, _T("Tahoma"));
+        CFont* p_f = mem.SelectObject(&f);
+        mem.DrawText(_T("NG 이벤트 이력 없음 — 서버 수신 대기"),
+                     &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        mem.SelectObject(p_f);
+    } else {
+        int firstIdx = m_scrollY / m_rowH;
+        int offset   = m_scrollY % m_rowH;
+        int y        = -offset;
+        for (int i = firstIdx; i < static_cast<int>(m_entries.size()); ++i) {
+            CRect rowRc(rc.left, y, rc.right, y + m_rowH);
+            if (rowRc.bottom < rc.top) { y += m_rowH; continue; }
+            if (rowRc.top > rc.bottom) break;
+            DrawRow(mem, m_entries[i], rowRc);
+            y += m_rowH;
+        }
+    }
+
+    dc.BitBlt(0, 0, rc.Width(), rc.Height(), &mem, 0, 0, SRCCOPY);
+    mem.SelectObject(p_old);
+}

@@ -367,7 +367,8 @@ void CNetworkClient::RecvLoop()
             m_hNotifyWnd && ::IsWindow(m_hNotifyWnd)) {
             auto* pkt = new (std::nothrow) NgImagePacket{};
             if (pkt) {
-                pkt->station_id = CPacketBuilder::ExtractInt(jsonA, "station_id");
+                pkt->station_id    = CPacketBuilder::ExtractInt(jsonA, "station_id");
+                pkt->inspection_id = CPacketBuilder::ExtractInt(jsonA, "inspection_id");
                 pkt->image      = std::move(imgBytes);
                 pkt->heatmap    = std::move(heatBytes);
                 pkt->pred_mask  = std::move(maskBytes);
