@@ -34,9 +34,8 @@ void CCameraView::OnPaint() {
 
 void CCameraView::DrawBg(CDC& dc, CRect& rc) {
     dc.FillSolidRect(&rc, RGB(17,17,17));
-    // 외곽선
-    COLORREF bc = m_isNG ? RGB(200,0,0) : RGB(68,68,68);
-    CPen pen(PS_SOLID, 2, bc); CPen* p = dc.SelectObject(&pen);
+    // 외곽선 — OK/NG 무관하게 단색 유지
+    CPen pen(PS_SOLID, 2, RGB(68,68,68)); CPen* p = dc.SelectObject(&pen);
     CBrush* pb = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
     dc.Rectangle(&rc);
     dc.SelectObject(p); dc.SelectObject(pb);
@@ -135,36 +134,104 @@ void CHeatmapView::OnPaint() {
     CRect rc; GetClientRect(&rc);
     CDC mem; CBitmap bmp;
     mem.CreateCompatibleDC(&dc);
-    bmp.CreateCompatibleBitmap(&dc,rc.Width(),rc.Height());
-    CBitmap* pOld=mem.SelectObject(&bmp);
-    mem.FillSolidRect(&rc,RGB(17,17,17));
-    int W=rc.Width(), H=rc.Height();
-    CRect bottle((int)(W*0.15),(int)(H*0.05),(int)(W*0.85),(int)(H*0.93));
-    CPen pen(PS_SOLID,1,RGB(50,70,110)); CPen* pp=mem.SelectObject(&pen);
-    CBrush br(RGB(25,40,65)); CBrush* pb=mem.SelectObject(&br);
-    mem.RoundRect(bottle.left,bottle.top,bottle.right,bottle.bottom,10,10); mem.SelectObject(pp); mem.SelectObject(pb);
-    // 핫스팟
-    int r1=m_active?(int)(H*0.20):(int)(H*0.13);
-    int r2=m_active?(int)(H*0.14):(int)(H*0.09);
-    COLORREF c1=m_active?RGB(220,0,0):RGB(0,110,0);
-    COLORREF c2=m_active?RGB(255,160,0):RGB(0,80,0);
-    auto drawHot=[&](int cx,int cy,int r,COLORREF c){
-        for(int i=r;i>0;i-=3){
-            BYTE R=GetRValue(c),G=GetGValue(c),B=GetBValue(c);
-            COLORREF bc=RGB(R+(17-R)*i/r,G+(17-G)*i/r,B+(17-B)*i/r);
-            CBrush hb(bc); CPen hp(PS_SOLID,1,bc);
-            CPen* p1=mem.SelectObject(&hp); CBrush* p2=mem.SelectObject(&hb);
-            mem.Ellipse(cx-i,cy-i,cx+i,cy+i);
-            mem.SelectObject(p1); mem.SelectObject(p2);
-        }
-    };
-    drawHot((int)(W*0.45),(int)(H*0.40),r1,c1);
-    drawHot((int)(W*0.57),(int)(H*0.65),r2,c2);
-    mem.SetBkMode(TRANSPARENT); mem.SetTextColor(RGB(100,100,100));
-    CFont f; f.CreatePointFont(60,_T("Tahoma")); CFont* pf=mem.SelectObject(&f);
-    CRect lr(rc.left,rc.bottom-13,rc.right,rc.bottom);
-    mem.DrawText(_T("Anomaly Heatmap"),&lr,DT_CENTER|DT_SINGLELINE);
+    bmp.CreateCompatibleBitmap(&dc, rc.Width(), rc.Height());
+    CBitmap* pOld = mem.SelectObject(&bmp);
+    // 배경만 채움 — 실서버 연동 시 수신한 히트맵 이미지를 BitBlt로 출력 예정
+    mem.FillSolidRect(&rc, RGB(17, 17, 17));
+    mem.SetBkMode(TRANSPARENT);
+    mem.SetTextColor(RGB(100, 100, 100));
+    CFont f; f.CreatePointFont(60, _T("Tahoma")); CFont* pf = mem.SelectObject(&f);
+    CRect lr(rc.left, rc.bottom - 13, rc.right, rc.bottom);
+    mem.DrawText(_T("Anomaly Heatmap"), &lr, DT_CENTER | DT_SINGLELINE);
     mem.SelectObject(pf);
-    dc.BitBlt(0,0,rc.Width(),rc.Height(),&mem,0,0,SRCCOPY);
+    dc.BitBlt(0, 0, rc.Width(), rc.Height(), &mem, 0, 0, SRCCOPY);
     mem.SelectObject(pOld);
+}
+
+// ── CPredMaskView ─────────────────────────────────────────────────────────────
+IMPLEMENT_DYNAMIC(CPredMaskView, CStatic)
+BEGIN_MESSAGE_MAP(CPredMaskView, CStatic)
+    ON_WM_PAINT()
+END_MESSAGE_MAP()
+
+CPredMaskView::CPredMaskView()
+    : m_active(false)
+    , m_cx1(0.55), m_cy1(0.22)
+    , m_cx2(0.52), m_cy2(0.52) {}
+
+void CPredMaskView::SetMask(bool is_active,
+                             double cx1, double cy1,
+                             double cx2, double cy2) {
+    m_active = is_active;
+    m_cx1 = cx1; m_cy1 = cy1;
+    m_cx2 = cx2; m_cy2 = cy2;
+    Invalidate();
+}
+
+void CPredMaskView::OnPaint() {
+    CPaintDC dc(this);
+    CRect rc; GetClientRect(&rc);
+    CDC mem; CBitmap bmp;
+    mem.CreateCompatibleDC(&dc);
+    bmp.CreateCompatibleBitmap(&dc, rc.Width(), rc.Height());
+    CBitmap* p_old = mem.SelectObject(&bmp);
+    draw_bg(mem, rc);
+    if (m_active) draw_mask_circles(mem, rc);
+    draw_label(mem, rc);
+    dc.BitBlt(0, 0, rc.Width(), rc.Height(), &mem, 0, 0, SRCCOPY);
+    mem.SelectObject(p_old);
+}
+
+void CPredMaskView::draw_bg(CDC& dc, CRect& rc) {
+    // 배경만 채움 — 실서버 연동 시 수신한 원본 이미지를 BitBlt로 출력 예정
+    dc.FillSolidRect(&rc, RGB(17, 17, 17));
+    // 외곽선 — OK/NG 무관하게 단색 유지
+    CPen pen(PS_SOLID, 2, RGB(68, 68, 68));
+    CPen* p_old_pen = dc.SelectObject(&pen);
+    CBrush* p_old_br = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
+    dc.Rectangle(&rc);
+    dc.SelectObject(p_old_pen);
+    dc.SelectObject(p_old_br);
+}
+
+void CPredMaskView::draw_mask_circles(CDC& dc, CRect& rc) {
+    int W = rc.Width(), H = rc.Height();
+    // 빨간 원 2개 — 이상 영역 마킹 (참조 이미지 기준)
+    struct MaskCircle { double cx, cy; int radius; };
+    MaskCircle circles[] = {
+        { m_cx1, m_cy1, (int)(H * 0.09f) },  // 상단 이상 영역
+        { m_cx2, m_cy2, (int)(H * 0.06f) },  // 중단 이상 영역
+    };
+    CPen red_pen(PS_SOLID, 2, RGB(255, 50, 50));
+    CPen* p_old = dc.SelectObject(&red_pen);
+    CBrush* p_old_br = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
+    for (auto& c : circles) {
+        int cx = (int)(W * c.cx);
+        int cy = (int)(H * c.cy);
+        int r  = c.radius;
+        dc.Ellipse(cx - r, cy - r, cx + r, cy + r);
+    }
+    dc.SelectObject(p_old);
+    dc.SelectObject(p_old_br);
+}
+
+void CPredMaskView::draw_label(CDC& dc, CRect& rc) {
+    // 상단 스코어 바 (CCameraView와 동일 스타일)
+    CRect bar(rc.left, rc.top, rc.right, rc.top + 14);
+    CBrush b(RGB(0, 0, 0)); dc.FillRect(&bar, &b);
+    dc.SetBkMode(TRANSPARENT);
+    dc.SetTextColor(RGB(130, 180, 255));
+    CFont f; f.CreatePointFont(60, _T("Courier New"));
+    CFont* p_old_f = dc.SelectObject(&f);
+    CRect tl(rc.left + 2, rc.top + 1, rc.left + 110, rc.top + 13);
+    dc.DrawText(_T("Pred Mask"), &tl, DT_LEFT | DT_SINGLELINE);
+    dc.SelectObject(p_old_f);
+    // 하단 레이블
+    dc.SetBkMode(TRANSPARENT);
+    dc.SetTextColor(RGB(100, 100, 100));
+    CFont lf; lf.CreatePointFont(60, _T("Tahoma"));
+    CFont* p_old_lf = dc.SelectObject(&lf);
+    CRect lr(rc.left, rc.bottom - 13, rc.right, rc.bottom);
+    dc.DrawText(_T("Pred Mask"), &lr, DT_CENTER | DT_SINGLELINE);
+    dc.SelectObject(p_old_lf);
 }

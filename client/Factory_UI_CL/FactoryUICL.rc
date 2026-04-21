@@ -141,25 +141,45 @@ IDD_PAGE_STATION1 DIALOGEX 0, 0, 900, 490
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Tahoma", 0, 0, 0x1
 BEGIN
-    GROUPBOX "Station 1 - Incoming (PatchCore)", IDC_STATIC, 4, 4, 890, 310
-    LTEXT    "Pylon Camera #1",     IDC_STATIC,          10, 18,140,  9
-    CONTROL  "", IDC_CAM1_VIEW,    "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE, 10, 28,155,215
-    LTEXT    "PatchCore Heatmap",   IDC_STATIC,         172, 18, 90,  9
-    CONTROL  "", IDC_HEATMAP1_VIEW,"STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,172, 28, 95,215
-    GROUPBOX "Result",              IDC_STATIC,         274, 18,210, 80
-    LTEXT    "OK",                  IDC_STATIC_S1_RESULT, 284, 28,190, 42, SS_CENTER
-    LTEXT    "Score: 0.00 / Thresh: 0.50", IDC_STATIC_S1_SCORE, 282, 72,196, 10
-    GROUPBOX "Settings",            IDC_STATIC,         274,102,210, 74
-    LTEXT    "Model:  PatchCore v1.2.0", IDC_STATIC,    282,114,196, 10
-    LTEXT    "Input:  224x224",     IDC_STATIC,         282,126,196, 10
-    LTEXT    "Thresh: 0.50",        IDC_STATIC,         282,138,196, 10
-    LTEXT    "Backbone: ResNet-18", IDC_STATIC,         282,150,196, 10
-    PUSHBUTTON "Manual: OK",        IDC_BTN_S1_OK,      274,184, 66, 14
-    PUSHBUTTON "Manual: NG",        IDC_BTN_S1_NG,      344,184, 66, 14
-    PUSHBUTTON "Arduino Test",      IDC_BTN_S1_ARDUINO, 414,184, 60, 14
-    GROUPBOX "Arduino - Station1",  IDC_STATIC,           4,318,890, 36
-    LTEXT    "Serial OK (COM3)",    IDC_STATIC,          12,330,110, 10
-    LTEXT    "Standby",             IDC_STATIC_S1_LED,  130,330,220, 10
+    // ── 메인 그룹박스 (3뷰 + 우측 패널 포함) ─────────────────────────────
+    GROUPBOX "Station 1 - Incoming (PatchCore)", IDC_STATIC, 4, 4, 890, 270
+
+    // ── 뷰 레이블 (각 뷰 상단) ────────────────────────────────────────────
+    // 뷰 3개: x=10/201/392, 각 w=185, h=222
+    // 간격: 6du, 레이블 높이: 9du (y=18), 뷰 y=28
+    LTEXT    "Image",                 IDC_STATIC,          10, 18, 60,  9
+    LTEXT    "Image + Anomaly Map",   IDC_STATIC,         201, 18,100,  9
+    LTEXT    "Image + Pred Mask",     IDC_STATIC,         392, 18, 90,  9
+
+    // ── 3개 뷰 컨트롤 (균등 185×222) ──────────────────────────────────────
+    CONTROL  "", IDC_CAM1_VIEW,      "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,  10, 28, 185, 222
+    CONTROL  "", IDC_HEATMAP1_VIEW,  "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE, 201, 28, 185, 222
+    CONTROL  "", IDC_PREDMASK1_VIEW, "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE, 392, 28, 185, 222
+
+    // ── 우측 패널 (Result / Settings / 버튼) ─────────────────────────────
+    // x=583 (392+185+6), w=210
+    GROUPBOX "Result",                IDC_STATIC,         583, 14, 210,  80
+    LTEXT    "OK",                    IDC_STATIC_S1_RESULT, 593, 24, 190, 42, SS_CENTER
+    LTEXT    "Score: 0.00 / Thresh: 0.50", IDC_STATIC_S1_SCORE, 591, 68, 196, 10
+
+    GROUPBOX "Settings",              IDC_STATIC,         583,  98, 210,  74
+    LTEXT    "Model:",                IDC_STATIC,         591, 110,  40,  10
+    LTEXT    "",                      IDC_STATIC_S1_CFG_MODEL,  633, 110, 154, 10
+    LTEXT    "Input:",                IDC_STATIC,         591, 122,  40,  10
+    LTEXT    "",                      IDC_STATIC_S1_CFG_INPUT,  633, 122, 154, 10
+    LTEXT    "Thresh:",               IDC_STATIC,         591, 134,  40,  10
+    LTEXT    "",                      IDC_STATIC_S1_CFG_THRESH, 633, 134, 154, 10
+    LTEXT    "Backbone:",             IDC_STATIC,         591, 146,  40,  10
+    LTEXT    "",                      IDC_STATIC_S1_CFG_BACKBONE,633,146, 154, 10
+
+    PUSHBUTTON "Manual: OK",          IDC_BTN_S1_OK,      583, 180,  66, 14
+    PUSHBUTTON "Manual: NG",          IDC_BTN_S1_NG,      653, 180,  66, 14
+    PUSHBUTTON "Arduino Test",        IDC_BTN_S1_ARDUINO, 723, 180,  66, 14
+
+    // ── 아두이노 상태바 ───────────────────────────────────────────────────
+    GROUPBOX "Arduino - Station1",    IDC_STATIC,           4, 282, 890, 36
+    LTEXT    "Serial OK (COM3)",      IDC_STATIC,          12, 294, 110, 10
+    LTEXT    "Standby",               IDC_STATIC_S1_LED,  130, 294, 220, 10
 END
 
 /////////////////////////////////////////////////////////////////////////////
