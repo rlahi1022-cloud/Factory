@@ -22,7 +22,9 @@ namespace factory {
 struct InspectionResult {
     bool        success = false;
     long long   inspection_id = -1;
-    std::string image_path;
+    std::string image_path;        // 원본 JPEG 저장 경로
+    std::string heatmap_path;      // Anomaly Map PNG 저장 경로 (v0.9.0+)
+    std::string pred_mask_path;    // Pred Mask PNG 저장 경로 (v0.9.0+)
     std::string error_message;
 };
 
@@ -35,7 +37,15 @@ public:
 
 private:
     bool validate(const InspectionEvent& ev, std::string& out_error);
-    std::string save_image(const InspectionEvent& ev);
+
+    // 이미지 저장 공통 헬퍼 — 임의의 바이너리를 지정 확장자로 저장한다.
+    //   suffix: "original", "heatmap", "mask" 등 파일명 구분자
+    //   ext:    ".jpg", ".png" 등 확장자
+    std::string save_blob(int station_id,
+                          const std::string& timestamp,
+                          const std::vector<uint8_t>& bytes,
+                          const std::string& suffix,
+                          const std::string& ext);
 
     InspectionDao inspection_dao_;
     AssemblyDao   assembly_dao_;

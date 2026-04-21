@@ -43,30 +43,25 @@ static std::string iso8601_to_mysql(const std::string& ts) {
     return out;
 }
 
-long long InspectionDao::insert(const InspectionEvent& ev) {
+long long InspectionDao::insert(const InspectionEvent& ev,
+                                 const std::string& image_path,
+                                 const std::string& heatmap_path,
+                                 const std::string& pred_mask_path) {
     PooledConnection conn(pool_);
     if (!conn.get()) return -1;
 
     // ISO8601을 MySQL DATETIME 형식으로 변환
     std::string ts_mysql = iso8601_to_mysql(ev.timestamp);
 
-    // 이미지 경로 구성
-    std::string image_path;
-    if (!ev.image_bytes.empty() && ev.timestamp.size() >= 10) {
-        std::string yyyymmdd = ev.timestamp.substr(0, 4) +
-                               ev.timestamp.substr(5, 2) +
-                               ev.timestamp.substr(8, 2);
-        image_path = "./storage/station" + std::to_string(ev.station_id) +
-                     "/" + yyyymmdd + "/";
-    }
-
     MYSQL_STMT* stmt = mysql_stmt_init(conn);
     if (!stmt) { log_err_db("InspectionDao stmt_init 실패"); return -1; }
 
+    // v0.9.0+ : heatmap_path / pred_mask_path 컬럼 추가 (총 9개 바인딩)
     const char* sql =
         "INSERT INTO inspections "
-        "(station_id, timestamp, result, confidence, defect_type, image_path, latency_ms) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)";
+        "(station_id, timestamp, result, confidence, defect_type, "
+        " image_path, heatmap_path, pred_mask_path, latency_ms) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     if (mysql_stmt_prepare(stmt, sql, std::strlen(sql)) != 0) {
         log_err_db("InspectionDao prepare 실패 | %s", mysql_stmt_error(stmt));
@@ -74,7 +69,7 @@ long long InspectionDao::insert(const InspectionEvent& ev) {
         return -1;
     }
 
-    MYSQL_BIND bind[7];
+    MYSQL_BIND bind[9];
     std::memset(bind, 0, sizeof(bind));
 
     int p_station_id = ev.station_id;
@@ -105,6 +100,7 @@ long long InspectionDao::insert(const InspectionEvent& ev) {
     bind[4].length = &defect_len;
     bind[4].is_null = &defect_null;
 
+    // 경로 3종 — 빈 문자열이면 NULL로 바인딩
     unsigned long img_len = static_cast<unsigned long>(image_path.size());
     my_bool img_null = image_path.empty() ? 1 : 0;
     bind[5].buffer_type = MYSQL_TYPE_STRING;
@@ -113,9 +109,25 @@ long long InspectionDao::insert(const InspectionEvent& ev) {
     bind[5].length = &img_len;
     bind[5].is_null = &img_null;
 
+    unsigned long hmap_len = static_cast<unsigned long>(heatmap_path.size());
+    my_bool hmap_null = heatmap_path.empty() ? 1 : 0;
+    bind[6].buffer_type = MYSQL_TYPE_STRING;
+    bind[6].buffer = const_cast<char*>(heatmap_path.c_str());
+    bind[6].buffer_length = hmap_len;
+    bind[6].length = &hmap_len;
+    bind[6].is_null = &hmap_null;
+
+    unsigned long mask_len = static_cast<unsigned long>(pred_mask_path.size());
+    my_bool mask_null = pred_mask_path.empty() ? 1 : 0;
+    bind[7].buffer_type = MYSQL_TYPE_STRING;
+    bind[7].buffer = const_cast<char*>(pred_mask_path.c_str());
+    bind[7].buffer_length = mask_len;
+    bind[7].length = &mask_len;
+    bind[7].is_null = &mask_null;
+
     int p_latency = ev.latency_ms;
-    bind[6].buffer_type = MYSQL_TYPE_LONG;
-    bind[6].buffer = &p_latency;
+    bind[8].buffer_type = MYSQL_TYPE_LONG;
+    bind[8].buffer = &p_latency;
 
     if (mysql_stmt_bind_param(stmt, bind) != 0) {
         log_err_db("InspectionDao bind 실패 | %s", mysql_stmt_error(stmt));

@@ -73,10 +73,17 @@ enum class EventType : int {
 // ---------------------------------------------------------------------------
 
 // PACKET_RECEIVED 페이로드 — TcpListener가 생성
+// NG 결과(1000/1002)일 경우 최대 3장의 이미지가 순서대로 담길 수 있다:
+//   image_bytes       — 원본 JPEG
+//   heatmap_bytes     — 원본+히트맵(Anomaly Map) PNG
+//   pred_mask_bytes   — 원본+윤곽선(Pred Mask) PNG
+// 각 _size 필드가 0이면 해당 바이너리는 비어 있다 (하위호환).
 struct PacketReceivedEvent {
-    std::string  json_payload;       // JSON 본문
-    std::vector<uint8_t> image_bytes; // 이미지 바이너리 (없으면 빈 vector)
-    std::string  remote_addr;        // 송신자 IP
+    std::string  json_payload;          // JSON 본문
+    std::vector<uint8_t> image_bytes;    // 원본 이미지 바이너리
+    std::vector<uint8_t> heatmap_bytes;  // 히트맵 오버레이 PNG (v0.9.0+)
+    std::vector<uint8_t> pred_mask_bytes;// Pred Mask 오버레이 PNG (v0.9.0+)
+    std::string  remote_addr;           // 송신자 IP
 };
 
 // INSPECTION_INBOUND / INSPECTION_ASSEMBLY 공통 페이로드 — Router가 생성
@@ -91,7 +98,9 @@ struct InspectionEvent {
     double       score           = 0.0;    // AI 추론 신뢰도 (0.0 ~ 1.0)
     int          latency_ms      = 0;      // 추론 소요 시간 (ms)
     std::string  timestamp;                // 검사 시각 (ISO8601)
-    std::vector<uint8_t> image_bytes;      // NG 이미지 바이너리 (OK이면 빈 벡터)
+    std::vector<uint8_t> image_bytes;      // NG 원본 이미지 바이너리 (OK이면 빈 벡터)
+    std::vector<uint8_t> heatmap_bytes;    // NG 히트맵(Anomaly Map) 오버레이 PNG (v0.9.0+)
+    std::vector<uint8_t> pred_mask_bytes;  // NG Pred Mask 오버레이 PNG (v0.9.0+)
     std::string  raw_json;                 // 원본 JSON (조립 검사 시 부가정보 추출용)
     std::string  sender_addr;              // ACK 회신 대상 주소 ("IP:PORT")
 };

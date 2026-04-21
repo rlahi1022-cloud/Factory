@@ -7,8 +7,10 @@
 //   TCP로 수신하여 PACKET_RECEIVED 이벤트로 EventBus에 발행한다.
 //
 // 패킷 프로토콜:
-//   [4바이트 JSON 길이(Big-Endian)] + [JSON 본문] + [이미지 바이너리(옵션)]
-//   이미지 유무/크기는 JSON 내 "image_size" 필드로 판단한다.
+//   [4바이트 JSON 길이(Big-Endian)] + [JSON 본문]
+//     + [원본 이미지(옵션)] + [히트맵 PNG(옵션)] + [Pred Mask PNG(옵션)]
+//   각 이미지의 유무/크기는 JSON 내 "image_size", "heatmap_size",
+//   "pred_mask_size" 필드로 판단한다 (v0.9.0+, 없으면 0으로 하위호환).
 //
 // 스레드 구조:
 //   - accept 스레드 1개: 클라이언트 연결 수락
@@ -57,7 +59,9 @@ private:
     /// @return false 시 연결 종료 또는 프로토콜 오류 → 세션 종료
     bool recv_one_packet(int client_fd,
                          std::string& out_json,
-                         std::vector<uint8_t>& out_image);
+                         std::vector<uint8_t>& out_image,
+                         std::vector<uint8_t>& out_heatmap,
+                         std::vector<uint8_t>& out_pred_mask);
 
     EventBus&         event_bus_;       // 이벤트 발행용 버스 참조
     uint16_t          listen_port_;     // 리슨 포트

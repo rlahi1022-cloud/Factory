@@ -129,7 +129,9 @@ class ResultItem:
 
     # __slots__로 속성을 고정하여 메모리를 절약합니다.
     # 이미지(image_bytes)가 포함되어 있어 한 객체의 크기가 클 수 있으므로 최적화가 중요합니다.
-    __slots__ = ("inspection_id", "result_dict", "image_bytes", "latency_ms")
+    # 히트맵/마스크는 NG 시각화용으로 추가된 필드입니다 (MFC 클라이언트 3분할 표시용).
+    __slots__ = ("inspection_id", "result_dict", "image_bytes",
+                 "heatmap_bytes", "pred_mask_bytes", "latency_ms")
 
     # -----------------------------------------------------------------------
     # ResultItem 생성자 (__init__)
@@ -146,13 +148,28 @@ class ResultItem:
     # 반환값: 없음
     # -----------------------------------------------------------------------
     def __init__(self, inspection_id: str, result_dict: dict,
-                 image_bytes: Optional[bytes], latency_ms: int):
+                 image_bytes: Optional[bytes], latency_ms: int,
+                 heatmap_bytes: Optional[bytes] = None,
+                 pred_mask_bytes: Optional[bytes] = None):
+        """
+        매개변수:
+          inspection_id: 검사 고유 ID
+          result_dict: 추론 결과 dict (JSON으로 전송됨)
+          image_bytes: 원본 이미지 JPEG 바이트 (검사 증거 자료)
+          latency_ms: 추론 소요 시간
+          heatmap_bytes: 원본+히트맵 합성 PNG 바이트 (MFC 시각화용, 없으면 None)
+          pred_mask_bytes: 원본+Pred Mask 합성 PNG 바이트 (MFC 시각화용, 없으면 None)
+        """
         # 검사 고유 ID를 저장합니다. 패킷에 포함되어 메인 서버로 전송됩니다.
         self.inspection_id = inspection_id
         # 추론 결과 딕셔너리를 저장합니다. NG 패킷의 본문(body)이 됩니다.
         self.result_dict = result_dict
         # JPEG로 인코딩된 불량 이미지 바이트를 저장합니다. 패킷에 첨부되어 전송됩니다.
         self.image_bytes = image_bytes
+        # 원본+히트맵 합성 PNG 바이트. MFC 클라이언트가 "Anomaly Map" 영역에 표시할 이미지.
+        self.heatmap_bytes = heatmap_bytes
+        # 원본+Pred Mask 합성 PNG 바이트. MFC 클라이언트가 "Pred Mask" 영역에 표시할 이미지.
+        self.pred_mask_bytes = pred_mask_bytes
         # 추론 소요 시간(밀리초)을 저장합니다. 서버에서 성능 통계를 낼 때 활용됩니다.
         self.latency_ms = latency_ms
 
@@ -487,20 +504,57 @@ class StationRunner:
                     result_dict["timestamp"]  = timestamp
                     result_dict["latency_ms"] = latency_ms
 
+                    # ── 시각화 이미지 3장 생성 (MFC 클라이언트 3분할 표시용) ──
+                    # 1. 원본 이미지 (JPEG)         — Station1/2 탭의 "Image" 영역용
+                    # 2. 원본+히트맵 합성 (PNG)     — "Image + Anomaly Map" 영역용
+                    # 3. 원본+Pred Mask 합성 (PNG) — "Image + Pred Mask" 영역용
+                    #
+                    # numpy 배열 필드는 JSON 직렬화 전에 꺼내 두고, 시각화에 활용한다.
+                    raw_anomaly_map = result_dict.get("raw_anomaly_map")
+                    pred_mask_arr   = result_dict.get("pred_mask")
+
+                    image_bytes = self._encode_image(item.image)
+                    heatmap_bytes = None
+                    pred_mask_bytes = None
+
+                    # 시각화는 원본 이미지가 있을 때만 의미 있음
+                    if item.image is not None:
+                        try:
+                            from Common.Visualizer import (
+                                make_heatmap_overlay,
+                                make_pred_mask_overlay,
+                                encode_image,
+                            )
+                            # 히트맵 합성: 원본 + anomaly_map 오버레이
+                            if raw_anomaly_map is not None:
+                                heatmap_img = make_heatmap_overlay(
+                                    item.image, raw_anomaly_map, alpha=0.5
+                                )
+                                heatmap_bytes = encode_image(heatmap_img, ".png")
+                            # 마스크 합성: 원본 + pred_mask 빨간 윤곽선
+                            if pred_mask_arr is not None:
+                                mask_img = make_pred_mask_overlay(
+                                    item.image, pred_mask_arr
+                                )
+                                pred_mask_bytes = encode_image(mask_img, ".png")
+                        except Exception as exc:
+                            logger.warning("시각화 생성 실패: %s", exc)
+
                     # JSON으로 직렬화할 수 없는 필드(numpy 배열 등)를 제거합니다.
-                    # heatmap, bbox_overlay, raw_anomaly_map은 이미지/배열이므로
-                    # JSON 본문에는 포함시키지 않습니다.
+                    # heatmap, bbox_overlay, raw_anomaly_map, pred_mask는 이미지/배열이므로
+                    # JSON 본문에는 포함시키지 않습니다 (이미지는 바이너리로 별도 전송).
                     for _key in ("heatmap", "bbox_overlay", "raw_anomaly_map", "pred_mask"):
                         result_dict.pop(_key, None)
 
-                    # 이미지를 JPEG 바이트로 인코딩합니다.
-                    # 네트워크 전송을 위해 numpy 배열을 압축된 바이트로 변환합니다.
-                    image_bytes = self._encode_image(item.image)
-
                     # ResultItem을 만들어 result_queue에 넣습니다.
                     # Sender Worker가 이 큐에서 꺼내서 메인 서버로 TCP 전송합니다.
+                    # 시각화 이미지 2장(히트맵, 마스크)도 함께 전달합니다.
                     await self._result_queue.put(
-                        ResultItem(inspection_id, result_dict, image_bytes, latency_ms)
+                        ResultItem(
+                            inspection_id, result_dict, image_bytes, latency_ms,
+                            heatmap_bytes=heatmap_bytes,
+                            pred_mask_bytes=pred_mask_bytes,
+                        )
                     )
 
                     # NG 시 아두이노에 물리적 동작 명령을 보냅니다.
@@ -553,6 +607,8 @@ class StationRunner:
                     body_dict=item.result_dict,
                     inspection_id=item.inspection_id,
                     image_bytes=item.image_bytes,
+                    heatmap_bytes=item.heatmap_bytes,       # 원본+히트맵 (MFC 3분할 표시용)
+                    pred_mask_bytes=item.pred_mask_bytes,   # 원본+Pred Mask
                 )
 
                 # ACK 기반으로 패킷을 전송합니다.

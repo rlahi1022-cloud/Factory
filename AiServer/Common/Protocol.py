@@ -64,10 +64,16 @@ class ProtocolNo(IntEnum):
 
     # ===== 내부 1000~1099: 추론 서버 ↔ 운용서버 =====
     # (본 AI 서버 코드에서 직접 사용하는 핵심 메시지들)
+    #
+    # STATION1_NG/STATION2_NG 전송 시 포함되는 바이너리 이미지(순서 고정):
+    #   1) 원본 JPEG         — JSON 필드 image_size
+    #   2) 원본+히트맵 PNG   — JSON 필드 heatmap_size   (MFC "Anomaly Map" 영역)
+    #   3) 원본+PredMask PNG — JSON 필드 pred_mask_size (MFC "Pred Mask" 영역)
+    # 크기 필드가 0이면 해당 이미지 생략 (구 버전과 하위호환).
 
-    STATION1_NG            = 1000  # 추론#1 → 운용: 입고검사 NG 결과 (이미지 포함)
+    STATION1_NG            = 1000  # 추론#1 → 운용: 입고검사 NG 결과 (원본+시각화 2장)
     STATION1_NG_ACK        = 1001  # 운용 → 추론#1: NG 수신 확인 (DB 저장 완료)
-    STATION2_NG            = 1002  # 추론#2 → 운용: 조립검사 NG 결과 (바운딩박스 이미지 포함)
+    STATION2_NG            = 1002  # 추론#2 → 운용: 조립검사 NG 결과 (원본+시각화 2장)
     STATION2_NG_ACK        = 1003  # 운용 → 추론#2: NG 수신 확인
     STATION_OK_COUNT       = 1004  # 추론 → 운용: OK 카운트 주기 보고 (5초마다)
     INSPECT_META           = 1006  # 추론 → 운용: 검사 메타데이터 (OK/NG 공통, DB기록용)

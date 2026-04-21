@@ -63,7 +63,9 @@ void Router::on_packet_received(const std::any& payload) {
             ev.score          = extract_double(packet.json_payload, "score");
             ev.latency_ms     = extract_int(packet.json_payload, "latency_ms");
             ev.timestamp      = extract_str(packet.json_payload, "timestamp");
-            ev.image_bytes    = packet.image_bytes;
+            ev.image_bytes      = packet.image_bytes;
+            ev.heatmap_bytes    = packet.heatmap_bytes;    // v0.9.0+ 히트맵 오버레이 PNG
+            ev.pred_mask_bytes  = packet.pred_mask_bytes;  // v0.9.0+ Pred Mask 오버레이 PNG
             ev.raw_json       = packet.json_payload;
             ev.sender_addr    = packet.remote_addr;
 
