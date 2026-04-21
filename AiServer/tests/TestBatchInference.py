@@ -33,6 +33,182 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 
 
+def make_anomalib_visualization(original: np.ndarray, model: Any,
+                                 input_tensor: "torch.Tensor") -> np.ndarray:
+    """Anomalib 공식 시각화 기능을 사용하여 3분할 이미지 생성.
+
+    Anomalib의 ImageVisualizer가 학습 시 저장하는 것과 동일한 이미지를 생성한다.
+
+    매개변수:
+      original (ndarray): 원본 이미지 (BGR)
+      model: Anomalib PatchCore 모델
+      input_tensor (Tensor): 전처리된 입력 텐서 (1, 3, 224, 224)
+
+    반환값:
+      ndarray: 3분할 시각화 이미지 (BGR) 또는 None (실패 시)
+    """
+    try:
+        import torch
+        import cv2
+        # Anomalib 시각화 도구
+        from anomalib.visualization import ImageVisualizer
+
+        visualizer = ImageVisualizer()
+        with torch.no_grad():
+            # 모델 전체 호출 (PostProcessor 적용된 InferenceBatch 반환)
+            output = model(input_tensor)
+
+        # ImageVisualizer는 Batch 객체를 기대하므로 wrapping
+        # Anomalib 버전에 따라 호출 방식이 다를 수 있어 여러 방법 시도
+        try:
+            vis_result = visualizer.visualize(output)
+            if isinstance(vis_result, list) and len(vis_result) > 0:
+                vis_img = vis_result[0]
+            else:
+                vis_img = vis_result
+        except Exception:
+            return None
+
+        # PIL/Tensor/numpy 중 어느 형태든 numpy BGR로 변환
+        if hasattr(vis_img, "numpy"):
+            vis_img = vis_img.numpy()
+        elif hasattr(vis_img, "__array__"):
+            vis_img = np.array(vis_img)
+        if vis_img.dtype != np.uint8:
+            vis_img = (vis_img * 255).clip(0, 255).astype(np.uint8)
+        if vis_img.shape[-1] == 3:  # RGB → BGR
+            vis_img = cv2.cvtColor(vis_img, cv2.COLOR_RGB2BGR)
+        return vis_img
+    except Exception:
+        return None
+
+
+def make_visualization(original: np.ndarray, heatmap: np.ndarray,
+                       threshold: float, score: float, verdict: str,
+                       raw_anomaly_map: np.ndarray = None,
+                       pixel_threshold: float = None,
+                       pred_mask: np.ndarray = None) -> np.ndarray:
+    """Anomalib 스타일 3분할 시각화 이미지를 생성한다.
+
+    [원본] | [원본 + 히트맵] | [원본 + Pred Mask]
+
+    매개변수:
+      original (ndarray): 원본 이미지 (BGR)
+      heatmap (ndarray): 이상 점수 히트맵 (컬러맵 적용된 BGR)
+      threshold (float): 이상 점수 임계값
+      score (float): 이 이미지의 anomaly score
+      verdict (str): "OK" 또는 "NG"
+      raw_anomaly_map (ndarray): 원본 수치 맵 (float32, 마스크 계산용)
+
+    반환값:
+      ndarray: 3분할로 이어 붙인 이미지 (BGR)
+    """
+    import cv2
+    h, w = original.shape[:2]
+
+    # ── 1. 원본 이미지 ──
+    panel1 = original.copy()
+
+    # ── 2. 원본 + 히트맵 오버레이 ──
+    if heatmap is not None:
+        if heatmap.shape[:2] != (h, w):
+            heatmap_resized = cv2.resize(heatmap, (w, h))
+        else:
+            heatmap_resized = heatmap
+        panel2 = cv2.addWeighted(original, 0.6, heatmap_resized, 0.4, 0)
+    else:
+        panel2 = (original * 0.5).astype(np.uint8)
+
+    # ── 3. 원본 + Pred Mask (이상 영역만 정확하게 표시) ──
+    panel3 = original.copy()
+    # 접근 방식 (Anomalib과 동일 원리):
+    #   raw_anomaly_map을 min-max 정규화 (히트맵과 동일 기준)
+    #   → 정규화된 값 > 0.5인 픽셀을 마스크로 표시
+    #   → 히트맵에서 빨간-노랑 영역이 곧 Pred Mask가 된다
+    mask_source = None
+    if raw_anomaly_map is not None and verdict == "NG":
+        if raw_anomaly_map.shape[:2] != (h, w):
+            raw_map = cv2.resize(raw_anomaly_map, (w, h))
+        else:
+            raw_map = raw_anomaly_map
+
+        # 백분위수 기반 임계값 (상위 5%만 마스크)
+        # 상위 5%만 잡으면 파이리(큰 결함)도 중심부만, 보드마카(작은 결함)도 정확히 포착
+        # percentile은 이미지 분포에 상관없이 일관된 비율 마스크를 만든다
+        percentile_threshold = float(np.percentile(raw_map, 95))
+
+        # 추가 안전장치: 정규화 50% 이상 조건도 함께 적용 (AND)
+        # → 배경이 노랑에 가까운 이미지에서 과도한 마스크 방지
+        map_min = float(raw_map.min())
+        map_max = float(raw_map.max())
+        if map_max > map_min:
+            normalized = (raw_map - map_min) / (map_max - map_min)
+            # 두 조건 모두 만족하는 픽셀만 마스크
+            mask_source = ((raw_map >= percentile_threshold) &
+                           (normalized >= 0.7)).astype(np.uint8) * 255
+
+    # 마스크가 있으면 윤곽선 추출 후 빨간 테두리 그리기
+    if mask_source is not None:
+        # 마스크 노이즈 제거 (작은 구멍 메우고 작은 점 제거)
+        kernel = np.ones((5, 5), np.uint8)
+        mask_clean = cv2.morphologyEx(mask_source, cv2.MORPH_CLOSE, kernel)
+        mask_clean = cv2.morphologyEx(mask_clean, cv2.MORPH_OPEN, kernel)
+        contours, _ = cv2.findContours(mask_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(panel3, contours, -1, (0, 0, 255), 3)
+
+    # ── 각 패널에 텍스트 라벨 추가 ──
+    labels = ["Image", "Image + Anomaly Map", "Image + Pred Mask"]
+    panels = [panel1, panel2, panel3]
+    for panel, label in zip(panels, labels):
+        # 반투명 배경 + 흰색 텍스트 (가독성)
+        overlay = panel.copy()
+        cv2.rectangle(overlay, (10, 10), (10 + len(label) * 13, 45), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.6, panel, 0.4, 0, panel)
+        cv2.putText(panel, label, (15, 35), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (255, 255, 255), 2)
+
+    # ── 3개 패널을 가로로 이어붙이기 ──
+    combined = np.hstack([panel1, panel2, panel3])
+
+    # 상단에 판정 결과 띠 추가 (녹색=OK, 빨강=NG)
+    banner_h = 50
+    banner_color = (0, 180, 0) if verdict == "OK" else (0, 0, 220)
+    banner = np.full((banner_h, combined.shape[1], 3), banner_color, dtype=np.uint8)
+    banner_text = f"{verdict}  |  Score: {score:.4f}  |  Threshold: {threshold:.4f}"
+    cv2.putText(banner, banner_text, (20, 35), cv2.FONT_HERSHEY_SIMPLEX,
+                0.9, (255, 255, 255), 2)
+
+    # 배너 + 3분할 이미지 세로 결합
+    return np.vstack([banner, combined])
+
+
+def save_image_with_korean_path(path: Path, image: np.ndarray) -> bool:
+    """한글 경로 대응 이미지 저장 (cv2.imwrite 한글 실패 우회).
+
+    매개변수:
+      path (Path): 저장 경로
+      image (ndarray): 저장할 이미지
+
+    반환값:
+      bool: 저장 성공 여부
+    """
+    import cv2
+    try:
+        # imencode → 바이트 → tofile 방식으로 한글 경로 우회
+        ext = path.suffix or ".png"
+        success, buf = cv2.imencode(ext, image)
+        if success:
+            buf.tofile(str(path))
+            return True
+    except Exception:
+        pass
+    # fallback: cv2.imwrite 직접 시도
+    try:
+        return cv2.imwrite(str(path), image)
+    except Exception:
+        return False
+
+
 def collect_images(folder: Path) -> list[Path]:
     """폴더에서 이미지 파일들을 수집한다.
 
@@ -59,21 +235,27 @@ def collect_images(folder: Path) -> list[Path]:
 
 
 def batch_test_station1(folder: Path, model_path: str, threshold: float,
-                        device: str) -> None:
+                        device: str, save_vis: bool = True,
+                        vis_dir: str = "test_results") -> None:
     """Station1 (PatchCore) 배치 추론 테스트.
 
     목적:
       - 폴더 전체 이미지를 순회하며 정상/불량 판정
       - 결과를 표로 요약 출력
+      - save_vis=True이면 각 이미지에 대해 Anomalib 스타일 3분할 시각화 저장
 
     매개변수:
       folder (Path): 테스트 이미지 폴더
       model_path (str): PatchCore 모델 경로
       threshold (float): 이상 점수 임계값
       device (str): 추론 디바이스 (auto/cuda/cpu)
+      save_vis (bool): True면 모든 이미지에 대해 시각화 결과 저장
+      vis_dir (str): 시각화 결과 저장 루트 폴더
     """
     # 필요한 모듈 import
+    import csv
     import cv2
+    from datetime import datetime
     from Common.Config import StationConfig
     from Common.Inferencer import Station1Inferencer
 
@@ -96,6 +278,22 @@ def batch_test_station1(folder: Path, model_path: str, threshold: float,
         print(f"[오류] {folder}에 이미지가 없습니다.")
         return
 
+    # ── 시각화 폴더 생성 ──
+    # save_vis=True면 타임스탬프 기반 폴더 생성 (결과가 섞이지 않도록)
+    vis_output_dir = None
+    csv_path = None
+    csv_file = None
+    csv_writer = None
+    if save_vis:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        vis_output_dir = Path(vis_dir) / f"station1_{timestamp}"
+        vis_output_dir.mkdir(parents=True, exist_ok=True)
+        # CSV 요약 파일 준비
+        csv_path = vis_output_dir / "summary.csv"
+        csv_file = open(csv_path, "w", newline="", encoding="utf-8-sig")
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(["번호", "파일명", "판정", "이상점수", "결함", "추론시간(ms)"])
+
     # 헤더 출력
     print(f"\n{'=' * 80}")
     print(f"  Station1 배치 추론 테스트")
@@ -105,6 +303,8 @@ def batch_test_station1(folder: Path, model_path: str, threshold: float,
     print(f"  모델:       {model_path}")
     print(f"  임계값:     {threshold}")
     print(f"  디바이스:   {device}")
+    if save_vis:
+        print(f"  시각화:     {vis_output_dir}")
     print(f"{'=' * 80}\n")
 
     # 테이블 헤더
@@ -152,11 +352,40 @@ def batch_test_station1(folder: Path, model_path: str, threshold: float,
         # 결과 한 줄 출력
         print(f"  {idx:>4} | {name:<40} | {verdict:>4} | {score:>8.4f} | {defect:<15}")
 
+        # ── 시각화 이미지 저장 ──
+        if save_vis and vis_output_dir is not None:
+            # 3분할 시각화 이미지 생성
+            heatmap = result.get("heatmap")
+            raw_map = result.get("raw_anomaly_map")          # fallback용 raw 수치
+            pix_thr = result.get("pixel_threshold")          # Anomalib 내부 pixel threshold
+            pred_mask = result.get("pred_mask")              # Anomalib PostProcessor 결과 (최우선)
+            vis_img = make_visualization(img, heatmap, threshold, score, verdict,
+                                         raw_anomaly_map=raw_map,
+                                         pixel_threshold=pix_thr,
+                                         pred_mask=pred_mask)
+            # 파일명: "번호_원본명_판정_점수.png"
+            # 예: "001_Image_2026-04-17_NG_74.21.png"
+            safe_name = img_path.stem.replace(" ", "_")[:40]
+            vis_filename = f"{idx:03d}_{safe_name}_{verdict}_{score:.2f}.png"
+            vis_path = vis_output_dir / vis_filename
+            save_image_with_korean_path(vis_path, vis_img)
+
+            # CSV에 요약 기록
+            if csv_writer:
+                csv_writer.writerow([
+                    idx, img_path.name, verdict, f"{score:.4f}",
+                    defect, f"{elapsed_ms:.1f}",
+                ])
+
         # 통계 누적
         if verdict == "NG":
             ng_count += 1
         else:
             ok_count += 1
+
+    # CSV 파일 닫기
+    if csv_file is not None:
+        csv_file.close()
 
     # 최종 요약 출력
     total = len(images)
@@ -169,11 +398,16 @@ def batch_test_station1(folder: Path, model_path: str, threshold: float,
     print(f"  NG (불량):      {ng_count}장 ({ng_count / total * 100:.1f}%)")
     print(f"  평균 추론시간:  {total_time / total:.1f} ms/장")
     print(f"  전체 소요시간:  {total_time / 1000:.1f} 초")
+    if save_vis and vis_output_dir:
+        print(f"  시각화 저장:    {vis_output_dir}")
+        print(f"  CSV 요약:       {csv_path}")
     print(f"{'=' * 80}\n")
 
 
 def batch_test_station2(folder: Path, yolo_path: str, patchcore_path: str,
-                        threshold: float, device: str) -> None:
+                        threshold: float, device: str,
+                        save_vis: bool = True,
+                        vis_dir: str = "test_results") -> None:
     """Station2 (YOLO11 + PatchCore) 배치 추론 테스트.
 
     매개변수:
@@ -182,8 +416,12 @@ def batch_test_station2(folder: Path, yolo_path: str, patchcore_path: str,
       patchcore_path (str): PatchCore 모델 경로
       threshold (float): 이상 점수 임계값
       device (str): 추론 디바이스
+      save_vis (bool): 시각화 이미지 저장 여부
+      vis_dir (str): 저장 폴더
     """
+    import csv
     import cv2
+    from datetime import datetime
     from Common.Config import StationConfig
     from Common.Inferencer import Station2Inferencer
 
@@ -210,6 +448,21 @@ def batch_test_station2(folder: Path, yolo_path: str, patchcore_path: str,
         print(f"[오류] {folder}에 이미지가 없습니다.")
         return
 
+    # ── 시각화 폴더 생성 ──
+    vis_output_dir = None
+    csv_path = None
+    csv_file = None
+    csv_writer = None
+    if save_vis:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        vis_output_dir = Path(vis_dir) / f"station2_{timestamp}"
+        vis_output_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = vis_output_dir / "summary.csv"
+        csv_file = open(csv_path, "w", newline="", encoding="utf-8-sig")
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(["번호", "파일명", "판정", "cap", "label", "fill",
+                             "patchcore점수", "결함", "추론시간(ms)"])
+
     # 헤더 출력
     print(f"\n{'=' * 100}")
     print(f"  Station2 배치 추론 테스트")
@@ -219,6 +472,8 @@ def batch_test_station2(folder: Path, yolo_path: str, patchcore_path: str,
     print(f"  YOLO:       {yolo_path}")
     print(f"  PatchCore:  {patchcore_path}")
     print(f"  디바이스:   {device}")
+    if save_vis:
+        print(f"  시각화:     {vis_output_dir}")
     print(f"{'=' * 100}\n")
 
     # 테이블 헤더
@@ -253,6 +508,7 @@ def batch_test_station2(folder: Path, yolo_path: str, patchcore_path: str,
 
         # 결과 추출
         verdict = result.get("result", "OK")
+        score = result.get("score", 0.0)
         cap_ok = "O" if result.get("cap_ok", True) else "X"
         label_ok = "O" if result.get("label_ok", True) else "X"
         fill_ok = "O" if result.get("fill_ok", True) else "X"
@@ -268,11 +524,61 @@ def batch_test_station2(folder: Path, yolo_path: str, patchcore_path: str,
         # 출력
         print(f"  {idx:>4} | {name:<35} | {verdict:>4} | {cap_ok:>5} | {label_ok:>5} | {fill_ok:>5} | {defects:<30}")
 
+        # ── 시각화 이미지 저장 (Station2) ──
+        if save_vis and vis_output_dir is not None:
+            # Station2는 bbox_overlay(YOLO 박스 그려진 이미지)를 활용
+            # patchcore_score로 히트맵 대용 점수 제공
+            bbox_overlay = result.get("bbox_overlay")
+            patchcore_score = result.get("patchcore_score", 0.0)
+
+            # bbox 오버레이가 있으면 그걸 사용, 없으면 원본
+            display_img = bbox_overlay if bbox_overlay is not None else img.copy()
+
+            # YOLO + PatchCore 정보를 이미지 하단에 텍스트로 추가
+            h, w = display_img.shape[:2]
+            info_h = 80
+            info_panel = np.full((info_h, w, 3), (30, 30, 30), dtype=np.uint8)
+            info_lines = [
+                f"cap: {cap_ok}  label: {label_ok}  fill: {fill_ok}",
+                f"PatchCore score: {patchcore_score:.4f}  Threshold: {threshold:.4f}",
+                f"Defects: {defects}",
+            ]
+            for i, line in enumerate(info_lines):
+                cv2.putText(info_panel, line, (15, 25 + i * 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            display_img = np.vstack([display_img, info_panel])
+
+            # 상단 판정 배너 추가 (녹색/빨강)
+            banner_h = 50
+            banner_color = (0, 180, 0) if verdict == "OK" else (0, 0, 220)
+            banner = np.full((banner_h, display_img.shape[1], 3), banner_color, dtype=np.uint8)
+            banner_text = f"{verdict}  |  Score: {score:.4f}  |  Station2 (Assembly)"
+            cv2.putText(banner, banner_text, (20, 35), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.9, (255, 255, 255), 2)
+            vis_img = np.vstack([banner, display_img])
+
+            # 파일 저장
+            safe_name = img_path.stem.replace(" ", "_")[:40]
+            vis_filename = f"{idx:03d}_{safe_name}_{verdict}_{score:.2f}.png"
+            vis_path = vis_output_dir / vis_filename
+            save_image_with_korean_path(vis_path, vis_img)
+
+            # CSV 기록
+            if csv_writer:
+                csv_writer.writerow([
+                    idx, img_path.name, verdict, cap_ok, label_ok, fill_ok,
+                    f"{patchcore_score:.4f}", defects, f"{elapsed_ms:.1f}",
+                ])
+
         # 통계
         if verdict == "NG":
             ng_count += 1
         else:
             ok_count += 1
+
+    # CSV 파일 닫기
+    if csv_file is not None:
+        csv_file.close()
 
     # 최종 요약
     total = len(images)
@@ -285,6 +591,9 @@ def batch_test_station2(folder: Path, yolo_path: str, patchcore_path: str,
     print(f"  NG (불량):      {ng_count}장 ({ng_count / total * 100:.1f}%)")
     print(f"  평균 추론시간:  {total_time / total:.1f} ms/장")
     print(f"  전체 소요시간:  {total_time / 1000:.1f} 초")
+    if save_vis and vis_output_dir:
+        print(f"  시각화 저장:    {vis_output_dir}")
+        print(f"  CSV 요약:       {csv_path}")
     print(f"{'=' * 100}\n")
 
 
@@ -310,6 +619,12 @@ def main():
     parser.add_argument("--device", type=str, default="auto",
                         choices=["auto", "cuda", "cpu"],
                         help="추론 디바이스 (기본: auto)")
+    # --no-vis: 시각화 저장 비활성화 (기본은 저장)
+    parser.add_argument("--no-vis", action="store_true",
+                        help="시각화 이미지 저장 안 함 (기본: 저장함)")
+    # --vis-dir: 시각화 결과 저장 폴더
+    parser.add_argument("--vis-dir", type=str, default="test_results",
+                        help="시각화 저장 폴더 (기본: test_results)")
     args = parser.parse_args()
 
     # 폴더 경로 Path 객체로 변환
@@ -318,15 +633,20 @@ def main():
         print(f"[오류] 폴더가 없습니다: {folder}")
         sys.exit(1)
 
+    # 시각화 저장 여부 (--no-vis 옵션이 없으면 저장)
+    save_vis = not args.no_vis
+
     # 스테이션별 테스트 실행
     if args.station == 1:
         model_path = args.model or "./models/station1_patchcore.ckpt"
-        batch_test_station1(folder, model_path, args.threshold, args.device)
+        batch_test_station1(folder, model_path, args.threshold, args.device,
+                            save_vis=save_vis, vis_dir=args.vis_dir)
     else:
         yolo_path = args.model or "./models/station2_yolo11.pt"
         patchcore_path = args.patchcore or "./models/station2_patchcore.ckpt"
         batch_test_station2(folder, yolo_path, patchcore_path,
-                            args.threshold, args.device)
+                            args.threshold, args.device,
+                            save_vis=save_vis, vis_dir=args.vis_dir)
 
 
 if __name__ == "__main__":

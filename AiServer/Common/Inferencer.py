@@ -350,13 +350,12 @@ class Station1Inferencer(BaseInferencer):
             input_tensor = self._preprocess(image)
 
             # 2단계: 추론 실행 (그래디언트 계산 불필요 → no_grad로 메모리 절약)
-            # Anomalib Lightning 모델의 PostProcessor는 이진화된 결과를 반환하므로,
-            # 내부 raw 모델(self._model.model)을 직접 호출하여 raw anomaly score를 얻는다.
+            # Anomalib Lightning 모델의 내부 모델(PatchcoreModel)을 직접 호출하여
+            # raw anomaly score와 anomaly_map을 얻는다.
+            # pred_mask는 PostProcessor를 수동 호출하여 정확한 이진 마스크를 얻는다.
             with torch.no_grad():
-                # PatchCore Lightning 모델 내부에 있는 실제 추론 모듈을 직접 호출한다.
-                # 이렇게 하면 PostProcessor(이진화, 정규화)를 우회하고 원본 점수를 얻는다.
                 if hasattr(self._model, "model") and callable(self._model.model):
-                    # model.model = PatchcoreModel (torch.nn.Module)
+                    # model.model = PatchcoreModel (torch.nn.Module) — raw 출력
                     output = self._model.model(input_tensor)
                 else:
                     # fallback: Lightning 모델 전체 호출
@@ -364,8 +363,9 @@ class Station1Inferencer(BaseInferencer):
 
             # 3단계: 모델 출력 파싱 (여러 형식 지원)
             # ── NamedTuple (InferenceBatch 또는 AnomalibModel 내부 출력) ──
+            pred_mask = None  # Anomalib이 이미 계산한 픽셀 마스크 (있으면)
             if hasattr(output, "_fields"):
-                # NamedTuple: pred_score, anomaly_map 속성 접근
+                # NamedTuple: pred_score, anomaly_map, pred_mask 속성 접근
                 raw_score = None
                 anomaly_map = None
                 # pred_score 또는 pred_scores 필드 탐색
@@ -377,6 +377,11 @@ class Station1Inferencer(BaseInferencer):
                 for key in ("anomaly_map", "anomaly_maps"):
                     if hasattr(output, key):
                         anomaly_map = getattr(output, key)
+                        break
+                # pred_mask 필드 (Anomalib이 계산한 이진 마스크)
+                for key in ("pred_mask", "pred_masks"):
+                    if hasattr(output, key):
+                        pred_mask = getattr(output, key)
                         break
                 anomaly_score = float(raw_score.max().cpu().item()) if raw_score is not None else 0.0
             elif isinstance(output, dict):
@@ -399,37 +404,91 @@ class Station1Inferencer(BaseInferencer):
                                       else output)
                 anomaly_map = None
 
+            # Anomalib PostProcessor에 raw output을 통과시켜 pred_mask를 정확히 생성한다.
+            # 이것이 Anomalib이 학습 중 저장한 이미지와 동일한 마스크를 만드는 방법이다.
+            pixel_threshold = None
+            processed_mask = None
+            if hasattr(self._model, "post_processor") and self._model.post_processor is not None:
+                try:
+                    pp = self._model.post_processor
+                    # PostProcessor를 호출하여 정규화된 pred_mask를 얻는다
+                    with torch.no_grad():
+                        processed = pp(output)
+                    # 처리된 결과에서 pred_mask 추출
+                    if hasattr(processed, "pred_mask"):
+                        processed_mask = processed.pred_mask
+                    elif hasattr(processed, "pred_masks"):
+                        processed_mask = processed.pred_masks
+                    elif isinstance(processed, dict):
+                        processed_mask = processed.get("pred_mask") or processed.get("pred_masks")
+
+                    # pixel_threshold 값도 추출
+                    for attr in ("pixel_threshold", "_pixel_threshold"):
+                        if hasattr(pp, attr):
+                            val = getattr(pp, attr)
+                            if torch.is_tensor(val):
+                                pixel_threshold = float(val.cpu().item())
+                                break
+                            elif val is not None:
+                                pixel_threshold = float(val)
+                                break
+                except Exception as exc:
+                    logger.debug("PostProcessor call failed: %s", exc)
+
             # 4단계: 히트맵 생성 (결함 위치를 시각적으로 표시)
-            heatmap = None
+            heatmap = None         # 컬러맵 적용된 시각화용 히트맵 (BGR)
+            raw_anomaly_map = None # 원본 수치 맵 (마스크 계산용, float32)
             if anomaly_map is not None:
                 # 텐서를 numpy 배열로 변환
                 if torch.is_tensor(anomaly_map):
-                    heatmap = anomaly_map.squeeze().cpu().numpy()
+                    raw_map = anomaly_map.squeeze().cpu().numpy()
                 else:
-                    heatmap = np.array(anomaly_map).squeeze()
+                    raw_map = np.array(anomaly_map).squeeze()
 
                 # float32로 변환 (bool/int 등 다양한 타입이 올 수 있으므로)
-                heatmap = heatmap.astype(np.float32)
+                raw_map = raw_map.astype(np.float32)
 
-                # 히트맵을 원본 이미지 크기로 리사이즈
-                heatmap = cv2.resize(heatmap, (image.shape[1], image.shape[0]))
+                # 원본 이미지 크기로 리사이즈 (raw 수치 보존)
+                raw_map = cv2.resize(raw_map, (image.shape[1], image.shape[0]))
 
-                # 0~1 범위로 정규화 후 0~255로 변환
-                h_min, h_max = heatmap.min(), heatmap.max()
+                # 외부에서 마스크 계산에 사용할 수 있도록 raw 그대로 저장
+                raw_anomaly_map = raw_map
+
+                # 시각화용 컬러맵 히트맵 생성 (0~1 정규화 후 JET 컬러맵 적용)
+                vis_map = raw_map.copy()
+                h_min, h_max = vis_map.min(), vis_map.max()
                 if h_max > h_min:
-                    heatmap = (heatmap - h_min) / (h_max - h_min)  # 0~1 정규화
-                heatmap = (heatmap * 255).clip(0, 255).astype(np.uint8)
-                heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+                    vis_map = (vis_map - h_min) / (h_max - h_min)  # 0~1 정규화
+                vis_map = (vis_map * 255).clip(0, 255).astype(np.uint8)
+                heatmap = cv2.applyColorMap(vis_map, cv2.COLORMAP_JET)
 
             # 5단계: OK/NG 판정
             is_ng = anomaly_score > self._threshold  # 임계값 초과 시 불량
             defect_type = self._classify_defect(anomaly_score) if is_ng else ""
 
+            # pred_mask를 numpy 배열로 변환 + 원본 크기로 리사이즈
+            pred_mask_np = None
+            if processed_mask is not None:
+                if torch.is_tensor(processed_mask):
+                    m = processed_mask.squeeze().cpu().numpy()
+                else:
+                    m = np.array(processed_mask).squeeze()
+                # bool 또는 float → uint8로 변환
+                m = (m.astype(np.float32) > 0.5).astype(np.uint8) * 255
+                # 원본 크기로 리사이즈
+                if m.shape[:2] != (image.shape[0], image.shape[1]):
+                    m = cv2.resize(m, (image.shape[1], image.shape[0]),
+                                   interpolation=cv2.INTER_NEAREST)
+                pred_mask_np = m
+
             return {
                 "result": "NG" if is_ng else "OK",
                 "score": round(anomaly_score, 4),     # 소수점 4자리까지
                 "defect": defect_type,
-                "heatmap": heatmap,
+                "heatmap": heatmap,                   # 컬러맵 적용 히트맵 (BGR)
+                "raw_anomaly_map": raw_anomaly_map,   # 원본 수치 맵 (마스크 계산용)
+                "pred_mask": pred_mask_np,            # Anomalib PostProcessor가 생성한 이진 마스크
+                "pixel_threshold": pixel_threshold,   # Anomalib 내부 pixel threshold
             }
 
         except Exception as exc:
@@ -477,22 +536,20 @@ class Station1Inferencer(BaseInferencer):
 
     @staticmethod
     def _classify_defect(score: float) -> str:
-        """이상 점수 범위에 따라 결함 유형을 분류한다.
+        """결함 유형 라벨 반환.
 
-        높은 점수일수록 심각한 결함으로 분류한다.
+        PatchCore는 정상/이상 여부만 판단하며,
+        "crack", "contamination" 등 구체적인 결함 유형은 구분하지 못한다.
+        (그러려면 별도의 분류 모델 학습이 필요)
+
+        따라서 NG 판정 시 단순히 "anomaly"(이상)로만 표시한다.
 
         Args:
-            score: 이상 점수 (0.0 ~ 1.0+)
+            score: 이상 점수 (참고용, 현재 사용 안 함)
         Returns:
-            결함 유형 문자열
+            결함 유형 문자열 ("anomaly")
         """
-        if score > 0.8:
-            return "crack"          # 크랙/균열 — 가장 심각한 결함
-        elif score > 0.65:
-            return "contamination"  # 이물질/오염
-        elif score > 0.5:
-            return "scratch"        # 스크래치/긁힘
-        return "minor_defect"       # 경미한 결함
+        return "anomaly"
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

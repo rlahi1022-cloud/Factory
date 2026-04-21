@@ -39,6 +39,11 @@ void GuiNotifier::register_handlers() {
 }
 
 // NG 검출 시 해당 station 구독자에게만 푸시 (protocol 110)
+// v0.9.0+: 원본/히트맵/마스크 3장을 한 번에 전송한다.
+// 와이어 포맷 (MFC 클라이언트 파싱 규칙):
+//   [4바이트 JSON 길이] + [JSON] + [원본 JPEG] + [히트맵 PNG] + [마스크 PNG]
+//   JSON 내 image_size / heatmap_size / pred_mask_size 로 각 크기 전달.
+//   크기가 0이면 해당 이미지는 생략(하위호환).
 void GuiNotifier::on_gui_push(const std::any& payload) {
     const auto& ev = std::any_cast<const InspectionEvent&>(payload);
 
@@ -51,17 +56,30 @@ void GuiNotifier::on_gui_push(const std::any& payload) {
        << ",\"score\":" << ev.score
        << ",\"latency_ms\":" << ev.latency_ms
        << ",\"timestamp\":\"" << escape_json(ev.timestamp) << "\""
-       << ",\"image_size\":" << ev.image_bytes.size()
+       << ",\"image_size\":"     << ev.image_bytes.size()
+       << ",\"heatmap_size\":"   << ev.heatmap_bytes.size()
+       << ",\"pred_mask_size\":" << ev.pred_mask_bytes.size()
        << "}";
 
-    if (!ev.image_bytes.empty()) {
-        // 이미지 바이너리를 JSON 뒤에 첨부하여 전송
-        SessionManager::instance().broadcast_with_binary(os.str(), ev.image_bytes, ev.station_id);
+    // 세 바이너리를 순서대로 이어붙여 하나의 연속 블록으로 전송.
+    // MFC 클라이언트는 JSON에서 각 size를 읽고 offset 계산으로 분리한다.
+    const std::size_t total_size = ev.image_bytes.size()
+                                 + ev.heatmap_bytes.size()
+                                 + ev.pred_mask_bytes.size();
+
+    if (total_size > 0) {
+        std::vector<uint8_t> combined;
+        combined.reserve(total_size);
+        combined.insert(combined.end(), ev.image_bytes.begin(),     ev.image_bytes.end());
+        combined.insert(combined.end(), ev.heatmap_bytes.begin(),   ev.heatmap_bytes.end());
+        combined.insert(combined.end(), ev.pred_mask_bytes.begin(), ev.pred_mask_bytes.end());
+        SessionManager::instance().broadcast_with_binary(os.str(), combined, ev.station_id);
     } else {
         SessionManager::instance().broadcast(os.str(), ev.station_id);
     }
-    log_push("NG 푸시 | 스테이션=%d 접속자=%zu명", ev.station_id,
-             SessionManager::instance().session_count());
+    log_push("NG 푸시 | 스테이션=%d 접속자=%zu명 (원본=%zu 히트맵=%zu 마스크=%zu)",
+             ev.station_id, SessionManager::instance().session_count(),
+             ev.image_bytes.size(), ev.heatmap_bytes.size(), ev.pred_mask_bytes.size());
 }
 
 // 서버 장애/복구 알림 — 전체 클라이언트에 브로드캐스트 (protocol 170)

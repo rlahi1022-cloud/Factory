@@ -25,8 +25,14 @@ class InspectionDao {
 public:
     explicit InspectionDao(ConnectionPool& pool) : pool_(pool) {}
 
-    /// 검사 결과 INSERT. 성공 시 생성된 ID 반환, 실패 시 -1
-    long long insert(const InspectionEvent& ev);
+    /// 검사 결과 INSERT. 성공 시 생성된 ID 반환, 실패 시 -1.
+    /// @param image_path      원본 JPEG 파일 경로 (빈 문자열이면 DB NULL)
+    /// @param heatmap_path    Anomaly Map PNG 파일 경로 (v0.9.0+)
+    /// @param pred_mask_path  Pred Mask PNG 파일 경로 (v0.9.0+)
+    long long insert(const InspectionEvent& ev,
+                     const std::string& image_path = "",
+                     const std::string& heatmap_path = "",
+                     const std::string& pred_mask_path = "");
 
 private:
     ConnectionPool& pool_;

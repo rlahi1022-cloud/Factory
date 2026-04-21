@@ -67,7 +67,9 @@ ConnectionPool db_pool(db_host, db_user, db_password, db_schema, 3306, pool_size
 | result | ENUM('ok','ng') | NOT NULL | 판정 결과 (소문자) |
 | confidence | FLOAT | NULL | 이상 점수 (AI서버 score 필드) |
 | defect_type | VARCHAR(100) | NULL | 결함 유형 (AI서버 defect 필드) |
-| image_path | VARCHAR(255) | NULL | NG 이미지 저장 경로 |
+| image_path | VARCHAR(255) | NULL | NG 원본 이미지 저장 경로 |
+| heatmap_path | VARCHAR(255) | NULL | NG Anomaly Map(원본+히트맵) 이미지 경로 (v0.9.0+) |
+| pred_mask_path | VARCHAR(255) | NULL | NG Pred Mask(원본+윤곽선) 이미지 경로 (v0.9.0+) |
 | latency_ms | INT | NOT NULL | 추론 소요 시간 (ms) |
 
 **⚠️ timestamp 형식 자동 변환 (v0.8.0+):**
@@ -143,7 +145,9 @@ VALUES ('EMP-001', 'admin01', '$2b$12$...해시값...', 'Admin');
 | result | result | "NG" → 'ng' |
 | score | confidence | |
 | defect | defect_type | |
-| (자동 생성) | image_path | ImageStorage 저장 경로 |
+| (자동 생성) | image_path | ImageStorage 저장 경로 (원본 JPEG) |
+| (자동 생성) | heatmap_path | ImageStorage 저장 경로 (원본+히트맵 PNG, v0.9.0+) |
+| (자동 생성) | pred_mask_path | ImageStorage 저장 경로 (원본+마스크 PNG, v0.9.0+) |
 | latency_ms | latency_ms | |
 | — | bottle_id | AI서버 미전송 (NULL) |
 | — | model_id | AI서버 미전송 (NULL) |
@@ -172,6 +176,27 @@ ALTER TABLE inspections
 ALTER TABLE assemblies
     MODIFY bottle_id INT NULL;
 ```
+
+## v0.9.0 마이그레이션 — 시각화 이미지 경로 컬럼 추가
+
+AI 추론서버가 NG 결과 전송 시 **3장 이미지**(원본 + Anomaly Map + Pred Mask)를 보내므로,
+MainServer에서 저장할 경로 컬럼 2개를 추가해야 합니다.
+
+```sql
+ALTER TABLE inspections
+    ADD COLUMN heatmap_path    VARCHAR(255) NULL AFTER image_path,
+    ADD COLUMN pred_mask_path  VARCHAR(255) NULL AFTER heatmap_path;
+```
+
+**배경**:
+- STATION1_NG(1000) / STATION2_NG(1002) 패킷이 `image_size`, `heatmap_size`, `pred_mask_size` 3개 필드를 포함
+- 패킷 구조: `[header] + [JSON] + [원본 JPEG] + [히트맵 PNG] + [마스크 PNG]`
+- 크기가 0인 이미지는 생략 (하위호환)
+
+**MainServer 대응 필요**:
+- `dao.cpp`의 INSERT 쿼리에 `heatmap_path`, `pred_mask_path` 컬럼 추가
+- `ImageStorage`에서 3장을 각각 다른 경로로 저장 (예: `_heatmap.png`, `_mask.png` suffix)
+- MFC 클라이언트 "Anomaly Map" / "Pred Mask" 영역에서 해당 경로의 이미지 로드
 
 ## ConnectionPool (v0.7.0+)
 
@@ -227,6 +252,8 @@ CREATE TABLE IF NOT EXISTS inspections (
     confidence FLOAT,
     defect_type VARCHAR(100),
     image_path VARCHAR(255),
+    heatmap_path VARCHAR(255),
+    pred_mask_path VARCHAR(255),
     latency_ms INT NOT NULL,
     INDEX(station_id), INDEX(result), INDEX(timestamp)
 );
