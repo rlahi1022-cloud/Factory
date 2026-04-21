@@ -123,7 +123,10 @@ public:
 
     struct InspectionRecord {
         int id, station_id, latency_ms;
-        std::string timestamp, result, defect_type, image_path;
+        std::string timestamp, result, defect_type;
+        std::string image_path;       // 원본 JPEG 경로
+        std::string heatmap_path;     // Anomaly Map PNG 경로 (v0.9.0+)
+        std::string pred_mask_path;   // Pred Mask PNG 경로 (v0.9.0+)
         double confidence;
     };
 
@@ -131,6 +134,10 @@ public:
                                                const std::string& date_from,
                                                const std::string& date_to,
                                                int limit);
+
+    // 단건 조회 — 이미지 on-demand 로드용
+    // 반환: 해당 id의 레코드(한 건). 없으면 id==0.
+    InspectionRecord get_by_id(int id);
 
 private:
     ConnectionPool& pool_;

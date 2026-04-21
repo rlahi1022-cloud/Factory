@@ -25,6 +25,8 @@ private:
     void handle_register(int fd, const std::string& json);
     void handle_logout(int fd, const std::string& json);
     void handle_inspect_history(int fd, const std::string& json);
+    // handle_inspect_image: 이력 항목의 이미지 3장을 디스크에서 읽어 바이너리로 회신 (v0.10+)
+    void handle_inspect_image(int fd, const std::string& json);
     void handle_stats(int fd, const std::string& json);
     void handle_model_list(int fd, const std::string& json);
     void handle_retrain(int fd, const std::string& json);

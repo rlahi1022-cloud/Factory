@@ -65,3 +65,13 @@ void CPageStation1::OnBtnNG() {
 void CPageStation1::OnBtnArduino() {
     MessageBox(_T("Arduino COM3 테스트 신호 전송"),_T("Arduino"),MB_OK|MB_ICONINFORMATION);
 }
+
+// SetImages: MainTabDlg::OnNetNgImage 에서 수신한 3장 바이너리를 각 뷰에 주입.
+// 비어있는 벡터는 SetImage 내부에서 "이미지 해제"로 처리되어 플레이스홀더로 복귀.
+void CPageStation1::SetImages(const std::vector<BYTE>& image,
+                              const std::vector<BYTE>& heatmap,
+                              const std::vector<BYTE>& pred_mask) {
+    m_cam.SetImage(image);
+    m_heat.SetImage(heatmap);
+    m_mask.SetImage(pred_mask);
+}

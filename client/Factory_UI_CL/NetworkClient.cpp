@@ -319,32 +319,64 @@ void CNetworkClient::RecvLoop()
             break;
         }
 
-        // ── 4단계: 이미지 바이너리 수신 (image_size 존재 시) ──
-        // NG 푸시 시 서버가 JSON 뒤에 이미지를 붙여 보냄. 향후 구현용 선제 방어.
+        // ── 4단계: 이미지 바이너리 수신 (v0.9.0+: 원본/히트맵/마스크 3장) ──
+        // 서버 와이어 포맷 (gui_notifier.cpp on_gui_push):
+        //   [JSON] + [원본 JPEG][히트맵 PNG][마스크 PNG]
+        //   각 크기는 JSON의 image_size / heatmap_size / pred_mask_size
+        //   어느 size든 0이면 해당 이미지 생략(하위호환)
         CStringA jsonA(jsonBuf.c_str());
-        int imageSize = CPacketBuilder::ExtractInt(jsonA, "image_size");
-        if (imageSize > 0) {
-            // 최대 50MB 상한 — 악성 서버/중간자 공격으로부터 메모리 고갈 방지
-            constexpr int MAX_IMAGE_SIZE = 50 * 1024 * 1024;
-            if (imageSize > MAX_IMAGE_SIZE) {
-                TRACE(_T("[NetworkClient] 이미지 크기 초과: %d bytes — 연결 종료\n"), imageSize);
+        int imageSize    = CPacketBuilder::ExtractInt(jsonA, "image_size");
+        int heatmapSize  = CPacketBuilder::ExtractInt(jsonA, "heatmap_size");
+        int predMaskSize = CPacketBuilder::ExtractInt(jsonA, "pred_mask_size");
+        const int totalBin = imageSize + heatmapSize + predMaskSize;
+
+        std::vector<BYTE> imgBytes, heatBytes, maskBytes;
+
+        if (totalBin > 0) {
+            // 개별 최대 50MB 상한 — 메모리 폭주 방지
+            constexpr int MAX_ONE = 50 * 1024 * 1024;
+            if (imageSize    < 0 || imageSize    > MAX_ONE ||
+                heatmapSize  < 0 || heatmapSize  > MAX_ONE ||
+                predMaskSize < 0 || predMaskSize > MAX_ONE) {
+                TRACE(_T("[NetworkClient] 비정상 이미지 크기 (img=%d heat=%d mask=%d)\n"),
+                      imageSize, heatmapSize, predMaskSize);
                 break;
             }
-            // 일단 버퍼로 비우기만 함 (향후 CameraView 렌더링 구현 시 저장 로직 추가)
-            std::vector<char> imgBuf;
-            try {
-                imgBuf.resize(imageSize);
-            } catch (const std::bad_alloc&) {
-                TRACE(_T("[NetworkClient] 이미지 버퍼 할당 실패 (size=%d)\n"), imageSize);
-                break;
-            }
-            if (!RecvN(imgBuf.data(), imageSize)) {
-                break;
-            }
+            // 순차 수신 — 서버 송신 순서와 동일 (원본 → 히트맵 → 마스크)
+            auto recv_to = [this](std::vector<BYTE>& buf, int sz) -> bool {
+                if (sz <= 0) return true;
+                try { buf.resize(sz); } catch (const std::bad_alloc&) { return false; }
+                return RecvN(reinterpret_cast<char*>(buf.data()), sz);
+            };
+            if (!recv_to(imgBytes,  imageSize))    { break; }
+            if (!recv_to(heatBytes, heatmapSize))  { break; }
+            if (!recv_to(maskBytes, predMaskSize)) { break; }
         }
 
-        // ── 5단계: 패킷 처리 ──
+        // ── 5단계: JSON 패킷 처리 (프로토콜 분기 + UI 이벤트 발송) ──
         OnPacketReceived(jsonBuf);
+
+        // ── 6단계: 이미지가 동반된 경우 UI로 전달 ──
+        // 프로토콜 110(INSPECT_NG_PUSH: 실시간) 또는 117(INSPECT_IMAGE_RES: 이력 on-demand)
+        // 두 경우 모두 와이어 포맷이 동일하므로 같은 경로로 UI에 전달.
+        // 힙 할당 후 PostMessage — UI 스레드가 수신 후 delete 책임.
+        int protocolNo = CPacketBuilder::ExtractInt(jsonA, "protocol_no");
+        const bool isNgImage    = (protocolNo == factory_client::INSPECT_NG_PUSH);
+        const bool isHistImage  = (protocolNo == factory_client::INSPECT_IMAGE_RES);
+        if ((isNgImage || isHistImage) && totalBin > 0 &&
+            m_hNotifyWnd && ::IsWindow(m_hNotifyWnd)) {
+            auto* pkt = new (std::nothrow) NgImagePacket{};
+            if (pkt) {
+                pkt->station_id = CPacketBuilder::ExtractInt(jsonA, "station_id");
+                pkt->image      = std::move(imgBytes);
+                pkt->heatmap    = std::move(heatBytes);
+                pkt->pred_mask  = std::move(maskBytes);
+                if (!::PostMessage(m_hNotifyWnd, WM_NET_NG_IMAGE, 0,
+                                   reinterpret_cast<LPARAM>(pkt))) {
+                    delete pkt;  // PostMessage 실패 시 즉시 해제
+                }
+            }
+        }
     }
 
     // ── 루프 종료 이유 판별 ──

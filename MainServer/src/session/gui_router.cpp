@@ -15,8 +15,11 @@
 #include <chrono>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 
 namespace factory {
 
@@ -37,6 +40,8 @@ void GuiRouter::route(int client_fd, const std::string& remote_addr,
             handle_register(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::INSPECT_HISTORY_REQ):
             handle_inspect_history(client_fd, json_request); break;
+        case static_cast<int>(ProtocolNo::INSPECT_IMAGE_REQ):
+            handle_inspect_image(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::STATS_REQ):
             handle_stats(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::MODEL_LIST_REQ):
@@ -210,6 +215,8 @@ void GuiRouter::handle_inspect_history(int fd, const std::string& json) {
               << ",\"confidence\":" << r.confidence
               << ",\"defect_type\":\"" << escape_json(r.defect_type) << "\""
               << ",\"image_path\":\"" << escape_json(r.image_path) << "\""
+              << ",\"heatmap_path\":\"" << escape_json(r.heatmap_path) << "\""
+              << ",\"pred_mask_path\":\"" << escape_json(r.pred_mask_path) << "\""
               << ",\"latency_ms\":" << r.latency_ms
               << "}";
     }
@@ -223,6 +230,77 @@ void GuiRouter::handle_inspect_history(int fd, const std::string& json) {
 
     send_json(fd, os.str());
     log_clt("검사이력 응답 | %zu건", records.size());
+}
+
+// ── INSPECT_IMAGE (v0.10+) ─────────────────────────────────────────────
+// 이력 상세보기에서 과거 NG 이미지 3장을 on-demand 로 전송.
+// 와이어 포맷: [4바이트 JSON 길이] + [JSON] + [원본][히트맵][마스크]
+//             NG_PUSH(110)와 동일 규칙. 클라는 기존 RecvLoop 경로로 수신/디코드.
+// 보안: 클라는 inspection_id만 보내고, 실제 파일 경로는 서버가 DB로 조회.
+//       (클라가 임의 경로를 보내지 못하도록 — 경로 주입 공격 방어)
+void GuiRouter::handle_inspect_image(int fd, const std::string& json) {
+    std::string request_id = extract_str(json, "request_id");
+    int inspection_id      = extract_int(json, "inspection_id");
+
+    auto rec = service_.get_inspection_by_id(inspection_id);
+
+    auto read_file = [](const std::string& path) -> std::vector<uint8_t> {
+        std::vector<uint8_t> out;
+        if (path.empty()) return out;
+        try {
+            if (!std::filesystem::exists(path)) return out;
+            auto sz = std::filesystem::file_size(path);
+            // 50MB 상한 — 비정상 파일로 인한 메모리 폭주 방지
+            if (sz == 0 || sz > 50ULL * 1024 * 1024) return out;
+            std::ifstream ifs(path, std::ios::binary);
+            if (!ifs) return out;
+            out.resize(static_cast<std::size_t>(sz));
+            ifs.read(reinterpret_cast<char*>(out.data()),
+                     static_cast<std::streamsize>(sz));
+            if (!ifs) { out.clear(); }
+        } catch (...) { out.clear(); }
+        return out;
+    };
+
+    auto img_bytes  = read_file(rec.image_path);
+    auto heat_bytes = read_file(rec.heatmap_path);
+    auto mask_bytes = read_file(rec.pred_mask_path);
+
+    std::ostringstream os;
+    os << "{\"protocol_no\":117"
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
+       << ",\"inspection_id\":" << inspection_id
+       << ",\"station_id\":"    << rec.station_id
+       << ",\"success\":" << (rec.id == inspection_id && inspection_id > 0 ? "true" : "false")
+       << ",\"image_size\":"     << img_bytes.size()
+       << ",\"heatmap_size\":"   << heat_bytes.size()
+       << ",\"pred_mask_size\":" << mask_bytes.size()
+       << ",\"timestamp\":\"" << get_timestamp() << "\"}";
+
+    const std::string json_body = os.str();
+    const std::size_t total_bin = img_bytes.size() + heat_bytes.size() + mask_bytes.size();
+
+    // 4바이트 길이(BE) + JSON + 3장 바이너리 (NG_PUSH와 동일 프레이밍)
+    uint32_t json_len = static_cast<uint32_t>(json_body.size());
+    uint8_t hdr[4] = {
+        static_cast<uint8_t>((json_len >> 24) & 0xff),
+        static_cast<uint8_t>((json_len >> 16) & 0xff),
+        static_cast<uint8_t>((json_len >>  8) & 0xff),
+        static_cast<uint8_t>( json_len        & 0xff),
+    };
+    std::vector<uint8_t> frame;
+    frame.reserve(4 + json_body.size() + total_bin);
+    frame.insert(frame.end(), hdr, hdr + 4);
+    frame.insert(frame.end(), json_body.begin(), json_body.end());
+    if (!img_bytes.empty())  frame.insert(frame.end(), img_bytes.begin(),  img_bytes.end());
+    if (!heat_bytes.empty()) frame.insert(frame.end(), heat_bytes.begin(), heat_bytes.end());
+    if (!mask_bytes.empty()) frame.insert(frame.end(), mask_bytes.begin(), mask_bytes.end());
+
+    // send_all 헬퍼로 부분 전송 안전 처리 (tcp_utils.h)
+    send_all(fd, frame.data(), frame.size());
+
+    log_clt("이미지 응답 | id=%d img=%zu heat=%zu mask=%zu",
+            inspection_id, img_bytes.size(), heat_bytes.size(), mask_bytes.size());
 }
 
 // ── STATS ────────────────────────────────────────────────────────────

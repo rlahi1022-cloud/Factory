@@ -222,6 +222,37 @@ void CPageStats::OnInspectHistoryRes(const std::string& json)
 }
 
 // ============================================================================
+// RequestInspectionImage — 이력 이미지 on-demand 요청 (프로토콜 116)
+// ============================================================================
+// 서버는 INSPECT_IMAGE_RES(117)로 JSON + 3장 바이너리를 회신.
+// NetworkClient가 자동으로 WM_NET_NG_IMAGE 메시지로 UI에 전달하므로
+// 이 함수는 "요청만" 하면 됨. 결과는 PageStation1/2에서 자동 표시.
+void CPageStats::RequestInspectionImage(int inspectionId)
+{
+    if (!m_net || !m_net->IsConnected()) {
+        TRACE(_T("[PageStats] 이미지 요청 실패 — 네트워크 미연결\n"));
+        return;
+    }
+    if (inspectionId <= 0) {
+        TRACE(_T("[PageStats] 이미지 요청 실패 — 잘못된 id=%d\n"), inspectionId);
+        return;
+    }
+    CString req = CPacketBuilder::BuildInspectImageReq(inspectionId);
+    m_net->SendJson(req);
+    TRACE(_T("[PageStats] 이력 이미지 요청 송신 | id=%d\n"), inspectionId);
+}
+
+// 최근 NG 이력 id — m_recs 는 OnInspectHistoryRes 에서 시간 역순으로 채워짐.
+// 첫 NG 항목의 id 반환. 없으면 0.
+int CPageStats::GetLastNgInspectionId() const
+{
+    for (const auto& r : m_recs) {
+        if (r.isNG) return r.id;
+    }
+    return 0;
+}
+
+// ============================================================================
 // OnStatsRes — 통계 응답 수신 (프로토콜 131)
 // ============================================================================
 // 서버 실제 응답 구조 (gui_router.cpp handle_stats):

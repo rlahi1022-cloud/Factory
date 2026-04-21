@@ -54,6 +54,8 @@ enum class ProtocolNo : int {
     INSPECT_OK_COUNT_PUSH  = 112,
     INSPECT_HISTORY_REQ    = 114,
     INSPECT_HISTORY_RES    = 115,
+    INSPECT_IMAGE_REQ      = 116,   // 이력 항목의 이미지 3장 on-demand 요청 (v0.10+)
+    INSPECT_IMAGE_RES      = 117,   // 이미지 응답: JSON 뒤에 [원본][히트맵][마스크] 바이너리
     STATS_REQ              = 130,
     STATS_RES              = 131,
     MODEL_LIST_REQ         = 150,

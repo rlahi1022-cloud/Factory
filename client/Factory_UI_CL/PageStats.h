@@ -23,6 +23,15 @@ public:
     // 네트워크 클라이언트 설정 (MainTabDlg에서 호출)
     void SetNetworkClient(CNetworkClient* net) { m_net = net; }
 
+    // 이력 항목의 이미지 3장을 서버에서 on-demand로 가져옴 (v0.10+)
+    // 응답(프로토콜 117)은 NetworkClient가 WM_NET_NG_IMAGE로 라우팅 →
+    // MainTabDlg가 station_id에 따라 PageStation1/2의 3개 뷰에 자동 표시.
+    // 사용처: 메뉴/버튼에서 "이력 이미지 조회" 트리거 시 호출.
+    void RequestInspectionImage(int inspectionId);
+
+    // 최근 NG 이력 id 조회 (0이면 NG 없음) — 데모 트리거에 사용
+    int GetLastNgInspectionId() const;
+
 protected:
     CNetworkClient* m_net = nullptr;
     std::vector<InspectionRecord> m_recs;

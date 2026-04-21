@@ -55,6 +55,11 @@ public:
         int station_filter, const std::string& from,
         const std::string& to, int limit);
 
+    // 단건 조회 — 이력 이미지 on-demand 로드용
+    StatsDao::InspectionRecord get_inspection_by_id(int id) {
+        return stats_dao_.get_by_id(id);
+    }
+
     StatsDao::StatsResult get_stats(
         int station_filter, const std::string& from, const std::string& to);
 

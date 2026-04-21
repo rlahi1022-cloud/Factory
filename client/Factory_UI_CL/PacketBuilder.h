@@ -123,6 +123,11 @@ public:
         const CString& dateTo,
         int limit = 100);
 
+    // BuildInspectImageReq: 이력 이미지 on-demand 요청 JSON (프로토콜 116)
+    // 파라미터:
+    //   inspectionId — HISTORY_RES.items[].id 에서 온 값
+    static CString BuildInspectImageReq(int inspectionId);
+
     // BuildStatsReq: 통계 데이터 요청 JSON (프로토콜 130)
     static CString BuildStatsReq(
         int stationFilter,

@@ -678,7 +678,8 @@ std::vector<StatsDao::InspectionRecord> StatsDao::get_history(
 
     std::ostringstream sql;
     sql << "SELECT id, station_id, timestamp, result, confidence, "
-        << "defect_type, image_path, latency_ms FROM inspections WHERE 1=1";
+        << "defect_type, image_path, heatmap_path, pred_mask_path, latency_ms "
+        << "FROM inspections WHERE 1=1";
     if (station_filter > 0) sql << " AND station_id=?";
     if (!date_from.empty()) sql << " AND timestamp>=?";
     if (!date_to.empty())   sql << " AND timestamp<=?";
@@ -737,17 +738,19 @@ std::vector<StatsDao::InspectionRecord> StatsDao::get_history(
         return records;
     }
 
-    // 결과 바인딩
-    MYSQL_BIND bind_res[8];
+    // 결과 바인딩 — 10개 컬럼 (v0.9.0+: heatmap_path, pred_mask_path 추가)
+    MYSQL_BIND bind_res[10];
     std::memset(bind_res, 0, sizeof(bind_res));
     int r_id = 0, r_sid = 0, r_latency = 0;
-    char r_ts[64]{}, r_result[16]{}, r_defect[64]{}, r_imgpath[256]{};
+    char r_ts[64]{}, r_result[16]{}, r_defect[64]{};
+    char r_imgpath[256]{}, r_heatpath[256]{}, r_maskpath[256]{};
     double r_conf = 0;
-    unsigned long len_ts = 0, len_result = 0, len_defect = 0, len_imgpath = 0;
-    my_bool null_defect = 0, null_imgpath = 0;
+    unsigned long len_ts = 0, len_result = 0, len_defect = 0;
+    unsigned long len_imgpath = 0, len_heatpath = 0, len_maskpath = 0;
+    my_bool null_defect = 0, null_imgpath = 0, null_heatpath = 0, null_maskpath = 0;
 
-    bind_res[0].buffer_type = MYSQL_TYPE_LONG;   bind_res[0].buffer = &r_id;
-    bind_res[1].buffer_type = MYSQL_TYPE_LONG;   bind_res[1].buffer = &r_sid;
+    bind_res[0].buffer_type = MYSQL_TYPE_LONG;    bind_res[0].buffer = &r_id;
+    bind_res[1].buffer_type = MYSQL_TYPE_LONG;    bind_res[1].buffer = &r_sid;
     bind_res[2].buffer_type = MYSQL_TYPE_STRING;  bind_res[2].buffer = r_ts;
     bind_res[2].buffer_length = sizeof(r_ts);     bind_res[2].length = &len_ts;
     bind_res[3].buffer_type = MYSQL_TYPE_STRING;  bind_res[3].buffer = r_result;
@@ -759,7 +762,13 @@ std::vector<StatsDao::InspectionRecord> StatsDao::get_history(
     bind_res[6].buffer_type = MYSQL_TYPE_STRING;  bind_res[6].buffer = r_imgpath;
     bind_res[6].buffer_length = sizeof(r_imgpath); bind_res[6].length = &len_imgpath;
     bind_res[6].is_null = &null_imgpath;
-    bind_res[7].buffer_type = MYSQL_TYPE_LONG;   bind_res[7].buffer = &r_latency;
+    bind_res[7].buffer_type = MYSQL_TYPE_STRING;  bind_res[7].buffer = r_heatpath;
+    bind_res[7].buffer_length = sizeof(r_heatpath); bind_res[7].length = &len_heatpath;
+    bind_res[7].is_null = &null_heatpath;
+    bind_res[8].buffer_type = MYSQL_TYPE_STRING;  bind_res[8].buffer = r_maskpath;
+    bind_res[8].buffer_length = sizeof(r_maskpath); bind_res[8].length = &len_maskpath;
+    bind_res[8].is_null = &null_maskpath;
+    bind_res[9].buffer_type = MYSQL_TYPE_LONG;    bind_res[9].buffer = &r_latency;
 
     mysql_stmt_bind_result(stmt, bind_res);
 
@@ -770,13 +779,93 @@ std::vector<StatsDao::InspectionRecord> StatsDao::get_history(
         rec.timestamp.assign(r_ts, len_ts);
         rec.result.assign(r_result, len_result);
         rec.confidence = r_conf;
-        rec.defect_type = null_defect ? "" : std::string(r_defect, len_defect);
-        rec.image_path  = null_imgpath ? "" : std::string(r_imgpath, len_imgpath);
+        rec.defect_type    = null_defect   ? "" : std::string(r_defect,   len_defect);
+        rec.image_path     = null_imgpath  ? "" : std::string(r_imgpath,  len_imgpath);
+        rec.heatmap_path   = null_heatpath ? "" : std::string(r_heatpath, len_heatpath);
+        rec.pred_mask_path = null_maskpath ? "" : std::string(r_maskpath, len_maskpath);
         rec.latency_ms = r_latency;
         records.push_back(rec);
     }
     mysql_stmt_close(stmt);
     return records;
+}
+
+// 단건 조회 — 이미지 on-demand 로드 시 이력 항목의 경로만 조회.
+// inspection_id는 클라가 HISTORY_RES로 받은 id를 그대로 전달하므로 유효성은 DB에서 보장.
+StatsDao::InspectionRecord StatsDao::get_by_id(int id) {
+    InspectionRecord empty{};
+    if (id <= 0) return empty;
+
+    PooledConnection conn(pool_);
+    if (!conn.get()) return empty;
+
+    const char* sql = "SELECT id, station_id, timestamp, result, confidence, "
+                      "defect_type, image_path, heatmap_path, pred_mask_path, "
+                      "latency_ms FROM inspections WHERE id=? LIMIT 1";
+
+    MYSQL_STMT* stmt = mysql_stmt_init(conn);
+    if (!stmt) return empty;
+    if (mysql_stmt_prepare(stmt, sql, static_cast<unsigned long>(std::strlen(sql))) != 0) {
+        mysql_stmt_close(stmt);
+        return empty;
+    }
+
+    MYSQL_BIND bp{};
+    bp.buffer_type = MYSQL_TYPE_LONG;
+    bp.buffer = &id;
+    if (mysql_stmt_bind_param(stmt, &bp) != 0 || mysql_stmt_execute(stmt) != 0) {
+        mysql_stmt_close(stmt);
+        return empty;
+    }
+
+    MYSQL_BIND bind_res[10];
+    std::memset(bind_res, 0, sizeof(bind_res));
+    int r_id = 0, r_sid = 0, r_latency = 0;
+    char r_ts[64]{}, r_result[16]{}, r_defect[64]{};
+    char r_imgpath[256]{}, r_heatpath[256]{}, r_maskpath[256]{};
+    double r_conf = 0;
+    unsigned long len_ts = 0, len_result = 0, len_defect = 0;
+    unsigned long len_imgpath = 0, len_heatpath = 0, len_maskpath = 0;
+    my_bool null_defect = 0, null_imgpath = 0, null_heatpath = 0, null_maskpath = 0;
+
+    bind_res[0].buffer_type = MYSQL_TYPE_LONG;    bind_res[0].buffer = &r_id;
+    bind_res[1].buffer_type = MYSQL_TYPE_LONG;    bind_res[1].buffer = &r_sid;
+    bind_res[2].buffer_type = MYSQL_TYPE_STRING;  bind_res[2].buffer = r_ts;
+    bind_res[2].buffer_length = sizeof(r_ts);     bind_res[2].length = &len_ts;
+    bind_res[3].buffer_type = MYSQL_TYPE_STRING;  bind_res[3].buffer = r_result;
+    bind_res[3].buffer_length = sizeof(r_result); bind_res[3].length = &len_result;
+    bind_res[4].buffer_type = MYSQL_TYPE_DOUBLE;  bind_res[4].buffer = &r_conf;
+    bind_res[5].buffer_type = MYSQL_TYPE_STRING;  bind_res[5].buffer = r_defect;
+    bind_res[5].buffer_length = sizeof(r_defect); bind_res[5].length = &len_defect;
+    bind_res[5].is_null = &null_defect;
+    bind_res[6].buffer_type = MYSQL_TYPE_STRING;  bind_res[6].buffer = r_imgpath;
+    bind_res[6].buffer_length = sizeof(r_imgpath); bind_res[6].length = &len_imgpath;
+    bind_res[6].is_null = &null_imgpath;
+    bind_res[7].buffer_type = MYSQL_TYPE_STRING;  bind_res[7].buffer = r_heatpath;
+    bind_res[7].buffer_length = sizeof(r_heatpath); bind_res[7].length = &len_heatpath;
+    bind_res[7].is_null = &null_heatpath;
+    bind_res[8].buffer_type = MYSQL_TYPE_STRING;  bind_res[8].buffer = r_maskpath;
+    bind_res[8].buffer_length = sizeof(r_maskpath); bind_res[8].length = &len_maskpath;
+    bind_res[8].is_null = &null_maskpath;
+    bind_res[9].buffer_type = MYSQL_TYPE_LONG;    bind_res[9].buffer = &r_latency;
+
+    mysql_stmt_bind_result(stmt, bind_res);
+
+    InspectionRecord rec{};
+    if (mysql_stmt_fetch(stmt) == 0) {
+        rec.id = r_id;
+        rec.station_id = r_sid;
+        rec.timestamp.assign(r_ts, len_ts);
+        rec.result.assign(r_result, len_result);
+        rec.confidence = r_conf;
+        rec.defect_type    = null_defect   ? "" : std::string(r_defect,   len_defect);
+        rec.image_path     = null_imgpath  ? "" : std::string(r_imgpath,  len_imgpath);
+        rec.heatmap_path   = null_heatpath ? "" : std::string(r_heatpath, len_heatpath);
+        rec.pred_mask_path = null_maskpath ? "" : std::string(r_maskpath, len_maskpath);
+        rec.latency_ms = r_latency;
+    }
+    mysql_stmt_close(stmt);
+    return rec;
 }
 
 } // namespace factory

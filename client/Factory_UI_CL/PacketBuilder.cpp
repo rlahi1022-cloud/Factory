@@ -448,6 +448,27 @@ CString CPacketBuilder::BuildInspectHistoryReq(
     return CString(json);
 }
 
+// BuildInspectImageReq: 이력 이미지 on-demand 요청 JSON (프로토콜 116)
+// 서버는 inspection_id로 DB 조회 후 원본/히트맵/마스크 3장 바이너리를 회신한다.
+CString CPacketBuilder::BuildInspectImageReq(int inspectionId)
+{
+    CStringA ts    = GetTimestamp();
+    CStringA reqId = GenerateRequestId();
+    CStringA json;
+    json.Format(
+        "{\"protocol_no\":%d,"
+        "\"protocol_version\":\"%s\","
+        "\"request_id\":\"%s\","
+        "\"inspection_id\":%d,"
+        "\"timestamp\":\"%s\"}",
+        factory_client::INSPECT_IMAGE_REQ,
+        factory_client::PROTOCOL_VERSION,
+        (LPCSTR)reqId,
+        inspectionId,
+        (LPCSTR)ts);
+    return CString(json);
+}
+
 // BuildStatsReq: 통계 데이터 요청 JSON (프로토콜 130)
 CString CPacketBuilder::BuildStatsReq(
     int stationFilter, const CString& dateFrom, const CString& dateTo)

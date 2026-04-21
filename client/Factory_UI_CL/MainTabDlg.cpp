@@ -53,6 +53,7 @@ BEGIN_MESSAGE_MAP(CMainTabDlg, CDialogEx)
     ON_MESSAGE(WM_NET_RESPONSE,         OnNetResponse)
     ON_MESSAGE(WM_NET_RETRAIN_PROGRESS, OnNetRetrainProgress)
     ON_MESSAGE(WM_NET_LOGIN_RES,        OnNetLoginRes)   // 로그인 응답 (프로토콜 101)
+    ON_MESSAGE(WM_NET_NG_IMAGE,         OnNetNgImage)    // NG 이미지 3장 (프로토콜 110 바이너리)
 END_MESSAGE_MAP()
 
 // ============================================================================
@@ -842,5 +843,30 @@ LRESULT CMainTabDlg::OnNetLoginRes(WPARAM, LPARAM lParam)
     }
 
     delete pJson;
+    return 0;
+}
+
+// ============================================================================
+// OnNetNgImage — NG 이미지 3장 수신 (WM_NET_NG_IMAGE, 프로토콜 110 바이너리)
+// ============================================================================
+// NetworkClient가 JSON + 3장 바이너리를 분해하여 NgImagePacket으로 전달.
+// station_id에 따라 PageStation1 또는 PageStation2에 이미지를 주입한다.
+// 각 페이지가 원본/히트맵/마스크를 해당 뷰(CCameraView/CHeatmapView/CPredMaskView)
+// 에 SetImage()로 주입 → OnPaint에서 BitBlt으로 렌더링.
+LRESULT CMainTabDlg::OnNetNgImage(WPARAM, LPARAM lParam)
+{
+    NgImagePacket* pkt = reinterpret_cast<NgImagePacket*>(lParam);
+    if (!pkt) return 0;
+
+    TRACE(_T("[MainTabDlg] NG 이미지 수신 | station=%d img=%zu heat=%zu mask=%zu\n"),
+          pkt->station_id, pkt->image.size(), pkt->heatmap.size(), pkt->pred_mask.size());
+
+    if (pkt->station_id == 1 && m_st1) {
+        m_st1->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
+    } else if (pkt->station_id == 2 && m_st2) {
+        m_st2->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
+    }
+
+    delete pkt;
     return 0;
 }

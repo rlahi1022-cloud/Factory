@@ -1,6 +1,57 @@
 ﻿#include "pch.h"
 #include "CameraView.h"
 
+// ── 공통 이미지 디코더 ──────────────────────────────────────────────────────
+// CImage::Load는 IStream 기반이므로, 바이트 벡터를 HGLOBAL에 복사 후 스트림 생성.
+// 실패 시 out.Destroy()로 초기화된 상태를 보장.
+namespace CameraViewUtil {
+
+bool LoadImageFromBytes(const std::vector<BYTE>& bytes, CImage& out) {
+    out.Destroy();
+    if (bytes.empty()) return false;
+
+    HGLOBAL hMem = ::GlobalAlloc(GMEM_MOVEABLE, bytes.size());
+    if (!hMem) return false;
+
+    {
+        void* pMem = ::GlobalLock(hMem);
+        if (!pMem) { ::GlobalFree(hMem); return false; }
+        memcpy(pMem, bytes.data(), bytes.size());
+        ::GlobalUnlock(hMem);
+    }
+
+    IStream* pStream = nullptr;
+    // TRUE = 스트림 해제 시 HGLOBAL 자동 free
+    if (::CreateStreamOnHGlobal(hMem, TRUE, &pStream) != S_OK || !pStream) {
+        ::GlobalFree(hMem);
+        return false;
+    }
+
+    HRESULT hr = out.Load(pStream);
+    pStream->Release();  // HGLOBAL도 여기서 함께 해제
+
+    if (FAILED(hr)) {
+        out.Destroy();
+        return false;
+    }
+    return true;
+}
+
+// StretchBlt 이미지 → 대상 사각형에 맞춰 그리기 (비율 유지 X, 단순 stretch)
+static void DrawImageStretched(CImage& img, CDC& dc, const CRect& rc) {
+    if (img.IsNull() || rc.Width() <= 0 || rc.Height() <= 0) return;
+    // HALFTONE 모드 — 축소 시 깔끔한 필터링
+    int oldMode = ::SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
+    ::SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, nullptr);
+    img.StretchBlt(dc.GetSafeHdc(),
+                   rc.left, rc.top, rc.Width(), rc.Height(),
+                   0, 0, img.GetWidth(), img.GetHeight(),
+                   SRCCOPY);
+    ::SetStretchBltMode(dc.GetSafeHdc(), oldMode);
+}
+
+} // namespace CameraViewUtil
+
 // ── CCameraView ──────────────────────────────────────────────────────────────
 IMPLEMENT_DYNAMIC(CCameraView, CStatic)
 BEGIN_MESSAGE_MAP(CCameraView, CStatic)
@@ -15,6 +66,12 @@ void CCameraView::SetInspection(int st, bool ng, double sc, EDefect def) {
     Invalidate();
 }
 void CCameraView::Tick() { m_flash = !m_flash; if (m_isNG) Invalidate(); }
+
+void CCameraView::SetImage(const std::vector<BYTE>& bytes) {
+    if (bytes.empty()) { m_img.Destroy(); }
+    else { CameraViewUtil::LoadImageFromBytes(bytes, m_img); }
+    Invalidate();
+}
 
 void CCameraView::OnPaint() {
     CPaintDC dc(this);
@@ -34,6 +91,20 @@ void CCameraView::OnPaint() {
 
 void CCameraView::DrawBg(CDC& dc, CRect& rc) {
     dc.FillSolidRect(&rc, RGB(17,17,17));
+
+    // 서버 수신 이미지가 있으면 배경으로 렌더링 (상단 스코어바/하단 뱃지 영역 제외)
+    if (!m_img.IsNull()) {
+        CRect inner(rc.left+2, rc.top+14, rc.right-2, rc.bottom-32);
+        CameraViewUtil::DrawImageStretched(m_img, dc, inner);
+        // 외곽선만 그리고 리턴 — 크로스헤어/레이블은 이미지 있을 때 생략
+        CPen pen(PS_SOLID, 2, RGB(68,68,68)); CPen* p = dc.SelectObject(&pen);
+        CBrush* pb = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
+        dc.Rectangle(&rc);
+        dc.SelectObject(p); dc.SelectObject(pb);
+        return;
+    }
+
+    // ── 이미지 없을 때 플레이스홀더 렌더링 ──
     // 외곽선 — OK/NG 무관하게 단색 유지
     CPen pen(PS_SOLID, 2, RGB(68,68,68)); CPen* p = dc.SelectObject(&pen);
     CBrush* pb = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
@@ -129,6 +200,12 @@ END_MESSAGE_MAP()
 CHeatmapView::CHeatmapView() : m_active(false) {}
 void CHeatmapView::SetActive(bool a) { m_active=a; Invalidate(); }
 
+void CHeatmapView::SetImage(const std::vector<BYTE>& bytes) {
+    if (bytes.empty()) { m_img.Destroy(); }
+    else { CameraViewUtil::LoadImageFromBytes(bytes, m_img); }
+    Invalidate();
+}
+
 void CHeatmapView::OnPaint() {
     CPaintDC dc(this);
     CRect rc; GetClientRect(&rc);
@@ -136,8 +213,12 @@ void CHeatmapView::OnPaint() {
     mem.CreateCompatibleDC(&dc);
     bmp.CreateCompatibleBitmap(&dc, rc.Width(), rc.Height());
     CBitmap* pOld = mem.SelectObject(&bmp);
-    // 배경만 채움 — 실서버 연동 시 수신한 히트맵 이미지를 BitBlt로 출력 예정
+    // 배경 채움 — 이미지가 없을 때의 기본 배경
     mem.FillSolidRect(&rc, RGB(17, 17, 17));
+    // 수신한 Anomaly Map PNG가 있으면 배경에 스트레치
+    if (!m_img.IsNull()) {
+        CameraViewUtil::DrawImageStretched(m_img, mem, rc);
+    }
     mem.SetBkMode(TRANSPARENT);
     mem.SetTextColor(RGB(100, 100, 100));
     CFont f; f.CreatePointFont(60, _T("Tahoma")); CFont* pf = mem.SelectObject(&f);
@@ -168,6 +249,12 @@ void CPredMaskView::SetMask(bool is_active,
     Invalidate();
 }
 
+void CPredMaskView::SetImage(const std::vector<BYTE>& bytes) {
+    if (bytes.empty()) { m_img.Destroy(); }
+    else { CameraViewUtil::LoadImageFromBytes(bytes, m_img); }
+    Invalidate();
+}
+
 void CPredMaskView::OnPaint() {
     CPaintDC dc(this);
     CRect rc; GetClientRect(&rc);
@@ -183,8 +270,11 @@ void CPredMaskView::OnPaint() {
 }
 
 void CPredMaskView::draw_bg(CDC& dc, CRect& rc) {
-    // 배경만 채움 — 실서버 연동 시 수신한 원본 이미지를 BitBlt로 출력 예정
     dc.FillSolidRect(&rc, RGB(17, 17, 17));
+    // 수신한 Pred Mask PNG가 있으면 배경에 스트레치 렌더링
+    if (!m_img.IsNull()) {
+        CameraViewUtil::DrawImageStretched(m_img, dc, rc);
+    }
     // 외곽선 — OK/NG 무관하게 단색 유지
     CPen pen(PS_SOLID, 2, RGB(68, 68, 68));
     CPen* p_old_pen = dc.SelectObject(&pen);

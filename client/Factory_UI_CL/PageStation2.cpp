@@ -53,3 +53,12 @@ void CPageStation2::Refresh() {
 }
 void CPageStation2::OnBtnDefect(){MessageBox(_T("불량 유형 선택\n(구현 예정)"),_T("알림"),MB_OK);}
 void CPageStation2::OnBtnRework(){MessageBox(_T("재작업 지시 전송"),_T("재작업"),MB_OK|MB_ICONWARNING);}
+
+// SetImages: MainTabDlg::OnNetNgImage 에서 Station2로 라우팅된 이미지 주입.
+// Station2는 pred_mask 뷰가 없어 해당 인자는 사용하지 않음 (Station1 전용 패널).
+void CPageStation2::SetImages(const std::vector<BYTE>& image,
+                              const std::vector<BYTE>& heatmap,
+                              const std::vector<BYTE>& /*pred_mask*/) {
+    m_cam.SetImage(image);
+    m_heat.SetImage(heatmap);
+}
