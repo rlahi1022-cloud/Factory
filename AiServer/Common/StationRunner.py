@@ -488,9 +488,9 @@ class StationRunner:
                     result_dict["latency_ms"] = latency_ms
 
                     # JSON으로 직렬화할 수 없는 필드(numpy 배열 등)를 제거합니다.
-                    # heatmap, bbox_overlay는 이미지 바이너리로 별도 전송하므로
+                    # heatmap, bbox_overlay, raw_anomaly_map은 이미지/배열이므로
                     # JSON 본문에는 포함시키지 않습니다.
-                    for _key in ("heatmap", "bbox_overlay"):
+                    for _key in ("heatmap", "bbox_overlay", "raw_anomaly_map", "pred_mask"):
                         result_dict.pop(_key, None)
 
                     # 이미지를 JPEG 바이트로 인코딩합니다.
