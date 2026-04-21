@@ -133,8 +133,22 @@ BOOL CMainTabDlg::OnInitDialog()
         (LPCTSTR)m_session.role, (LPCTSTR)m_session.employeeId);
     SetWindowText(title);
 
+    // ── 네트워크 자동 접속 시도 (페이지 생성 전에 선행) ──
+    // 페이지 생성 중 예외가 발생해도 서버 로그인 요청은 우선 발송되도록
+    // ConnectToServer를 먼저 호출한다. PostMessage는 m_hWnd에 큐잉되므로
+    // 이후 메시지 핸들러가 등록될 때까지 안전하게 대기한다.
+    ConnectToServer();
+
     // ── 페이지 생성 및 초기 표시 ──
-    CreatePages();
+    // 각 페이지 Create는 독립적으로 try-catch로 보호 — 한 페이지가 실패해도
+    // 나머지 페이지와 네트워크 기능은 살아남도록.
+    try {
+        CreatePages();
+    } catch (const std::exception& e) {
+        TRACE(_T("[MainTabDlg] CreatePages 예외: %hs\n"), e.what());
+    } catch (...) {
+        TRACE(_T("[MainTabDlg] CreatePages 알 수 없는 예외\n"));
+    }
     SwitchTab(0);
 
     // ── 타이머 시작 ──
@@ -143,12 +157,9 @@ BOOL CMainTabDlg::OnInitDialog()
     // IDT_STATUSBAR: 1초마다 상태바 시각 갱신
     SetTimer(IDT_STATUSBAR, 1000, nullptr);
 
-    // ── 각 페이지에 NetworkClient 주입 ──
+    // ── 각 페이지에 NetworkClient 주입 (생성 성공한 페이지만) ──
     if (m_stats) m_stats->SetNetworkClient(&m_net);
     if (m_model) m_model->SetNetworkClient(&m_net);
-
-    // ── 네트워크 자동 접속 시도 ──
-    ConnectToServer();
 
     // ── 최대화 표시 ──
     ShowWindow(SW_SHOWMAXIMIZED);
@@ -162,21 +173,27 @@ BOOL CMainTabDlg::OnInitDialog()
 // CreatePages: 5개 탭 페이지를 자식 다이얼로그로 생성
 void CMainTabDlg::CreatePages()
 {
-    // make_unique: 스마트 포인터로 생성 (자동 메모리 관리)
-    m_home  = std::make_unique<CPageHome>(this);
-    m_st1   = std::make_unique<CPageStation1>(this);
-    m_st2   = std::make_unique<CPageStation2>(this);
-    m_stats = std::make_unique<CPageStats>(this);
-    m_model = std::make_unique<CPageModel>(this);
+    // 페이지별 생성을 독립적으로 수행 — 한 페이지가 실패해도 다른 페이지는 살림
+    // (PageStation1의 3분할 뷰 리소스/DDX 문제로 전체 앱이 다운되던 사례 방어)
+    auto create_safe = [this](const TCHAR* name, auto&& maker, int idd) -> bool {
+        try {
+            maker();
+            return true;
+        } catch (const std::exception& e) {
+            TRACE(_T("[MainTabDlg] %s 페이지 생성 예외: %hs\n"), name, e.what());
+        } catch (...) {
+            TRACE(_T("[MainTabDlg] %s 페이지 생성 실패 (IDD=%d)\n"), name, idd);
+        }
+        return false;
+    };
 
-    // Create: 실제 윈도우(HWND) 생성 — this(MainTabDlg)를 부모로 지정
-    m_home ->Create(IDD_PAGE_HOME,     this);
-    m_st1  ->Create(IDD_PAGE_STATION1, this);
-    m_st2  ->Create(IDD_PAGE_STATION2, this);
-    m_stats->Create(IDD_PAGE_STATS,    this);
-    m_model->Create(IDD_PAGE_MODEL,    this);
+    create_safe(_T("Home"),     [&]{ m_home  = std::make_unique<CPageHome>(this);     m_home ->Create(IDD_PAGE_HOME,     this); }, IDD_PAGE_HOME);
+    create_safe(_T("Station1"), [&]{ m_st1   = std::make_unique<CPageStation1>(this); m_st1  ->Create(IDD_PAGE_STATION1, this); }, IDD_PAGE_STATION1);
+    create_safe(_T("Station2"), [&]{ m_st2   = std::make_unique<CPageStation2>(this); m_st2  ->Create(IDD_PAGE_STATION2, this); }, IDD_PAGE_STATION2);
+    create_safe(_T("Stats"),    [&]{ m_stats = std::make_unique<CPageStats>(this);    m_stats->Create(IDD_PAGE_STATS,    this); }, IDD_PAGE_STATS);
+    create_safe(_T("Model"),    [&]{ m_model = std::make_unique<CPageModel>(this);    m_model->Create(IDD_PAGE_MODEL,    this); }, IDD_PAGE_MODEL);
 
-    // 초기 데이터 전달
+    // 초기 데이터 전달 (살아남은 페이지에만)
     PushUpdate();
 }
 
@@ -212,16 +229,17 @@ void CMainTabDlg::LayoutPages()
 }
 
 // PushUpdate: 최신 검사 데이터를 모든 페이지에 전달
+// 페이지 생성 실패 시 nullptr일 수 있으므로 null 체크 필수
 void CMainTabDlg::PushUpdate()
 {
     EnterCriticalSection(&m_csRecs);
     auto recs_copy = m_recs;  // 스냅샷 복사 후 락 해제
     LeaveCriticalSection(&m_csRecs);
 
-    m_home ->Update(recs_copy);
-    m_st1  ->Update(recs_copy);
-    m_st2  ->Update(recs_copy);
-    m_stats->Update(recs_copy);
+    if (m_home)  m_home ->Update(recs_copy);
+    if (m_st1)   m_st1  ->Update(recs_copy);
+    if (m_st2)   m_st2  ->Update(recs_copy);
+    if (m_stats) m_stats->Update(recs_copy);
 }
 
 // ============================================================================
@@ -411,8 +429,8 @@ void CMainTabDlg::OnTimer(UINT_PTR id)
             LeaveCriticalSection(&m_csRecs);
         }
         PushUpdate();
-        m_st1->Tick();
-        m_st2->Tick();
+        if (m_st1) m_st1->Tick();
+        if (m_st2) m_st2->Tick();
         InvalidateRect(ToolbarRect());
         InvalidateRect(StatusRect());
     }
@@ -679,8 +697,8 @@ LRESULT CMainTabDlg::OnNetNgPush(WPARAM, LPARAM lParam)
 
     // 모든 페이지 업데이트
     PushUpdate();
-    m_st1->Tick();
-    m_st2->Tick();
+    if (m_st1) m_st1->Tick();
+    if (m_st2) m_st2->Tick();
     InvalidateRect(StatusRect());
 
     // 힙에 할당된 JSON 문자열 해제 (메모리 누수 방지!)
@@ -701,7 +719,7 @@ LRESULT CMainTabDlg::OnNetOkCountPush(WPARAM, LPARAM lParam)
     int ngCount    = CPacketBuilder::ExtractInt(jsonA, "ng_count");
 
     // 홈 페이지의 스테이션별 OK/NG 표시에 반영
-    m_home->UpdateStationCount(stationId, okCount, ngCount);
+    if (m_home) m_home->UpdateStationCount(stationId, okCount, ngCount);
     TRACE(_T("[MainTabDlg] OK카운트 수신: station=%d ok=%d ng=%d\n"),
         stationId, okCount, ngCount);
 
