@@ -32,6 +32,10 @@ public:
     // 최근 NG 이력 id 조회 (0이면 NG 없음) — 데모 트리거에 사용
     int GetLastNgInspectionId() const;
 
+    // 특정 스테이션의 최신 NG 이력 id (0이면 없음)
+    // 로그인 직후 각 스테이션 페이지의 3장 이미지를 자동 로드할 때 사용.
+    int GetLastNgInspectionIdByStation(int station) const;
+
 protected:
     CNetworkClient* m_net = nullptr;
     std::vector<InspectionRecord> m_recs;

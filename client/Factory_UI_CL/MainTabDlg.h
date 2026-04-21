@@ -53,6 +53,10 @@ protected:
     CNetworkClient m_net;   // 메인서버와의 TCP 통신 담당
     bool m_bConnected;      // 서버 연결 상태
 
+    // 접속 후 한 번만 스테이션별 최신 NG 이미지 자동 로드했는지 (라이브 이벤트 전 초기 화면용)
+    // 접속 끊기면 false로 리셋되어 재접속 시 다시 로드.
+    bool m_initialImagesLoaded = false;
+
     // ── 탭 컨트롤 ────────────────────────────────────────────────────────
     CTabCtrl m_tab;         // 탭 UI 컨트롤
     int m_activeTab;        // 현재 활성 탭 인덱스 (0~4)

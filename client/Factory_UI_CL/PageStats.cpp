@@ -252,6 +252,21 @@ int CPageStats::GetLastNgInspectionId() const
     return 0;
 }
 
+// 특정 스테이션의 최신 NG 이력 id — m_recs 는 시간 역순이므로 첫 매칭이 최신.
+// NG가 없으면 해당 스테이션의 최신 OK 레코드로 폴백 (뭐라도 보여주기 위해).
+int CPageStats::GetLastNgInspectionIdByStation(int station) const
+{
+    // 1순위: 해당 스테이션의 최신 NG
+    for (const auto& r : m_recs) {
+        if (r.station == station && r.isNG) return r.id;
+    }
+    // 2순위: 해당 스테이션의 최신 레코드 (OK도 포함)
+    for (const auto& r : m_recs) {
+        if (r.station == station) return r.id;
+    }
+    return 0;
+}
+
 // ============================================================================
 // OnStatsRes — 통계 응답 수신 (프로토콜 131)
 // ============================================================================

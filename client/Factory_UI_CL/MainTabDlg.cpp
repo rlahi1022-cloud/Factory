@@ -642,6 +642,8 @@ LRESULT CMainTabDlg::OnNetConnected(WPARAM, LPARAM)
 LRESULT CMainTabDlg::OnNetDisconnectedMsg(WPARAM, LPARAM)
 {
     m_bConnected = false;
+    // 재접속 시 스테이션 초기 이미지 다시 로드되도록 플래그 리셋
+    m_initialImagesLoaded = false;
     TRACE(_T("[MainTabDlg] 서버 연결 끊김\n"));
 
     // 재접속 타이머 시작 (10초 후 재시도)
@@ -773,6 +775,23 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
     case factory_client::INSPECT_HISTORY_RES:
         // 검사 이력 응답 → 통계 페이지에 전달
         if (m_stats) m_stats->OnInspectHistoryRes(*pJson);
+
+        // 접속 직후 1회만: 스테이션별 최신 NG 이미지를 자동 요청하여
+        // Station1/2 페이지의 3개 뷰(Image / Anomaly Map / Pred Mask)에
+        // 서버 DB 기반 실데이터를 즉시 표시. 라이브 NG_PUSH가 오면 그걸로 덮어씀.
+        if (!m_initialImagesLoaded && m_stats) {
+            m_initialImagesLoaded = true;
+            int id1 = m_stats->GetLastNgInspectionIdByStation(1);
+            int id2 = m_stats->GetLastNgInspectionIdByStation(2);
+            if (id1 > 0) {
+                m_net.SendJson(CPacketBuilder::BuildInspectImageReq(id1));
+                TRACE(_T("[MainTabDlg] 스테이션1 초기 이미지 요청 | id=%d\n"), id1);
+            }
+            if (id2 > 0) {
+                m_net.SendJson(CPacketBuilder::BuildInspectImageReq(id2));
+                TRACE(_T("[MainTabDlg] 스테이션2 초기 이미지 요청 | id=%d\n"), id2);
+            }
+        }
         break;
 
     case factory_client::STATS_RES:
