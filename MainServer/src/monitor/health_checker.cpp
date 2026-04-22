@@ -1,9 +1,24 @@
 // ============================================================================
-// health_checker.cpp — ConnectionRegistry 기반 헬스체크 구현
+// health_checker.cpp — ConnectionRegistry 기반 헬스체크 (v0.11.0 동적 감지)
 // ============================================================================
-// ConnectionRegistry에 등록된 연결 수를 확인하여 AI서버 생존을 판정한다.
-// AI서버가 메인서버(9000)에 접속하면 ConnectionRegistry에 자동 등록되므로,
-// 별도 포트 ping 없이 연결 유무만으로 생존 확인이 가능하다.
+// 동작 원리:
+//   config.json 의 health_check.targets 에 정의된 각 서버(ai_inference_1/2,
+//   ai_training) 가 "현재 연결되어 있는지" 를 ConnectionRegistry 에 등록된
+//   server_type 으로 판단한다.
+//
+//   과거 방식은 target.ip 와 연결된 소켓의 출발지 IP 를 문자열 비교했으나,
+//   실제 배포 PC 가 변경되면 config 를 매번 수정해야 하는 불편이 있었다.
+//   v0.11.0 부터는 Router 가 수신 패킷에서 추론한 server_type 을
+//   ConnectionRegistry 에 태깅하고, HealthChecker 는 이 태그로 매칭한다.
+//
+// 매칭 정책 (우선순위):
+//   1) server_type == target.name (예: "ai_inference_1") 인 연결이 있으면 살아있음
+//   2) 위가 실패하면 target.ip 가 비어있지 않은 경우에 한해 IP prefix 매칭
+//      (구버전 호환 — 원한다면 config.json 에 IP 를 여전히 적을 수 있음)
+//
+// 로그 개선:
+//   생존 시 "서버 생존 | ai_inference_1 @ 10.x.x.x:PORT" 처럼 **실제 접속 IP**
+//   를 표시해서 어느 PC 에서 접속했는지 즉시 파악 가능.
 // ============================================================================
 #include "monitor/health_checker.h"
 #include "monitor/connection_registry.h"
@@ -20,7 +35,7 @@ HealthChecker::HealthChecker(EventBus& bus,
       targets_(std::move(targets)),
       interval_(interval),
       is_running_(false) {
-    // 초기 상태: 모든 서버를 장애(미연결)로 간주
+    // 초기 상태: 모든 서버를 장애(미연결) 로 간주 — 첫 tick 에서 실제 상태로 수렴
     for (const auto& t : targets_) {
         down_state_map_[t.name] = true;
     }
@@ -42,66 +57,77 @@ void HealthChecker::stop() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// run_loop — 주기적으로 모든 target 의 생존 여부를 판정하고 전환 시 이벤트 발행
+//
+// 각 tick 에서:
+//   1) ConnectionRegistry::get_all_connections_detailed() 로 현재 연결 스냅샷
+//   2) 각 target 에 대해:
+//      - server_type 매칭으로 연결된 addr 찾기
+//      - 없으면 (backward-compat) target.ip prefix 매칭 fallback
+//      - 생존 → 과거 down 이었다면 SERVER_RECOVERED 발행
+//      - 미연결 → 과거 up 이었다면 SERVER_DOWN 발행
+//
+// 주기 동적 조정:
+//   모든 target 이 정상 → 30 초, 하나라도 장애 → config 의 interval_ (5 초 기본)
+// ---------------------------------------------------------------------------
 void HealthChecker::run_loop() {
-    // is_running_.load(): atomic 변수를 안전하게 읽기
-    //   멀티스레드 환경에서 값을 원자적으로 가져옴 (컴파일러 최적화/캐시 무시)
     while (is_running_.load()) {
-        // ConnectionRegistry에서 현재 연결된 서버 목록 가져오기
-        //   instance() = 싱글턴 패턴 (전역 유일 인스턴스)
-        //   get_all_connections() = {주소→fd} 맵 복사본 반환 (스레드 안전)
-        auto connections = ConnectionRegistry::instance().get_all_connections();
+        auto connections = ConnectionRegistry::instance().get_all_connections_detailed();
         int connected_count = static_cast<int>(connections.size());
 
         for (const auto& target : targets_) {
-            // target.ip와 정확히 일치하는 연결이 있는지 확인
-            // addr 형식: "IP:PORT" (예: "10.10.10.130:45678")
-            // 과거 버그: find(ip) 사용 시 "10.10.10.130"이 "10.10.10.131"에도 매치됨
-            // 수정: 뒤에 ':'가 붙은 prefix로 검증 → 정확한 IP 매칭 보장
-            bool alive = false;
-            std::string ip_prefix = target.ip + ":";  // "10.10.10.130:"
-
-            // 모든 활성 연결 순회하며 해당 IP 찾기
-            for (const auto& [addr, fd] : connections) {
-                // rfind(prefix, 0) == 0: addr이 prefix로 시작하는지 검사 (starts_with 대용)
-                if (addr.rfind(ip_prefix, 0) == 0) {
-                    alive = true;  // 찾았으면 더 볼 필요 없음
+            // ── 1순위: server_type 매칭 (동적) ──────────────────────────
+            std::string matched_addr;
+            for (const auto& [addr, info] : connections) {
+                if (info.server_type == target.name) {
+                    matched_addr = addr;
                     break;
                 }
             }
 
+            // ── 2순위: target.ip 가 명시되어 있으면 IP prefix fallback ──
+            //   config.json 에서 "ip" 를 지워 두면 이 블록은 안 탐.
+            //   구버전 호환 목적으로만 유지.
+            if (matched_addr.empty() && !target.ip.empty()) {
+                std::string ip_prefix = target.ip + ":";
+                for (const auto& [addr, info] : connections) {
+                    if (addr.rfind(ip_prefix, 0) == 0) {
+                        matched_addr = addr;
+                        break;
+                    }
+                }
+            }
+
+            bool alive = !matched_addr.empty();
+
             if (alive) {
                 if (down_state_map_[target.name]) {
-                    // 장애 → 복구 전환
-                    log_main("서버 복구 감지 | %s (%s)",
-                             target.name.c_str(), target.ip.c_str());
-                    ServerStatusEvent ev{target.name, target.ip, target.port};
+                    // 장애 → 복구 전환 — SERVER_RECOVERED 이벤트 발행
+                    log_main("서버 복구 감지 | %s @ %s",
+                             target.name.c_str(), matched_addr.c_str());
+                    ServerStatusEvent ev{target.name, matched_addr, target.port};
                     event_bus_.publish(EventType::SERVER_RECOVERED, ev);
                     down_state_map_[target.name] = false;
                 }
-                log_main("서버 생존 확인 | %s (%s)",
-                         target.name.c_str(), target.ip.c_str());
+                log_main("서버 생존 확인 | %s @ %s",
+                         target.name.c_str(), matched_addr.c_str());
             } else {
                 if (!down_state_map_[target.name]) {
-                    // 정상 → 장애 전환
-                    log_err_main("서버 장애 감지 | %s (%s)",
-                                 target.name.c_str(), target.ip.c_str());
+                    // 정상 → 장애 전환 — SERVER_DOWN 이벤트 발행
+                    log_err_main("서버 장애 감지 | %s", target.name.c_str());
                     ServerStatusEvent ev{target.name, target.ip, target.port};
                     event_bus_.publish(EventType::SERVER_DOWN, ev);
                     down_state_map_[target.name] = true;
                 } else {
-                    log_err_main("서버 미연결 | %s (%s)",
-                                 target.name.c_str(), target.ip.c_str());
+                    log_err_main("서버 미연결 | %s", target.name.c_str());
                 }
             }
         }
 
         log_main("연결 현황 | 총 %d개 AI서버 접속 중", connected_count);
 
-        // 체크 주기 동적 조정:
-        //   모든 타겟이 연결됨 → 긴 주기 (30초) — 로그 노이즈 최소화
-        //   하나라도 미연결 → 짧은 주기 (5초) — 빠른 복구 감지
-        // TCP keepalive(60s 유휴 후 probe)가 실제 좀비 연결 감지를 담당하므로
-        // HealthChecker는 "등록 여부"만 확인하면 충분함.
+        // 체크 주기 동적 조정 — 정상일 땐 로그 노이즈 최소화
         bool all_alive = true;
         for (const auto& target : targets_) {
             if (down_state_map_[target.name]) { all_alive = false; break; }

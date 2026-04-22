@@ -1,8 +1,31 @@
 // ============================================================================
-// gui_notifier.cpp — EventBus 이벤트 → MFC 클라이언트 JSON 푸시 구현
+// gui_notifier.cpp — EventBus 이벤트 → MFC GUI 클라이언트 JSON 푸시
 // ============================================================================
-// 각 핸들러는 이벤트 페이로드를 JSON으로 직렬화한 뒤,
-// SessionManager::broadcast()를 통해 연결된 GUI 클라이언트에 전송한다.
+// 책임:
+//   시스템 내부에서 발생하는 이벤트(NG 검출, 학습 진행률, 서버 장애 등)를
+//   연결된 GUI 클라이언트(들)에 실시간 푸시로 전달한다.
+//
+// 데이터 흐름:
+//   [AI/Training Server] → PACKET_RECEIVED → Router → 각종 *_RECEIVED 이벤트
+//                                                       ↓
+//   [InspectionService] → GUI_PUSH_REQUESTED ────────────── [GuiNotifier]
+//   [HealthChecker]     → SERVER_DOWN / SERVER_RECOVERED ──┘      ↓
+//                                                            broadcast / broadcast_with_binary
+//                                                                  ↓
+//                                                          [SessionManager]
+//                                                                  ↓
+//                                                          모든 GUI 클라이언트
+//
+// 프로토콜 번호 (클라 방향):
+//   110  INSPECT_NG_PUSH         — NG 검출 + 원본/히트맵/마스크 3장 바이너리
+//   112  INSPECT_OK_COUNT_PUSH   — 양품/불량 누적 카운트
+//   154  RETRAIN_PROGRESS_PUSH   — 재학습 진행률/완료/실패 통합
+//   170  SERVER_HEALTH_PUSH      — 서버 down/recovered
+//
+// station_filter 동작:
+//   broadcast(msg, station)      — station_id 일치 또는 0(전체 구독) 인 세션에만
+//   broadcast(msg)               — 모든 세션에
+//   현재 클라는 station 선택 UI가 없어 전부 0(전체) 구독 상태.
 // ============================================================================
 #include "session/gui_notifier.h"
 #include "session/session_manager.h"
@@ -21,6 +44,14 @@ GuiNotifier::GuiNotifier(EventBus& bus)
     : event_bus_(bus) {
 }
 
+// ---------------------------------------------------------------------------
+// register_handlers — 관심 있는 EventType 을 EventBus 에 구독 등록
+// main.cpp 에서 서버 부팅 시 1회 호출. 이후 이벤트 발행은 EventBus 의 워커
+// 스레드 풀에서 비동기 디스패치된다.
+//
+// SERVER_DOWN / SERVER_RECOVERED 는 같은 on_server_status 로 라우팅하고
+// is_down 플래그로 분기 — 응답 JSON 이 1필드(status)만 다르므로 중복 제거.
+// ---------------------------------------------------------------------------
 void GuiNotifier::register_handlers() {
     event_bus_.subscribe(EventType::GUI_PUSH_REQUESTED,
                          [this](const std::any& p) { this->on_gui_push(p); });

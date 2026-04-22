@@ -1,8 +1,25 @@
 // ============================================================================
 // session_manager.cpp — GUI 클라이언트 세션 관리자 구현
 // ============================================================================
-// 싱글톤 패턴으로 전역 세션 맵을 관리하며, 모든 접근은 mutex로 보호한다.
-// 전송 프로토콜: [4바이트 빅엔디안 길이] + [JSON 본문]
+// 책임:
+//   접속한 모든 GUI 클라이언트 세션을 "fd → GuiSession" 맵으로 관리하고,
+//   JSON 브로드캐스트/유니캐스트를 제공한다.
+//
+// 싱글톤 이유:
+//   - GuiTcpListener(accept 스레드) 에서 등록/해제
+//   - GuiRouter(핸들러 스레드) 에서 사용자 정보 설정 + find_fd_by_username
+//   - GuiNotifier(EventBus 워커 스레드) 에서 브로드캐스트
+//   - AckSender 등도 간접 접근 가능
+//   → 여러 스레드에서 공유되는 프로세스 단일 상태이므로 싱글톤.
+//
+// 스레드 안전성:
+//   - 모든 public 메서드 진입부에서 std::mutex 획득
+//   - 예외: broadcast/broadcast_with_binary 는 "스냅샷 후 lock 해제 → send"
+//     패턴으로, 느린 클라이언트 때문에 다른 세션이 블로킹되지 않도록 분리
+//   - 이전 버그 기록: mutex 보유한 채 send() 하다 한 느린 클라가 로그인 전체 마비
+//
+// 와이어 포맷:
+//   [4바이트 Big-Endian JSON 길이] + [JSON 본문] (+ [바이너리 페이로드])
 // ============================================================================
 #include "session/session_manager.h"
 
@@ -15,11 +32,20 @@
 
 namespace factory {
 
+// ---------------------------------------------------------------------------
+// instance — Meyers' Singleton (C++11 이후 thread-safe)
+// 함수 내부 static 은 초기화가 보장된 1회 원자적 수행 → 경쟁 없음.
+// ---------------------------------------------------------------------------
 SessionManager& SessionManager::instance() {
     static SessionManager mgr;
     return mgr;
 }
 
+// ---------------------------------------------------------------------------
+// register_session — 새 TCP 연결이 accept 된 직후 호출
+// 이 시점엔 username 을 아직 모르므로 client_name 은 비어있다.
+// LOGIN_REQ 처리 후 set_client_info 가 username 을 채운다.
+// ---------------------------------------------------------------------------
 void SessionManager::register_session(int client_fd, const std::string& remote_addr) {
     std::lock_guard<std::mutex> lock(mutex_);
     GuiSession session{};
@@ -30,6 +56,11 @@ void SessionManager::register_session(int client_fd, const std::string& remote_a
             remote_addr.c_str(), sessions_.size());
 }
 
+// ---------------------------------------------------------------------------
+// unregister_session — TCP 연결 종료 시 호출 (handle_client 루프 종료 경로)
+// 맵에서만 제거 — 소켓 close 는 호출자 책임 (GuiTcpListener::handle_client).
+// 없는 fd 를 호출해도 안전 (find 후 분기).
+// ---------------------------------------------------------------------------
 void SessionManager::unregister_session(int client_fd) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = sessions_.find(client_fd);
@@ -40,6 +71,11 @@ void SessionManager::unregister_session(int client_fd) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// set_client_info — 로그인 성공 후 username/구독 station 기록
+// subscribed_station: 0=전체 구독, 1=Station1 만, 2=Station2 만
+// 현재 UI 는 station 선택 없음이라 항상 0 이 들어옴 (미래 확장 여지).
+// ---------------------------------------------------------------------------
 void SessionManager::set_client_info(int client_fd,
                                      const std::string& client_name,
                                      int subscribed_station) {
@@ -130,6 +166,12 @@ void SessionManager::broadcast_with_binary(const std::string& json_message,
     }
 }
 
+// ---------------------------------------------------------------------------
+// send_to — 특정 fd 에만 유니캐스트 전송 (broadcast 의 특수 케이스)
+// 현재 사용처: 로그인 직후 서버 상태(HEALTH_PUSH) 초기 동기화.
+// 주의: mutex 보유 상태로 send_json 호출 → 일반적으로 비권장이나,
+//       초기 동기화 메시지는 짧고 송신 대상이 방금 로그인한 한 명이라 영향 미미.
+// ---------------------------------------------------------------------------
 bool SessionManager::send_to(int client_fd, const std::string& json_message) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = sessions_.find(client_fd);
@@ -137,11 +179,17 @@ bool SessionManager::send_to(int client_fd, const std::string& json_message) {
     return send_json(client_fd, json_message);
 }
 
+// GuiTcpListener::run_accept_loop 에서 최대 접속 수 제한 검사용
 std::size_t SessionManager::session_count() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return sessions_.size();
 }
 
+// ---------------------------------------------------------------------------
+// find_fd_by_username — 중복 로그인 방지용: 같은 사용자명의 기존 fd 찾기
+// 발견 시 GuiRouter 가 force_close 로 끊고 새 세션을 승리시키는 "last-login-wins"
+// 정책을 구현한다. (VPN/IP 변경, 멀티 PC 로그인 시 새 세션 우선)
+// ---------------------------------------------------------------------------
 int SessionManager::find_fd_by_username(const std::string& username) const {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& [fd, session] : sessions_) {
@@ -150,18 +198,30 @@ int SessionManager::find_fd_by_username(const std::string& username) const {
     return -1;
 }
 
+// fd → "IP:PORT" 조회. 로그용/진단용.
 std::string SessionManager::get_remote_addr(int client_fd) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = sessions_.find(client_fd);
     return (it != sessions_.end()) ? it->second.remote_addr : std::string{};
 }
 
+// ---------------------------------------------------------------------------
+// force_close — 소켓을 shutdown(SHUT_RDWR) 으로 깨워 자연 종료 유도
+//
+// 왜 close 가 아니라 shutdown 인가:
+//   handle_client 스레드가 recv 에서 블로킹 중일 때 close() 하면 fd 번호가
+//   재사용되어 다른 fd 와 충돌할 수 있음. shutdown 은 fd 를 닫지 않고 I/O 방향만
+//   차단 → recv 가 0/에러 반환 → handle_client 루프 탈출 → unregister → close
+//   순서로 안전하게 정리됨.
+// 사용처:
+//   - 중복 로그인 감지 시 (기존 세션 강제 정리)
+// ---------------------------------------------------------------------------
 void SessionManager::force_close(int client_fd) {
-    // 소켓 강제 종료 → handle_client의 recv가 실패하며 자연스럽게 unregister됨
     ::shutdown(client_fd, SHUT_RDWR);
     log_clt("세션 강제 종료 | fd=%d (중복 로그인)", client_fd);
 }
 
+// 4바이트 BE 길이 + JSON 본문 프레이밍 송신 (partial send 재시도 포함)
 bool SessionManager::send_json(int fd, const std::string& json_body) {
     return send_json_frame(fd, json_body);
 }

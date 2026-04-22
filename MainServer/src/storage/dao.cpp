@@ -1,8 +1,29 @@
 // ============================================================================
-// dao.cpp — 테이블별 DAO 구현
+// dao.cpp — 테이블별 DAO 구현 (Data Access Object)
 // ============================================================================
-// ConnectionPool에서 PooledConnection(RAII)으로 커넥션을 획득하여 사용.
-// 스코프를 벗어나면 자동으로 풀에 반납된다.
+// 책임:
+//   MariaDB 테이블 4개에 대한 SQL 래퍼:
+//     InspectionDao  → inspections       (모든 검사 결과)
+//     AssemblyDao    → assemblies        (Station2 조립 상세)
+//     ModelDao       → models            (배포된 모델 이력)
+//     UserDao        → users             (로그인 계정)
+//     StatsDao       → inspections (조회 + 집계)
+//
+// 공통 설계:
+//   - Prepared Statement 사용 → SQL Injection 원천 차단
+//   - ConnectionPool 에서 PooledConnection(RAII) 으로 커넥션 획득.
+//     스코프 벗어나면 자동으로 풀에 반납 → 누수 방지.
+//   - 실패 시 -1/false/빈 객체 반환 + log_err_db 기록.
+//
+// 타임스탬프 처리:
+//   AiServer 가 ISO8601 ("2026-04-20T10:36:31.916+00:00") 로 보내지만
+//   MySQL DATETIME 은 공백 구분자를 요구하므로 iso8601_to_mysql 로 변환.
+//
+// 주의 사항:
+//   - 일부 컬럼(bottle_id, model_id) 은 NULL 허용 — AI 시스템이 해당 필드를
+//     보내지 않아도 삽입 가능하도록 의도적으로 느슨하게 설정.
+//   - list_all 등 대량 조회는 LIMIT 없이 전체 반환 — 대상 테이블이
+//     작을 때만 안전 (models, users 등).
 // ============================================================================
 #include "storage/dao.h"
 #include "storage/password_hash.h"
@@ -16,7 +37,22 @@
 namespace factory {
 
 // ============================================================================
-// InspectionDao
+// InspectionDao — inspections 테이블 (모든 검사 결과 저장)
+// ---------------------------------------------------------------------------
+// 스키마 (요약):
+//   id              PK AUTO_INCREMENT
+//   inspection_id   VARCHAR — 추론서버 발급 유니크 ID
+//   station_id      TINYINT (1=입고, 2=조립)
+//   result          ENUM('OK','NG')
+//   defect_type     VARCHAR NULL
+//   confidence      FLOAT
+//   image_path      VARCHAR NULL (원본 JPEG)
+//   heatmap_path    VARCHAR NULL (Anomaly Heatmap)
+//   pred_mask_path  VARCHAR NULL (Pred Mask)
+//   model_id        INT NULL — 현재 AI가 미전송으로 항상 NULL (DB_README 참조)
+//   bottle_id       INT NULL
+//   latency_ms      INT
+//   created_at      DATETIME
 // ============================================================================
 
 // ISO8601 → MySQL DATETIME 변환
@@ -149,7 +185,22 @@ long long InspectionDao::insert(const InspectionEvent& ev,
 }
 
 // ============================================================================
-// AssemblyDao
+// AssemblyDao — assemblies 테이블 (Station2 조립검사 전용 상세)
+// ---------------------------------------------------------------------------
+// inspection_id FK 로 inspections 와 1:1 연결.
+// Station2 의 YOLO 결과(캡/라벨/액면) 및 PatchCore 점수를 저장.
+//
+// 스키마 (요약):
+//   inspection_id   FK → inspections.id
+//   cap_ok          BOOLEAN (뚜껑 정상?)
+//   label_ok        BOOLEAN (라벨 정상?)
+//   fill_ok         BOOLEAN (충전량 정상?)
+//   patchcore_score FLOAT   (라벨 표면 이상 점수)
+//   detections_json TEXT    (YOLO 디텍션 배열 원본 JSON)
+//
+// 가벼운 JSON 필드 추출 유틸 (extract_int/double/array) 이 클래스 내부에
+// 따로 정의되어 있음 — Router 의 것과 기능은 유사하나 "배열 값" 추출(extract_array)
+// 이 추가되어 있어 YOLO detections 원문 저장에 사용.
 // ============================================================================
 
 int AssemblyDao::extract_int(const std::string& json, const std::string& key) {
@@ -246,7 +297,21 @@ long long AssemblyDao::insert(const InspectionEvent& ev, long long inspection_id
 }
 
 // ============================================================================
-// ModelDao
+// ModelDao — models 테이블 (학습된 모델 이력 + 배포 상태)
+// ---------------------------------------------------------------------------
+// 스키마 (요약):
+//   id           PK AUTO_INCREMENT
+//   station_id   TINYINT (1 or 2)
+//   model_type   VARCHAR ('PatchCore' | 'YOLO11')
+//   version      VARCHAR (예: 'v20260422_1530')
+//   accuracy     FLOAT   (AUROC 또는 mAP50)
+//   model_path   VARCHAR (메인서버 로컬 저장 경로)
+//   deployed_at  DATETIME (NOW())
+//   is_active    TINYINT (1=활성, 0=과거 버전)
+//
+// insert() 는 학습 완료 시 호출되어 is_active=1 로 삽입.
+// 같은 (station_id, model_type) 의 과거 행을 0 으로 내리는 로직은 현재 없음 —
+// 필요 시 쿼리 추가 (UPDATE models SET is_active=0 WHERE station_id=? AND model_type=? AND id<>LAST_INSERT_ID()).
 // ============================================================================
 
 bool ModelDao::insert(const TrainCompleteEvent& ev) {
@@ -339,7 +404,23 @@ std::vector<ModelDao::ModelInfo> ModelDao::list_all() {
 }
 
 // ============================================================================
-// UserDao
+// UserDao — users 테이블 (로그인 계정)
+// ---------------------------------------------------------------------------
+// 스키마 (요약):
+//   id              PK AUTO_INCREMENT
+//   employee_id     VARCHAR UNIQUE
+//   username        VARCHAR UNIQUE
+//   password_hash   VARCHAR(60)   — bcrypt "$2b$12$..." 60자
+//   role            VARCHAR       — 'admin' / 'user' 등
+//   created_at      DATETIME
+//   last_login_at   DATETIME NULL
+//
+// 저장 시 평문 비밀번호는 PasswordHash::hash() 로 변환. verify 는 stored_hash 를
+// salt 로 재사용하여 crypt_r 재실행 → 결과 비교 (상수시간 비교).
+//
+// 보안:
+//   - username 자체는 case-sensitive 로 비교 → 대/소문자 섞여도 서로 다른 계정.
+//   - last_login_at 은 로그인 성공 시마다 UPDATE — 세션 활동 추적용.
 // ============================================================================
 
 UserDao::UserInfo UserDao::find_by_username(const std::string& username) {
@@ -547,7 +628,20 @@ void UserDao::update_last_login(const std::string& username) {
 }
 
 // ============================================================================
-// StatsDao
+// StatsDao — inspections 테이블의 집계/조회 전담
+// ---------------------------------------------------------------------------
+// 다른 DAO 와 다르게 쓰기(INSERT/UPDATE) 는 없고 **읽기 전용**.
+// CPageStats / CPageHome 의 대시보드, INSPECT_HISTORY 검색 등을 지원.
+//
+// 주요 메서드:
+//   get_stats()   — 기간별 OK/NG 집계 + 스테이션별 집계 + 평균 지연시간
+//                   (단일 집계 SQL 1회 수행 — 행 단위 루프 없음)
+//   get_history() — 기간/스테이션 필터로 개별 검사 row 목록 (LIMIT 적용)
+//   get_by_id()   — 이미지 상세보기용 단건 조회 (inspection_id 로 경로 조회)
+//
+// 입력 검증:
+//   is_valid_date (security 모듈) 로 date_from/date_to 포맷 검증 —
+//   SQL Injection 은 prepared statement 로 차단되지만 포맷 오류 조기 거부 목적.
 // ============================================================================
 
 using factory::security::is_valid_date;
