@@ -42,7 +42,12 @@ class StationConfig:
     main_server_port: int = 9000                  # 운용서버의 TCP 포트 번호
 
     # ── Pylon 카메라 설정 ──
-    camera_serial: str = ""                       # Basler Pylon 카메라 시리얼 번호 (빈 값이면 첫 번째 카메라)
+    # camera_serial  : 특정 카메라 시리얼 번호(Station별 고정). 빈 값이면 첫 번째 발견 카메라 사용.
+    # camera_enabled : false 이면 더미 이미지 모드(랜덤 np.ndarray) — 개발/CI 환경용.
+    # camera_fps     : grab 주기(초). 0.5 = 2fps.
+    camera_serial: str = ""
+    camera_enabled: bool = True
+    camera_fps: float = 2.0
 
     # ── AI 모델 경로 ──
     model_path: str = ""                          # 메인 모델 파일 경로 (Station1: PatchCore .ckpt / Station2: YOLO11 .pt)
@@ -121,4 +126,9 @@ class StationConfig:
             grab_queue_max=ConfigLoader.get_int(f"{prefix}.grab_queue_max", 16),
             inference_workers=ConfigLoader.get_int(f"{prefix}.inference_workers", 1),
             sender_workers=ConfigLoader.get_int(f"{prefix}.sender_workers", 1),
+
+            # 카메라 설정 (v0.11.0: 실제 Pylon 연동 — 미연결/라이브러리 없으면 더미로 폴백)
+            camera_serial=ConfigLoader.get(f"{prefix}.camera_serial", ""),
+            camera_enabled=ConfigLoader.get_bool(f"{prefix}.camera_enabled", True),
+            camera_fps=ConfigLoader.get_float(f"{prefix}.camera_fps", 2.0),
         )

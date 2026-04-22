@@ -1,7 +1,26 @@
 // ============================================================================
-// db_manager.cpp — DB 이벤트 핸들러 구현 (DAO 기반)
+// db_manager.cpp — DB 이벤트 핸들러 (DAO 기반)
 // ============================================================================
-// DAO에 DB 작업을 위임하고, 이벤트 발행(ACK/NACK/MODEL_RELOAD)만 담당한다.
+// 책임:
+//   EventBus 의 DB 관련 이벤트를 받아 DAO 에 위임하고, 결과에 따라 후속 이벤트
+//   (ACK/NACK/MODEL_RELOAD_REQUESTED) 를 발행한다.
+//
+// 구독 이벤트:
+//   DB_WRITE_REQUESTED      → InspectionEvent 를 inspections 테이블에 INSERT
+//                             (Station2 는 assemblies 테이블에도 추가 INSERT)
+//   TRAIN_COMPLETE_RECEIVED → (의도적으로 구독하지 않음)
+//                             TrainService/TrainHandler 가 이미 동일 처리를 하므로
+//                             중복 INSERT/ACK 를 방지하기 위해 여기서는 건너뜀.
+//                             과거에 중복 구독으로 이중 INSERT 버그가 있었음.
+//
+// 발행 이벤트:
+//   DB_WRITE_COMPLETED (성공) → AckSender 가 ACK 회신
+//   ACK_SEND_REQUESTED (실패) → AckSender 가 NACK 회신
+//   MODEL_RELOAD_REQUESTED    → AckSender 가 추론서버에 새 모델 전송
+//
+// 트랜잭션 경계:
+//   현재는 단일 INSERT 단위로 트랜잭션 보호 없음. 추론-결과와 assembly-결과를
+//   같은 트랜잭션에 묶지 않음 — 정책상 Station2 에서 한쪽만 성공해도 로그만 남김.
 // ============================================================================
 #include "storage/db_manager.h"
 #include "Protocol.h"
@@ -27,12 +46,24 @@ void DbManager::register_handlers() {
     // 여기서 중복 구독하면 이중 DB INSERT + 이중 ACK 발생
 }
 
-// ── 검사 결과 DB 저장 ──
+// ---------------------------------------------------------------------------
+// on_db_write — 검사 결과(InspectionEvent) 를 DB 에 저장
+//
+// 흐름:
+//   1) inspection_dao_.insert() → inspections 테이블에 기본 결과 INSERT
+//      - 반환 auto_increment id 를 이후 assembly 참조 FK 로 사용
+//   2) Station2 이면 assembly_dao_.insert() 로 assemblies 테이블에 추가 INSERT
+//      - cap_ok/label_ok/fill_ok 등 조립 특화 필드
+//      - 실패해도 NACK 보내지 않음 — main 검사결과는 이미 저장됐으므로
+//   3) 성공 시 DB_WRITE_COMPLETED 발행 → AckSender 가 추론서버에 ACK
+//   4) 실패 시 ACK_SEND_REQUESTED(ack_ok=false) 발행 → 추론서버에 NACK
+// ---------------------------------------------------------------------------
 void DbManager::on_db_write(const std::any& payload) {
     const auto& ev = std::any_cast<const InspectionEvent&>(payload);
 
     long long inspection_id = inspection_dao_.insert(ev);
     if (inspection_id < 0) {
+        // 메인 검사결과 저장 실패 — NACK 로 추론서버가 재전송 판단하도록
         log_err_db("INSERT inspections 실패");
         AckSendEvent nack{};
         nack.protocol_no   = static_cast<int>(
@@ -45,17 +76,33 @@ void DbManager::on_db_write(const std::any& payload) {
         return;
     }
 
-    // Station2는 assemblies 테이블에 추가 저장
+    // Station2 (조립검사) 전용 상세 필드를 별도 테이블에 저장
+    // 실패해도 메인 inspections 는 이미 성공했으므로 경고만 남기고 계속 진행
     if (ev.station_id == static_cast<int>(StationId::ASSEMBLY)) {
         if (assembly_dao_.insert(ev, inspection_id) < 0) {
             log_err_db("INSERT assemblies 실패");
         }
     }
 
+    // DB_WRITE_COMPLETED → AckSender::on_db_write_completed 가 ACK 전송
     event_bus_.publish(EventType::DB_WRITE_COMPLETED, ev);
 }
 
-// ── 학습 완료 → 모델 저장 + DB INSERT + 리로드 요청 ──
+// ---------------------------------------------------------------------------
+// on_train_complete — (현재 비활성) 학습 완료 후처리
+//
+// 중요: 이 메서드는 현재 register_handlers 에서 구독되지 않음.
+//       TrainHandler/TrainService 가 동일한 처리(파일 저장 + DB INSERT +
+//       ACK + MODEL_RELOAD_REQUESTED)를 이미 담당하므로 여기서는 비활성.
+//       역사적 참고용 + 만약 Service 레이어로 옮기지 않은 배포본에서
+//       fallback 으로 쓰일 수 있음.
+//
+// 흐름(활성화 시):
+//   1) model_bytes 를 ./storage/models/station{N}/{version}.{ext} 로 기록
+//   2) models 테이블에 메타데이터 INSERT
+//   3) 학습서버에 TRAIN_COMPLETE_ACK
+//   4) 추론서버에 MODEL_RELOAD_REQUESTED (모델 바이너리 동봉)
+// ---------------------------------------------------------------------------
 void DbManager::on_train_complete(const std::any& payload) {
     const auto& ev = std::any_cast<const TrainCompleteEvent&>(payload);
 
@@ -63,7 +110,8 @@ void DbManager::on_train_complete(const std::any& payload) {
               ev.model_type.c_str(), ev.version.c_str(), ev.accuracy,
               ev.model_bytes.size());
 
-    // 모델 파일 바이너리를 로컬에 저장
+    // ── 모델 파일 바이너리를 로컬에 저장 ──
+    // 확장자는 학습서버가 보낸 원본 model_path 에서 추출 (.ckpt / .pt 등)
     std::string saved_path;
     if (!ev.model_bytes.empty()) {
         std::string ext = ".bin";

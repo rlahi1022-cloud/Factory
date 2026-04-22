@@ -68,6 +68,10 @@ from Common.SerialCtrl import SerialCtrl
 # 패킷을 보내고 응답(ACK)을 받거나, 일방적으로 전송(fire-and-forget)하는 기능을 제공합니다.
 from Common.TcpClient import TcpClient
 
+# PylonCamera: Basler 산업용 카메라 래퍼. pypylon 미탑재/미연결 시 is_open=False
+# 로 떨어지므로 호출자가 더미 이미지로 폴백할 수 있다. (v0.11.0)
+from Common.PylonCamera import PylonCamera
+
 
 # 이 모듈 전용 로거(logger)를 생성합니다.
 # __name__은 현재 모듈 이름(예: "Common.StationRunner")이 되어,
@@ -229,6 +233,12 @@ class StationRunner:
         # NG 판정 시 아두이노에 명령을 보내 물리적 동작(서보모터 리젝트, LED, 부저)을 수행합니다.
         self._serial_ctrl = SerialCtrl(config.arduino_port, config.arduino_baud)
 
+        # Basler Pylon 카메라 핸들 (v0.11.0).
+        # config.camera_enabled 가 False 이거나 라이브러리/장치가 없으면 open() 에서
+        # False 를 반환해 _run_grab_producer 가 자동으로 더미 이미지 모드로 폴백한다.
+        # 실제 배포(.120 PC) 에서는 카메라가 연결되어 있으므로 진짜 프레임을 사용.
+        self._camera = PylonCamera(serial=getattr(config, "camera_serial", ""))
+
         # grab_queue: 카메라 촬영 이미지(GrabItem)를 저장하는 비동기 큐입니다.
         # maxsize를 설정하면 큐가 가득 찼을 때 프로듀서가 대기합니다(백프레셔).
         # 백프레셔(backpressure): 소비자가 처리 못 할 만큼 데이터가 쌓이지 않도록
@@ -296,6 +306,19 @@ class StationRunner:
         # 아두이노와의 시리얼 포트를 엽니다. 이후 NG 판정 시 명령을 보낼 수 있게 됩니다.
         self._serial_ctrl.open()
 
+        # Basler Pylon 카메라를 엽니다 (v0.11.0).
+        #   - config.camera_enabled=False 또는 pypylon 미탑재 → 더미 모드
+        #   - 장치는 있지만 open 실패(타 프로세스 점유 등) → 더미 모드 폴백
+        # 실패해도 예외는 던지지 않고 _camera.is_open 플래그로만 전달 →
+        # _run_grab_producer 가 매 프레임 이 플래그를 확인해 실/더미 분기.
+        if getattr(self._config, "camera_enabled", True):
+            if self._camera.open():
+                logger.info("Pylon 카메라 사용 — 실제 프레임 grab 시작")
+            else:
+                logger.warning("Pylon 카메라 open 실패 — 더미 이미지 모드로 동작")
+        else:
+            logger.info("config.camera_enabled=false — 더미 이미지 모드")
+
         # 현재 실행 중인 asyncio 이벤트 루프를 가져옵니다.
         # 이벤트 루프: 비동기 작업들을 스케줄링하고 실행하는 핵심 엔진입니다.
         # create_task()로 코루틴을 이벤트 루프에 등록할 때 필요합니다.
@@ -361,39 +384,55 @@ class StationRunner:
     # =====================================================================
 
     # -----------------------------------------------------------------------
-    # _run_grab_producer() 메서드
+    # _run_grab_producer() 메서드 — 카메라 프레임 생산자 (v0.11.0)
     # -----------------------------------------------------------------------
-    # 목적: 카메라에서 이미지를 촬영하여 grab_queue에 넣는 생산자(Producer) 코루틴입니다.
-    #       파이프라인의 첫 번째 단계로, 데이터의 원천(source)입니다.
-    # 매개변수: 없음
-    # 반환값: None
-    # 참고: 현재는 TODO 상태로 더미(dummy) 이미지를 사용합니다.
-    #       실제 구현 시 Basler Pylon SDK 등을 사용하여 카메라에서 프레임을 가져옵니다.
+    # 동작:
+    #   self._camera.is_open == True  → Basler Pylon 에서 실제 프레임 grab
+    #   self._camera.is_open == False → 더미 이미지(랜덤 ndarray) 사용 — 개발/CI 용
+    #
+    # 프레임 레이트:
+    #   config.camera_fps (기본 2.0 fps) 로 sleep 주기 결정.
+    #   Pylon 의 GrabStrategy_LatestImageOnly 조합으로 지연 누적 방지.
+    #
+    # 블로킹 주의:
+    #   PylonCamera.grab() 은 동기 블로킹 함수이므로 이벤트 루프를 막지 않도록
+    #   loop.run_in_executor 로 스레드 풀에 위임한다. 그 사이 다른 코루틴
+    #   (sender/reporter/추론) 은 정상 동작.
     # -----------------------------------------------------------------------
     async def _run_grab_producer(self) -> None:
-        # CancelledError를 잡아서 조용히 종료합니다.
-        # try/except 없이 CancelledError가 전파되면 상위에서 에러로 처리될 수 있습니다.
+        loop = asyncio.get_running_loop()
+        import numpy as _np
+
+        # config 의 camera_fps 를 sleep 주기(초) 로 변환. 0 이하면 최저 보장값 사용.
+        fps = max(0.1, float(getattr(self._config, "camera_fps", 2.0)))
+        period = 1.0 / fps
+
         try:
-            # _is_running이 True인 동안 계속 반복합니다.
-            # stop()이 호출되면 False가 되어 루프를 빠져나갑니다.
             while self._is_running:
-                # TODO: 실제로는 Pylon 카메라에서 BGR ndarray 이미지를 가져와야 합니다.
-                # 현재는 개발/테스트용으로 랜덤 더미 이미지를 생성합니다.
-                # None이면 추론이 스킵되므로, numpy 배열로 만들어야 실제 추론이 실행됩니다.
-                import numpy as _np
-                dummy_image = _np.random.randint(100, 200, (224, 224, 3), dtype=_np.uint8)
-                # 프레임 일련번호를 1 증가시킵니다. 각 프레임을 고유하게 식별하기 위함입니다.
+                frame: Optional[_np.ndarray] = None
+
+                if self._camera.is_open:
+                    # 실제 카메라에서 1프레임 — 블로킹이므로 executor 위임
+                    frame = await loop.run_in_executor(None, self._camera.grab, 1000)
+                    if frame is None:
+                        # 일시적 grab 실패는 로그만 남기고 다음 주기에 재시도
+                        logger.warning("카메라 grab 실패 — 이번 프레임 건너뜀")
+                        await asyncio.sleep(period)
+                        continue
+                else:
+                    # 카메라 미연결/미지원 → 더미 이미지(랜덤 BGR uint8)
+                    # 실제 추론을 방해하지 않도록 None 대신 ndarray 로 생성.
+                    frame = _np.random.randint(100, 200, (224, 224, 3), dtype=_np.uint8)
+
                 self._frame_seq += 1
-                # GrabItem 객체를 생성합니다. 프레임 번호, 이미지, 촬영 시각을 담습니다.
-                item = GrabItem(self._frame_seq, dummy_image, time.time())
-                # grab_queue에 GrabItem을 넣습니다.
-                # 큐가 가득 차면(maxsize) 공간이 생길 때까지 여기서 대기합니다(백프레셔).
+                item = GrabItem(self._frame_seq, frame, time.time())
+
+                # 큐가 가득 차면(maxsize) 공간이 생길 때까지 대기(백프레셔).
                 await self._grab_queue.put(item)
-                # 0.5초 동안 대기합니다. 카메라 촬영 주기를 시뮬레이션합니다.
-                # 실제 구현에서는 카메라 트리거 신호에 맞춰 동작하므로 sleep이 바뀔 수 있습니다.
-                await asyncio.sleep(0.5)
-        # CancelledError: stop()에서 task.cancel()을 호출하면 발생합니다.
-        # pass로 무시하여 코루틴이 조용히 종료됩니다.
+
+                # 주기 조정 — Pylon 은 자체 trigger 속도가 빠르지만 추론 처리량에 맞춤
+                await asyncio.sleep(period)
+
         except asyncio.CancelledError:
             pass
 
@@ -956,3 +995,9 @@ class StationRunner:
         await self._tcp_client.close()
         # 아두이노와의 시리얼 포트를 닫습니다. 동기 방식으로 정리합니다.
         self._serial_ctrl.close()
+        # Pylon 카메라 핸들을 닫습니다 (v0.11.0).
+        # close() 내부에서 예외를 삼키므로 shutdown 경로의 안정성이 보장됩니다.
+        try:
+            self._camera.close()
+        except Exception as exc:
+            logger.warning("카메라 close 중 예외(무시): %s", exc)

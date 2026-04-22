@@ -1,17 +1,37 @@
 // ============================================================================
-// inspection_service.cpp — 검사 결과 처리 서비스 구현
+// inspection_service.cpp — NG 검사 결과 처리 서비스 (v0.9.0+ 3장 이미지)
 // ============================================================================
-// 처리 순서 (v0.9.0+, 3장 이미지 저장):
-//   1. validate — 필드 유효성 검사
-//   2. 이미지 저장 — 원본/히트맵/마스크 최대 3장 (NG일 때만)
-//   3. inspections INSERT — 세 경로 컬럼까지 포함하여 기록
-//   4. Station2면 assemblies INSERT — 조립 상세 기록
+// 책임:
+//   AI 추론서버가 보낸 NG(Station1_NG=1000 / Station2_NG=1002) 패킷의
+//   후처리 단일 진입점. validate + 이미지 저장 + DB INSERT 를 원자적 흐름으로
+//   처리하고 결과를 InspectionResult 로 반환.
 //
-// 실패 시 롤백 전략:
-//   - validate 실패 → 바로 반환
-//   - 일부 이미지 저장 실패 → 해당 경로만 비우고 DB는 계속 진행
-//   - inspections INSERT 실패 → 이미 저장된 이미지 파일은 고아 파일로 남음(무시)
-//   - assemblies INSERT 실패 → inspection은 이미 저장됨 (로그만)
+// 처리 순서:
+//   1. validate()           — station_id/result/score/latency/크기 검증
+//   2. save_blob() × 3      — 원본/히트맵/마스크 JPEG/PNG 저장 (NG 만, 각기 개별)
+//   3. inspection_dao_.insert — inspections 테이블 INSERT (세 경로 포함)
+//   4. Station2 면 assembly_dao_.insert — assemblies 테이블 보충 INSERT
+//
+// 실패 시 롤백 정책 (의도적 관대 처리):
+//   - validate 실패 → 즉시 반환 (아무 작업도 하지 않음)
+//   - 이미지 저장 일부 실패 → 해당 경로만 비운 채 DB 는 계속 진행
+//                         → "결과는 있지만 이미지가 없는" row 가 남을 수 있음
+//   - inspections INSERT 실패 → 이미 저장된 이미지는 고아 파일로 남김 (나중에 청소)
+//   - assemblies INSERT 실패 → inspections 는 이미 저장됐으므로 로그만
+//
+// 관대한 롤백 이유:
+//   실시간 검사 파이프라인이라 처리 지연 < 데이터 완전성. 소량의 고아 파일은
+//   배치 청소 스크립트에서 정리. 반대 방향 "DB 에만 있고 파일 없음" 도 허용 —
+//   클라이언트는 이미지가 없으면 size=0 으로 빈 프레임을 받음.
+//
+// 이미지 저장 경로:
+//   {image_root}/station{N}/{YYYYMMDD}/ng_{epoch_ms}_{suffix}.{ext}
+//     예) ./storage/station2/20260422/ng_1745310000123_heatmap.png
+//   세 이미지가 같은 epoch_ms 를 공유 → 파일명만 봐도 한 검사 결과임을 식별.
+//
+// 보안:
+//   이미지 50MB 상한, 경로 traversal 미사용 (상대경로 조립만).
+//   디스크 여유 100MB 미만 시 저장 거부 (DoS/디스크 풀 방어).
 // ============================================================================
 #include "service/inspection_service.h"
 #include "core/logger.h"
