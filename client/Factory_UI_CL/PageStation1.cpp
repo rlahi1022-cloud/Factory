@@ -17,12 +17,16 @@
 // ============================================================================
 #include "pch.h"
 #include "PageStation1.h"
+#include "NetworkClient.h"
+#include "PacketBuilder.h"
 
 IMPLEMENT_DYNAMIC(CPageStation1, CDialogEx)
 BEGIN_MESSAGE_MAP(CPageStation1, CDialogEx)
     ON_BN_CLICKED(IDC_BTN_S1_OK,      OnBtnOK)
     ON_BN_CLICKED(IDC_BTN_S1_NG,      OnBtnNG)
     ON_BN_CLICKED(IDC_BTN_S1_ARDUINO, OnBtnArduino)
+    ON_BN_CLICKED(IDC_BTN_S1_START,   OnBtnS1Start)   // v0.14.3 1공정 시작
+    ON_BN_CLICKED(IDC_BTN_S1_STOP,    OnBtnS1Stop)    // v0.14.3 1공정 중지
 END_MESSAGE_MAP()
 
 CPageStation1::CPageStation1(CWnd* p) : CDialogEx(IDD_PAGE_STATION1, p), m_last{} {
@@ -49,6 +53,11 @@ BOOL CPageStation1::OnInitDialog() {
     set(IDC_STATIC_S1_CFG_INPUT,    _T("224×224"));
     set(IDC_STATIC_S1_CFG_THRESH,   _T("0.50"));
     set(IDC_STATIC_S1_CFG_BACKBONE, _T("ResNet-18 (사전학습)"));
+
+    // v0.14.3: Start/Stop 버튼 초기 상태 — 기본 "검사 중"으로 간주해 Start 비활성
+    //   (추론서버가 기본적으로 running 상태이므로)
+    if (CWnd* w = GetDlgItem(IDC_BTN_S1_START)) w->EnableWindow(FALSE);
+    if (CWnd* w = GetDlgItem(IDC_BTN_S1_STOP))  w->EnableWindow(TRUE);
 
     Refresh();
     return TRUE;
@@ -101,4 +110,47 @@ void CPageStation1::AddNgEntry(int id, double score, const CString& timeLabel,
                                const std::vector<BYTE>& heatmap,
                                const std::vector<BYTE>& pred_mask) {
     m_ngList.AddEntry(id, 1 /*stationId*/, score, timeLabel, image, heatmap, pred_mask);
+}
+
+// ============================================================================
+// v0.14.3 — 1공정 검사 Start/Stop
+// ============================================================================
+// 서버에 INSPECT_CONTROL_REQ(160) station_filter=1 전송.
+// 서버 측 StationRunner 가 _pause_event 를 set/clear → grab 루프 일시정지/재개.
+// 응답(161) 은 MainTabDlg 가 받아 MessageBox 로 알림.
+//
+// 버튼 상태:
+//   실행 중 → Start 비활성, Stop 활성
+//   정지 중 → Stop 비활성, Start 활성
+// 낙관적 업데이트 (서버 응답 전 UI 먼저 토글). 실패 응답 오면 롤백 로직은
+// 추후 보강 (현재는 응답이 항상 성공으로 가정).
+void CPageStation1::OnBtnS1Start()
+{
+    if (!m_net || !m_net->IsConnected()) {
+        MessageBox(_T("서버에 연결되어 있지 않습니다."),
+                   _T("검사 시작"), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    CString req = CPacketBuilder::BuildInspectControlReq(1 /*station1*/, _T("resume"));
+    m_net->SendJson(req);
+    TRACE(_T("[PageStation1] 검사 시작 요청 (station=1, resume)\n"));
+
+    // UI 낙관적 업데이트
+    if (CWnd* w = GetDlgItem(IDC_BTN_S1_START)) w->EnableWindow(FALSE);
+    if (CWnd* w = GetDlgItem(IDC_BTN_S1_STOP))  w->EnableWindow(TRUE);
+}
+
+void CPageStation1::OnBtnS1Stop()
+{
+    if (!m_net || !m_net->IsConnected()) {
+        MessageBox(_T("서버에 연결되어 있지 않습니다."),
+                   _T("검사 중지"), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    CString req = CPacketBuilder::BuildInspectControlReq(1 /*station1*/, _T("pause"));
+    m_net->SendJson(req);
+    TRACE(_T("[PageStation1] 검사 중지 요청 (station=1, pause)\n"));
+
+    if (CWnd* w = GetDlgItem(IDC_BTN_S1_START)) w->EnableWindow(TRUE);
+    if (CWnd* w = GetDlgItem(IDC_BTN_S1_STOP))  w->EnableWindow(FALSE);
 }

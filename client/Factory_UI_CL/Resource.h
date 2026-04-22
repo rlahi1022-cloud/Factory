@@ -64,6 +64,8 @@
 #define IDC_BTN_S1_NG                   2205
 #define IDC_BTN_S1_ARDUINO              2206
 #define IDC_STATIC_S1_LED               2207
+#define IDC_BTN_S1_START                1201    // v0.14.3: 1공정 검사 시작 (INSPECT_CONTROL_REQ filter=1 resume)
+#define IDC_BTN_S1_STOP                 1202    // v0.14.3: 1공정 검사 중지 (filter=1 pause)
 
 // ── 스테이션 2 (기존) ─────────────────────────────────────────────────────
 #define IDC_CAM2_VIEW                   2300
@@ -74,6 +76,8 @@
 #define IDC_BTN_S2_DEFECT               2305
 #define IDC_BTN_S2_REWORK               2306
 #define IDC_STATIC_S2_LED               2307    // 아두이노 상태 "대기중"/"검사중"
+#define IDC_BTN_S2_START                1203    // v0.14.3: 2공정 검사 시작
+#define IDC_BTN_S2_STOP                 1204    // v0.14.3: 2공정 검사 중지
 
 // ── 스테이션 2 (v0.14 신규) ───────────────────────────────────────────────
 #define IDC_PREDMASK2_VIEW              2310    // Pred Mask 뷰 (3번째 이미지)

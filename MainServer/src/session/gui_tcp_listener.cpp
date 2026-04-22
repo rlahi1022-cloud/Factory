@@ -195,14 +195,36 @@ void GuiTcpListener::handle_client(int client_fd, const std::string& remote_addr
     ::setsockopt(client_fd, SOL_SOCKET, SO_KEEPALIVE,
                  reinterpret_cast<const char*>(&keepalive), sizeof(keepalive));
 #ifdef __linux__
-    // idle 60s 후 probe 시작 → 10s 간격 → 3회 실패 시 dead 판정 (총 ~90초)
-    int keepidle  = 60;
+    // v0.14.2: Keepalive 좀 더 느슨하게 (30s idle → 10s probe × 3회 = 총 60초 내 감지)
+    // 너무 공격적이면 잠깐 끊긴 정상 클라도 죽이게 됨.
+    int keepidle  = 30;
     int keepintvl = 10;
     int keepcnt   = 3;
     ::setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPIDLE,  &keepidle,  sizeof(keepidle));
     ::setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
     ::setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPCNT,   &keepcnt,   sizeof(keepcnt));
 #endif
+
+    // v0.14.2: SO_SNDTIMEO 15초 — 3MB NG 이미지 브로드캐스트 시 send() 가 무한
+    //   블로킹되지 않도록 한다. 클라가 느리거나 네트워크 jitter 로 잠깐 막히면
+    //   send 가 실패로 빠져나와 EventBus 워커가 다른 클라로 넘어감.
+    //   이것이 없으면: 느린 클라 1명이 전체 브로드캐스트를 블록 → keepalive 가
+    //   정상 클라까지 죽이는 악순환.
+    struct timeval snd_tv{15, 0};
+    ::setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO,
+                 reinterpret_cast<const char*>(&snd_tv), sizeof(snd_tv));
+
+    // v0.14.2: TCP 버퍼 대폭 확대 — 3MB NG 이미지를 OS 레벨에서 한 번에 흡수해
+    //   send()/recv() 가 블로킹되는 시간을 최소화. OS 기본(64KB~256KB)으로는
+    //   3MB 송신 중 send 가 여러 번 PARTIAL 로 끊겨 EventBus 워커 스레드가
+    //   계속 블록되고, 결국 keepalive/timeout 으로 연결이 끊어지는 악순환.
+    //   8MB 로 잡으면 3MB × 2장 동시 in-flight 도 여유.
+    int sndbuf = 8 * 1024 * 1024;
+    int rcvbuf = 8 * 1024 * 1024;
+    ::setsockopt(client_fd, SOL_SOCKET, SO_SNDBUF,
+                 reinterpret_cast<const char*>(&sndbuf), sizeof(sndbuf));
+    ::setsockopt(client_fd, SOL_SOCKET, SO_RCVBUF,
+                 reinterpret_cast<const char*>(&rcvbuf), sizeof(rcvbuf));
 
     SessionManager::instance().register_session(client_fd, remote_addr);
 

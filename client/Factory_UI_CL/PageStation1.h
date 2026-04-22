@@ -5,10 +5,15 @@
 #include "CameraView.h"
 #include <vector>
 
+class CNetworkClient;   // fwd — pause/resume 송신용
+
 class CPageStation1 : public CDialogEx {
     DECLARE_DYNAMIC(CPageStation1)
 public:
     CPageStation1(CWnd* p=nullptr);
+
+    // v0.14.3: 부모가 네트워크 핸들 주입 — Start/Stop 버튼이 INSPECT_CONTROL_REQ 송신
+    void SetNetworkClient(CNetworkClient* net) { m_net = net; }
     enum { IDD = IDD_PAGE_STATION1 };
     void Update(const std::vector<InspectionRecord>& recs);
     void Tick();
@@ -30,11 +35,15 @@ protected:
     CPredMaskView   m_mask;    // 패널 3: Pred Mask 오버레이
     CNgHistoryList  m_ngList;  // 하단: 최근 NG 10건 이력 리스트
     InspectionRecord m_last;
+    CNetworkClient*  m_net = nullptr;   // v0.14.3: Start/Stop 버튼용 네트워크 핸들
     void Refresh();
     virtual BOOL OnInitDialog() override;
     virtual void DoDataExchange(CDataExchange* pDX) override;
     afx_msg void OnBtnOK();
     afx_msg void OnBtnNG();
     afx_msg void OnBtnArduino();
+    // v0.14.3: 1공정 검사 시작/중지 (station_filter=1)
+    afx_msg void OnBtnS1Start();
+    afx_msg void OnBtnS1Stop();
     DECLARE_MESSAGE_MAP()
 };

@@ -1,0 +1,64 @@
+================================================================
+시작/중지 버튼 핸들러 추가 방법
+================================================================
+
+■ PageStation1.h — MESSAGE_MAP에 추가
+    afx_msg void OnBtnS1Start();
+    afx_msg void OnBtnS1Stop();
+
+■ PageStation1.cpp — BEGIN_MESSAGE_MAP에 추가
+    ON_BN_CLICKED(IDC_BTN_S1_START, OnBtnS1Start)
+    ON_BN_CLICKED(IDC_BTN_S1_STOP,  OnBtnS1Stop)
+
+■ PageStation1.cpp — 핸들러 구현
+void CPageStation1::OnBtnS1Start()
+{
+    // 시작 버튼: 시작 비활성화, 중지 활성화
+    GetDlgItem(IDC_BTN_S1_START)->EnableWindow(FALSE);
+    GetDlgItem(IDC_BTN_S1_STOP)->EnableWindow(TRUE);
+
+    // TODO: 서버에 검사 시작 신호 전송
+    // CMainTabDlg* pMain = (CMainTabDlg*)GetParent()->GetParent();
+    // pMain->GetNetworkClient().SendJson(...);
+}
+
+void CPageStation1::OnBtnS1Stop()
+{
+    // 중지 버튼: 중지 비활성화, 시작 활성화
+    GetDlgItem(IDC_BTN_S1_START)->EnableWindow(TRUE);
+    GetDlgItem(IDC_BTN_S1_STOP)->EnableWindow(FALSE);
+
+    // TODO: 서버에 검사 중지 신호 전송
+}
+
+■ PageStation1.cpp — OnInitDialog에 초기 상태 설정
+    GetDlgItem(IDC_BTN_S1_STOP)->EnableWindow(FALSE); // 처음엔 중지 비활성
+
+----------------------------------------------------------------
+
+■ PageStation2.h — MESSAGE_MAP에 추가
+    afx_msg void OnBtnS2Start();
+    afx_msg void OnBtnS2Stop();
+
+■ PageStation2.cpp — BEGIN_MESSAGE_MAP에 추가
+    ON_BN_CLICKED(IDC_BTN_S2_START, OnBtnS2Start)
+    ON_BN_CLICKED(IDC_BTN_S2_STOP,  OnBtnS2Stop)
+
+■ PageStation2.cpp — 핸들러 구현
+void CPageStation2::OnBtnS2Start()
+{
+    GetDlgItem(IDC_BTN_S2_START)->EnableWindow(FALSE);
+    GetDlgItem(IDC_BTN_S2_STOP)->EnableWindow(TRUE);
+    // TODO: 서버에 검사 시작 신호 전송
+}
+
+void CPageStation2::OnBtnS2Stop()
+{
+    GetDlgItem(IDC_BTN_S2_START)->EnableWindow(TRUE);
+    GetDlgItem(IDC_BTN_S2_STOP)->EnableWindow(FALSE);
+    // TODO: 서버에 검사 중지 신호 전송
+}
+
+■ PageStation2.cpp — OnInitDialog에 초기 상태 설정
+    GetDlgItem(IDC_BTN_S2_STOP)->EnableWindow(FALSE);
+================================================================

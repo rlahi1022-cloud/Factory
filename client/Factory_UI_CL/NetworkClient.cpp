@@ -99,11 +99,48 @@ bool CNetworkClient::Connect(const CString& host, UINT16 port, HWND hNotifyWnd)
         TRACE(_T("[NetworkClient] SO_KEEPALIVE 설정 실패: %d\n"), WSAGetLastError());
     }
 
+    // v0.14.2: Windows TCP Keepalive 간격을 명시적으로 설정 (SIO_KEEPALIVE_VALS).
+    //   기본값: onoff=1, keepalivetime=2시간, keepaliveinterval=1초
+    //   → 우리는 30초 idle 후 5초 간격 probe 로 짧게.
+    //   Windows 는 Linux 처럼 TCP_KEEPIDLE/INTVL/CNT 를 직접 쓸 수 없어 WSAIoctl 사용.
+    //   이렇게 안 하면 SO_KEEPALIVE 만 켜진 상태 = OS 기본 2시간 → 사실상 무력.
+    struct tcp_keepalive {
+        ULONG onoff;
+        ULONG keepalivetime;     // ms — 첫 probe 까지 idle 시간
+        ULONG keepaliveinterval; // ms — probe 간격
+    } ka;
+    ka.onoff             = 1;
+    ka.keepalivetime     = 30 * 1000;   // 30초 idle
+    ka.keepaliveinterval = 5  * 1000;   // 5초 간격 probe
+    DWORD bytesReturned = 0;
+    // WSAIoctl 정의 (mstcpip.h 가 없으면 매크로로 대체 — 대부분 MFC 빌드엔 포함됨)
+    constexpr DWORD SIO_KEEPALIVE_VALS_LOCAL = 0x98000004; // _WSAIOW(IOC_VENDOR, 4)
+    if (WSAIoctl(m_socket, SIO_KEEPALIVE_VALS_LOCAL,
+                 &ka, sizeof(ka),
+                 nullptr, 0,
+                 &bytesReturned,
+                 nullptr, nullptr) == SOCKET_ERROR) {
+        TRACE(_T("[NetworkClient] SIO_KEEPALIVE_VALS 설정 실패: %d\n"),
+              WSAGetLastError());
+    } else {
+        TRACE(_T("[NetworkClient] TCP Keepalive: idle=30s probe=5s 적용\n"));
+    }
+
     BOOL noDelay = TRUE;
     if (setsockopt(m_socket, IPPROTO_TCP, TCP_NODELAY,
                reinterpret_cast<const char*>(&noDelay), sizeof(noDelay)) == SOCKET_ERROR) {
         TRACE(_T("[NetworkClient] TCP_NODELAY 설정 실패: %d\n"), WSAGetLastError());
     }
+
+    // v0.14.2: 수신 버퍼 8MB — 3MB NG 이미지 들어오는 동안 UI 스레드가
+    //   다른 일 처리 중이어도 OS 가 버퍼에 담아줘서 서버 send 가 블록되지 않음.
+    //   Windows 기본값(보통 64KB) 으로는 대용량 수신 중 서버가 먼저 끊는 현상 발생.
+    int rcvbuf = 8 * 1024 * 1024;
+    int sndbuf = 1 * 1024 * 1024;   // 클라→서버는 heartbeat/업로드 정도라 1MB 면 충분
+    setsockopt(m_socket, SOL_SOCKET, SO_RCVBUF,
+               reinterpret_cast<const char*>(&rcvbuf), sizeof(rcvbuf));
+    setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF,
+               reinterpret_cast<const char*>(&sndbuf), sizeof(sndbuf));
 
     // SO_RCVTIMEO: recv() 타임아웃 5초 → heartbeat 주기
     DWORD recvTimeout = 5000;
