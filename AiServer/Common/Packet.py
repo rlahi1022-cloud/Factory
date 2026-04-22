@@ -3,6 +3,15 @@
 이 파일은 AI 추론 서버가 운용 서버(메인 서버)로 보내는 TCP 패킷을
 만들고(build) 해석하는(parse) 기능을 제공한다.
 
+역할 경계:
+  PacketBuilder.build_packet  : 송신 전용 (AiServer → MainServer)
+  PacketBuilder.parse_json_only: JSON 프레임만 추출 (ACK 응답 파싱용)
+  실제 TCP 송수신은 TcpClient 가 담당하며, 이 모듈은 바이트 직렬화만 책임.
+
+MainServer 의 대응 모듈 (참고):
+  - 수신: MainServer/src/core/tcp_listener.cpp (동일 프레이밍 규칙)
+  - 송신: MainServer/src/handler/ack_sender.cpp, gui_notifier.cpp
+
 패킷 구조 (와이어 포맷):
   [4바이트 헤더: JSON 크기(big-endian)] + [JSON 본문] + [이미지1] + [이미지2] + ...
 

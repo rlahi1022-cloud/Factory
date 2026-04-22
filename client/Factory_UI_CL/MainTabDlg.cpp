@@ -1,13 +1,31 @@
 // ============================================================================
-// MainTabDlg.cpp — 메인 탭 다이얼로그 구현부
+// MainTabDlg.cpp — 메인 탭 다이얼로그 (앱 중심 윈도우)
 // ============================================================================
-// 목적:
-//   애플리케이션의 중심 윈도우로, 5개 탭 페이지 관리와 네트워크 통신을 담당합니다.
-//   서버로부터 수신한 실시간 데이터(NG 결과, 헬스체크 등)를 각 페이지에 전달합니다.
+// 책임:
+//   로그인 성공 후 표시되는 중앙 컨트롤러. 다음을 담당:
+//     1) 5개 페이지(Home/Station1/Station2/Stats/Model) 탭 관리
+//     2) CNetworkClient 소유 — 서버 GUI 포트(9010) 단일 연결 유지
+//     3) 서버 수신 메시지 디스패치 — 각 WM_NET_* 핸들러가 해당 페이지로 라우팅
+//     4) 주기 타이머(IDT_STATUSBAR 1초) 로 연결 상태 시각화 갱신
+//     5) 로그아웃 → 앱 재시작 흐름 조정
 //
-// 네트워크 메시지 흐름:
-//   서버 → CNetworkClient(수신 스레드) → PostMessage → MainTabDlg(UI 스레드)
-//        → OnNetNgPush / OnNetHealthPush 등 → 페이지 업데이트
+// 데이터 흐름 (실시간 NG):
+//   서버 INSPECT_NG_PUSH(110) →
+//     CNetworkClient::RecvLoop (별도 스레드) → JSON 파싱 → PostMessage
+//     → OnNetNgPush(UI 스레드) → InspectionRecord 적재 → PushUpdate() →
+//     Station1/Station2 페이지: SetImages + AddNgEntry, Home: 카운트 증가
+//
+// 데이터 흐름 (재학습 진행률):
+//   서버 RETRAIN_PROGRESS_PUSH(154) →
+//     OnNetRetrainProgress → PageModel::OnRetrainProgress(progress, station, type)
+//     v0.11.0 부터 station/type 정보도 함께 전달 → UI 라벨에 명시
+//
+// 초기 로드 흐름 (접속 직후):
+//   로그인 성공 → OnLoginSuccess → RequestInitialData():
+//     - STATS_REQ                 (Home 대시보드)
+//     - MODEL_LIST_REQ            (Model 페이지)
+//     - INSPECT_HISTORY_REQ (×2)  (Station1/2 최근 NG 10건)
+//     이후 각 row 더블클릭 시 INSPECT_IMAGE_REQ(116) 로 이미지 3장 on-demand 로드.
 // ============================================================================
 
 #include "pch.h"

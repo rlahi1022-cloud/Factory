@@ -11,11 +11,26 @@
 //   - 페이로드 구조체는 값 타입이며, EventBus에 std::any로 감싸져 전달된다.
 //   - 핸들러에서 std::any_cast<해당 구조체>로 복원하여 사용한다.
 //
-// 이벤트 흐름 (품질검사 기준):
-//   PACKET_RECEIVED → Router가 프로토콜 번호로 분류
-//     → INSPECTION_INBOUND / INSPECTION_ASSEMBLY
-//       → INSPECTION_VALIDATED → DB_WRITE_REQUESTED + IMAGE_SAVE_REQUESTED
-//         → DB_WRITE_COMPLETED → ACK_SEND_REQUESTED + GUI_PUSH_REQUESTED
+// 이벤트 흐름 — 검사 경로:
+//   PACKET_RECEIVED → Router 가 프로토콜 번호로 분류
+//     → INSPECTION_INBOUND / INSPECTION_ASSEMBLY (Station1/Station2)
+//        → InspectionService.process() 가 단일 진입점으로 검증/저장/DB INSERT 수행
+//           → DB_WRITE_COMPLETED → AckSender 가 추론서버로 ACK 응답
+//           → GUI_PUSH_REQUESTED → GuiNotifier 가 클라이언트에 NG 푸시
+//
+// 이벤트 흐름 — 학습 경로:
+//   PACKET_RECEIVED → Router
+//     → TRAIN_PROGRESS_RECEIVED → GuiNotifier 가 진행률 푸시
+//     → TRAIN_COMPLETE_RECEIVED → TrainService 가 파일 저장 + DB INSERT
+//                                 → ACK_SEND_REQUESTED (학습서버)
+//                                 → MODEL_RELOAD_REQUESTED → AckSender 가
+//                                   추론서버로 새 모델 바이너리 송신
+//     → TRAIN_FAIL_RECEIVED → GuiNotifier 가 실패 알림 푸시
+//
+// 이벤트 흐름 — 헬스체크 경로 (v0.11.0 동적 감지):
+//   HealthChecker 주기 tick → ConnectionRegistry 의 server_type 검사
+//     → 상태 전환 시 SERVER_DOWN / SERVER_RECOVERED 발행
+//        → GuiNotifier 가 HEALTH_PUSH 로 클라이언트 LED 갱신
 // ============================================================================
 
 #include <string>
