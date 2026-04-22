@@ -51,6 +51,18 @@
 - **Pending ACK 정리**: 연결 끊김 시 `_pending_acks` 전체 `cancel()` (orphan Future 방지)
 - **`send_with_ack` finally 보장**: 모든 코드 경로에서 `_pending_acks.pop()` 실행
 
+## ACK 타임아웃 (v0.12.0)
+
+`Common/TcpClient.py` 상수:
+- `ACK_TIMEOUT_SEC = 3.0` — NG 패킷 ACK 대기 시간
+- `MAX_SEND_ATTEMPTS = 3` — 실패 시 최대 재전송 횟수
+
+**변경 내역**:
+- v0.11.x: 1.0초 (MainServer 가 이미지 저장 + DB INSERT 를 동기 처리해서
+  정상 부하에서도 자주 타임아웃 발생)
+- v0.12.0: 3.0초 (MainServer 가 validate 후 즉시 ACK 를 발행하므로 실측 수 ms
+  내에 도착. 3초는 네트워크 지연/GC 대비 여유값)
+
 ## inspection_id 발급 규칙
 
 `stationN-YYYYMMDDHHMMSSmmm-seq` 형식으로 추론서버에서 발급.

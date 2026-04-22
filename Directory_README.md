@@ -34,6 +34,18 @@ Station2 이중모델(YOLO + PatchCore) 중 해당 슬롯만 교체합니다. �
 Pylon SDK 를 감싸 실제 프레임 grab. pypylon 미설치/카메라 미연결 환경에서는
 자동으로 더미 이미지 모드로 폴백.
 
+**NG 파이프라인 비동기 분리 (v0.12.0):** 검사 결과 수신 → 검증 → **즉시 ACK 발행**
+후, 이미지 3장 저장 / DB INSERT / GUI 푸시를 `INSPECTION_VALIDATED` 이벤트로
+백그라운드 워커에 위임. AI 서버 ACK 타임아웃을 근본 제거.
+`validate` 에서 `OK/NG` 대소문자 정규화 + score 무한대 범위 허용으로 정합성 확보.
+메인 흐름:
+```
+StationHandler → validate_only → ACK 즉시 + INSPECTION_VALIDATED
+                                        ↓ (EventBus 워커)
+                         InspectionService::on_validated
+                            → save_blob × 3 → INSERT → GUI_PUSH
+```
+
 ## 명명 규칙
 
 | 대상     | 규칙       | 예시 |

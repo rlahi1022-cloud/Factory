@@ -101,10 +101,17 @@ HealthChecker 는 `target.name == server_type` 으로 매칭한다.
 
 ### 일반 메시지 (AI ↔ MainServer)
 - **ACK 필수 메시지**: STATION1/2_NG, TRAIN_COMPLETE/FAIL, INSPECT_NG_PUSH, MODEL_DEPLOY_NOTIFY
-- **타임아웃**: 1초
+- **타임아웃**: 3초 (v0.12.0 기준. 기존 1초 → 비동기 분리 후 여유값 3초)
 - **최대 재전송**: 3회
 - **NACK 수신 시**: 재전송하지 않고 drop + 에러 로그
-- **메인서버 동작**: NG 패킷 수신 → DB INSERT 성공 시 같은 connection으로 ACK 회신, 실패 시 NACK
+- **메인서버 동작 (v0.12.0 비동기 분리)**:
+  NG 패킷 수신 → `validate_only` (~1ms) → **즉시 ACK 회신** →
+  `INSPECTION_VALIDATED` 이벤트로 백그라운드 워커에 위임 →
+  워커가 이미지 3장 저장 + DB INSERT + GUI 푸시 수행.
+  검증 실패 시 NACK(error_message 포함).
+- **Sliced failure 주의**: ACK 가 이미 송신된 뒤 백그라운드 persist 가 실패하면
+  AI 서버는 성공으로 간주 → 재전송 없음. 서버 로그에 `[SLICED-FAILURE]` ERROR
+  로 기록되며 운영자 확인 필요.
 
 ### MODEL_RELOAD_CMD (1010) — 지수 백오프 적용 (v0.8.0)
 

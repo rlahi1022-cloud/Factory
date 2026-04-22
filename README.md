@@ -94,6 +94,7 @@ Camera → AI Server → Main Server → DB → MFC Client
 * NG 중심 전송 구조 (트래픽 최적화)
 * inspection_id 기반 end-to-end 추적
 * ACK / 재전송 기반 데이터 신뢰성 확보
+* **v0.12.0: 검증 즉시 ACK → 백그라운드 영속화** (INSPECTION_VALIDATED 이벤트)
 * 모델 바이너리 TCP 전송 (학습서버 → 메인서버 → 추론서버)
 * asyncio.Queue 기반 비동기 처리 (Backpressure 대응)
 
@@ -169,6 +170,51 @@ Camera → AI Server → Main Server → DB → MFC Client
 * **Station2 PatchCore 학습 데이터 경로 버그 수정**: `_train_patchcore` 가
   Station2 의 경우 `./data/station2/patchcore/` 를 사용하도록 조건 분기 추가
   (기존엔 `./data/station{N}/normal` 고정으로 Station2 PatchCore 학습이 실제로 불가).
+
+### v0.12.0 — NG 파이프라인 비동기 분리 (ACK 지연 근본 해결)
+
+* **문제**: v0.11.x 까지 `StationHandler` 가 `InspectionService::process()` 를
+  동기 호출 → 이미지 3장 저장(수 MB 디스크 I/O) + DB INSERT 가 끝나야 ACK 발행.
+  실측 500ms~1s+ 소요 → AI 서버 `ACK_TIMEOUT_SEC=1.0` 이 반복 타임아웃 →
+  재전송 루프 → 연결 끊김 악순환.
+
+* **해결 구조**:
+  ```
+  StationHandler
+    ├─ validate_only(ev)          (<1ms)
+    ├─ publish ACK_SEND_REQUESTED  ← 즉시 ACK
+    └─ publish INSPECTION_VALIDATED ← 백그라운드 위임
+                                     ↓
+                 InspectionService::on_validated  (EventBus 워커 스레드)
+                   ├─ save_blob × 3 (원본/히트맵/마스크)
+                   ├─ INSERT inspections
+                   ├─ INSERT assemblies (Station2)
+                   └─ publish GUI_PUSH_REQUESTED
+  ```
+
+* **신규 이벤트**: `EventType::INSPECTION_VALIDATED` — 검증 통과 후 영속화
+  위임용. EventBus 의 N개 워커가 병렬 처리.
+
+* **Sliced failure 정책**: ACK 가 이미 송신된 뒤 persist 가 실패하면 재전송 불가.
+  `[ERR] [DB] [SLICED-FAILURE] 저장 실패 (ACK 는 이미 송신됨) | id=... err=...`
+  ERROR 레벨로 강하게 남겨 운영자 추적 가능.
+
+* **효과**:
+  - AI 서버 체감 ACK 지연: 500ms+ → **수 ms** (validate_only 만)
+  - `ACK_TIMEOUT_SEC`: 1초 → **3초** (여유)
+  - 고부하(초당 수십건 NG) 에서도 ACK 타임아웃 사라짐
+
+### v0.12.0 기타 안정화
+
+* **검증기 정합성 수정** (`InspectionService::validate`):
+  - `result` 필드: `"OK"/"NG"` 대문자 수용 + 소문자 정규화 (AI서버 송신 형식)
+  - `score` 필드: 0~1 강제 제거 (PatchCore anomaly_score 는 무한대 범위) →
+    `std::isfinite()` 로 NaN/Inf 만 차단
+  - 기존엔 이 두 버그로 모든 NG 가 `invalid_result` / `invalid_score` 로 거부됨
+
+* **INSPECT_NG_ACK_EXT(111) 처리**: 클라이언트가 NG 수신 후 자동 ACK(111) 를
+  보내는데 서버가 "미처리 프로토콜" 로 로깅하던 노이즈 제거. EXT_ACK(190) 와
+  동일하게 silent pass.
 
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고
