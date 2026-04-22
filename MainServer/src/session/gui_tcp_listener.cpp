@@ -144,6 +144,10 @@ void GuiTcpListener::stop() {
 // ---------------------------------------------------------------------------
 void GuiTcpListener::run_accept_loop() {
     while (is_running_.load()) {
+        // v0.14.7: 매 1초(accept 타임아웃) 또는 새 연결마다 "pending 해제" 만료 항목 flush.
+        //   3초 지나도 재접속 안 온 IP → 진짜 해제 로그 발행.
+        SessionManager::instance().flush_expired_disconnects();
+
         sockaddr_in client_addr{};
         socklen_t   addr_len = sizeof(client_addr);
         int client_fd = static_cast<int>(
@@ -235,13 +239,10 @@ void GuiTcpListener::handle_client(int client_fd, const std::string& remote_addr
         router_.route(client_fd, remote_addr, json_request, binary);
     }
 
-    // v0.14.7: 세션 제거 → 소켓 close → 실제 fd 가 사라진 "정확한 시점" 에 로그.
-    //   과거엔 unregister_session 내부에서 로그를 찍었는데, 그 시점엔 아직 fd 가 살아있고
-    //   CLOSE_SOCK 이 나중에 실행돼 "실제로 닫히지도 않았는데 해제됐다"고 찍히는 문제.
+    // v0.14.7: 로그는 unregister_session 이 "pending" 으로 보류시킨 뒤, flush_expired_disconnects
+    //   가 3초 뒤에도 재접속 없을 때만 "진짜 해제" 로그를 남김. 빠른 재접속은 조용히 넘어감.
     SessionManager::instance().unregister_session(client_fd);
     CLOSE_SOCK(client_fd);
-    log_clt("클라이언트 해제 | fd=%d ip=%s (소켓 close 완료)",
-            client_fd, remote_addr.c_str());
 }
 
 // ── 패킷 수신 ────────────────────────────────────────────────────────────

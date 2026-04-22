@@ -18,12 +18,28 @@
 #include "core/logger.h"
 #include "core/tcp_utils.h"
 
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <unordered_map>
 #include <utility>
 
 namespace factory {
+
+// v0.14.7: "미세 끊김-재접속" 로그 합치기 용도 — IP 별 최근 해제 시각 보관.
+//   register/unregister_session 의 파일 내 static 공유. ip_only("10.10.10.97") → timestamp.
+//   3초 이내 같은 IP 재접속이면 해제/접속 로그 둘 다 생략 ("재접속 | fd=... 이전 fd=..." 1줄만).
+static std::mutex g_recent_dc_mu;
+static std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_recent_dc;
+static std::unordered_map<std::string, int> g_recent_dc_fd;   // 이전 fd 기록 (진단용)
+static constexpr auto RECONNECT_WINDOW = std::chrono::seconds(3);
+
+// "10.10.10.97:64005" → "10.10.10.97"
+static std::string ip_only(const std::string& remote_addr) {
+    auto p = remote_addr.find(':');
+    return (p == std::string::npos) ? remote_addr : remote_addr.substr(0, p);
+}
 
 SessionManager& SessionManager::instance() {
     static SessionManager mgr;
@@ -46,8 +62,31 @@ void SessionManager::register_session(int client_fd, const std::string& remote_a
     sess.running     = std::make_unique<std::atomic<bool>>(true);
     sess.sender      = std::make_unique<std::thread>(&SessionManager::sender_loop, &sess);
 
-    log_clt("클라이언트 접속 | fd=%d ip=%s | 현재접속=%zu", client_fd,
-            remote_addr.c_str(), sessions_.size());
+    // v0.14.7: 같은 IP 가 3초 이내 직전 해제 후 다시 붙으면 "빠른 재접속" 으로 판단해
+    //   접속/해제 양쪽 로그를 생략. 즉 사용자에게는 "연결 유지" 처럼 보이게 함.
+    //   이 범위를 넘어간 해제는 뒤에 flush_expired_disconnects 에서 진짜 해제 로그를 남김.
+    const std::string ip = ip_only(remote_addr);
+    bool suppressed = false;
+    int  prev_fd = -1;
+    {
+        std::lock_guard<std::mutex> dc_lock(g_recent_dc_mu);
+        auto it = g_recent_dc.find(ip);
+        if (it != g_recent_dc.end() &&
+            std::chrono::steady_clock::now() - it->second < RECONNECT_WINDOW) {
+            // pending 된 "해제" 를 취소 — 사용자 입장에선 끊긴 적 없는 것으로 간주
+            auto fd_it = g_recent_dc_fd.find(ip);
+            if (fd_it != g_recent_dc_fd.end()) prev_fd = fd_it->second;
+            g_recent_dc.erase(it);
+            g_recent_dc_fd.erase(ip);
+            suppressed = true;
+        }
+    }
+
+    if (!suppressed) {
+        log_clt("클라이언트 접속 | fd=%d ip=%s | 현재접속=%zu", client_fd,
+                remote_addr.c_str(), sessions_.size());
+    }
+    // suppressed 경우엔 로그 자체를 생략 (이전 fd=%d → 현재 fd=%d 같은 "재접속" 로그도 안 남김 — 사용자 요구)
 }
 
 // ---------------------------------------------------------------------------
@@ -87,16 +126,51 @@ void SessionManager::unregister_session(int client_fd) {
         sender_to_join->join();
     }
 
-    // (3) 스레드 종료 확정 → 안전하게 세션 삭제
-    //     v0.14.7: "클라이언트 해제" 로그는 여기서 찍지 않는다. 이 시점엔 아직
-    //     소켓(fd) 가 살아있기 때문 — 호출자(handle_client)가 CLOSE_SOCK 을 마친 뒤
-    //     로그를 남긴다. "fd 가 실제로 사라진 순간"에만 기록하기 위해서.
+    // (3) 스레드 종료 확정 → 세션 삭제 + IP 기반 "pending 해제" 등록
+    //     v0.14.7: 로그를 즉시 찍지 않는다. 같은 IP 가 3초 이내 재접속하면 "미세 끊김"
+    //     으로 간주하여 register_session 이 pending 을 지우고 양쪽 로그 모두 생략.
+    //     3초 지나도 재접속이 없으면 flush_expired_disconnects() 가 "진짜 해제" 로그를 남김.
+    std::string addr_snapshot;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = sessions_.find(client_fd);
         if (it != sessions_.end()) {
+            addr_snapshot = it->second.remote_addr;
             sessions_.erase(it);
         }
+    }
+    if (!addr_snapshot.empty()) {
+        const std::string ip = ip_only(addr_snapshot);
+        std::lock_guard<std::mutex> dc_lock(g_recent_dc_mu);
+        g_recent_dc[ip]     = std::chrono::steady_clock::now();
+        g_recent_dc_fd[ip]  = client_fd;
+        // remote_addr (port 포함) 도 보관 — flush 시 원본 로그에 사용
+        // 맵 하나 더 두지 않도록 fd 를 키로 하는 addr 매핑은 생략, ip+fd 조합으로 충분.
+    }
+}
+
+// v0.14.7: 만료된 pending 해제를 주기적으로 확인해 진짜 해제 로그를 남김.
+//   accept_loop 가 1초마다 호출. RECONNECT_WINDOW 이상 대기했는데도 재접속 안 온 IP =
+//   "진짜로 사라진 클라" → 이때 비로소 "클라이언트 해제" 로그 발생.
+void SessionManager::flush_expired_disconnects() {
+    auto now = std::chrono::steady_clock::now();
+    std::vector<std::pair<std::string, int>> to_log;  // (ip, prev_fd)
+    {
+        std::lock_guard<std::mutex> dc_lock(g_recent_dc_mu);
+        for (auto it = g_recent_dc.begin(); it != g_recent_dc.end(); ) {
+            if (now - it->second >= RECONNECT_WINDOW) {
+                int fd = -1;
+                auto fd_it = g_recent_dc_fd.find(it->first);
+                if (fd_it != g_recent_dc_fd.end()) { fd = fd_it->second; g_recent_dc_fd.erase(fd_it); }
+                to_log.emplace_back(it->first, fd);
+                it = g_recent_dc.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& [ip, fd] : to_log) {
+        log_clt("클라이언트 해제 | fd=%d ip=%s (재접속 없음 — 진짜 해제)", fd, ip.c_str());
     }
 }
 

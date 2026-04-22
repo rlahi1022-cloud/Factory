@@ -98,6 +98,11 @@ public:
     /// 지정된 fd의 세션을 강제 종료 — 연결 끊고 세션 제거
     void force_close(int client_fd);
 
+    /// v0.14.7: 만료된 "pending 해제" 항목을 로그로 flush.
+    ///   같은 IP 가 3초 안에 재접속하면 해제 로그는 생략되고, 그 이상 지난 건
+    ///   여기서 "진짜 해제" 로그로 발행됨. accept_loop 가 1초 주기로 호출.
+    void flush_expired_disconnects();
+
 private:
     SessionManager() = default;
 

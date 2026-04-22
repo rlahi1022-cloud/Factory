@@ -1008,18 +1008,31 @@ class StationRunner:
             logger.info("INFERENCE_CONTROL: pause 적용 (루프 블록 + 카메라 grab 정지)")
             return True
         elif action == "resume":
-            # ① 이벤트 먼저 set — 이게 grab_producer 재개의 핵심 신호
+            # ① 이벤트 먼저 set — grab_producer 가 wait 에서 즉시 깨어남
             self._pause_event.set()
-            # ② 카메라 재시작 (실패해도 이벤트는 이미 set)
+            # ② 카메라 재시작 — start_grabbing 실패하면 close → open 으로 완전 재초기화 폴백
             try:
-                if self._camera is not None and self._camera.is_open:
-                    ok = self._camera.start_grabbing()
-                    logger.info("start_grabbing 결과: %s", ok)
-                else:
-                    logger.warning("resume: 카메라가 open 상태가 아님 — grab 이벤트만 set")
+                if self._camera is not None:
+                    if not self._camera.is_open:
+                        logger.warning("resume: 카메라 open 상태 아님 — open 재시도")
+                        self._camera.open()
+                    else:
+                        ok = self._camera.start_grabbing()
+                        logger.info("start_grabbing 결과: %s", ok)
+                        if not ok:
+                            # Pylon 상태 꼬임 가능성 → 완전 재초기화
+                            logger.warning("start_grabbing 실패 — close/open 완전 재초기화 시도")
+                            try:
+                                self._camera.close()
+                            except Exception as exc_cl:
+                                logger.warning("재초기화용 close 예외(무시): %s", exc_cl)
+                            if self._camera.open():
+                                logger.info("카메라 완전 재초기화 성공")
+                            else:
+                                logger.error("카메라 완전 재초기화 실패 — placeholder 모드로 진행")
             except Exception as exc:
-                logger.error("resume 중 start_grabbing 예외(무시, 이벤트는 set 됨): %s", exc)
-            logger.info("INFERENCE_CONTROL: resume 적용 (이벤트 set + 카메라 grab 재개 시도)")
+                logger.error("resume 중 카메라 복구 예외(무시, 이벤트는 set 됨): %s", exc)
+            logger.info("INFERENCE_CONTROL: resume 적용 (이벤트 set + 카메라 재개/재초기화)")
             return False
         else:
             logger.warning("INFERENCE_CONTROL: unknown action=%s", action)

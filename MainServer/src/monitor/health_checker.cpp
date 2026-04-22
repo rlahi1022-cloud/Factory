@@ -120,23 +120,24 @@ void HealthChecker::run_loop() {
 
             bool alive = !matched_addr.empty();
 
+            // v0.14.7: 매 tick 마다 현재 상태를 **강제 이벤트 발행** — GUI 클라가 나중에
+            //   접속했거나 로그인 직후 초기 sync 를 놓쳤어도 다음 tick(5~30초)에는 반드시
+            //   HEALTH_PUSH 를 받게 됨. 이전엔 상태 "전환" 때만 발행해서 계속 down 상태면
+            //   재접속한 GUI 가 영원히 Unknown(회색) 으로 남던 문제 해결.
+            ServerStatusEvent ev{target.name, alive ? matched_addr : target.ip, target.port};
             if (alive) {
+                event_bus_.publish(EventType::SERVER_RECOVERED, ev);
                 if (down_state_map_[target.name]) {
-                    // 장애 → 복구 전환 — SERVER_RECOVERED 이벤트 발행
                     log_main("서버 복구 감지 | %s @ %s",
                              target.name.c_str(), matched_addr.c_str());
-                    ServerStatusEvent ev{target.name, matched_addr, target.port};
-                    event_bus_.publish(EventType::SERVER_RECOVERED, ev);
                     down_state_map_[target.name] = false;
                 }
                 log_main("서버 생존 확인 | %s @ %s",
                          target.name.c_str(), matched_addr.c_str());
             } else {
+                event_bus_.publish(EventType::SERVER_DOWN, ev);
                 if (!down_state_map_[target.name]) {
-                    // 정상 → 장애 전환 — SERVER_DOWN 이벤트 발행
                     log_err_main("서버 장애 감지 | %s", target.name.c_str());
-                    ServerStatusEvent ev{target.name, target.ip, target.port};
-                    event_bus_.publish(EventType::SERVER_DOWN, ev);
                     down_state_map_[target.name] = true;
                 } else {
                     log_err_main("서버 미연결 | %s", target.name.c_str());
