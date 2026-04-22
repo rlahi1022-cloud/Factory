@@ -3,6 +3,7 @@
     "main_server_host": "10.10.10.130",
     "main_server_ai_port": 9000,
     "main_server_gui_port": 9010,
+    "training_server_host": "10.10.10.120",
     "training_server_port": 9100,
     "allowed_ip_prefixes": ["10.", "192.168.", "172.16.", "127.0.0.1"]
   },
