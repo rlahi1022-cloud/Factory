@@ -259,13 +259,14 @@ class TrainingServer:
                 # 바이트 데이터를 UTF-8 문자열로 디코딩한 후, JSON 파싱하여 딕셔너리로 변환한다.
                 msg = json.loads(body.decode("utf-8"))
 
-                # ── 3단계: 이미지 데이터 소비 (있으면) ──
-                # 일부 프로토콜은 JSON 뒤에 이미지 바이너리 데이터가 붙어있다.
-                # image_size가 0이면 이미지 데이터가 없는 것이다.
+                # ── 3단계: 이미지 바이너리 수신 (있으면) ──
+                # JSON 의 image_size 만큼 뒤에 바이너리가 붙어있다.
+                # 프로토콜별로 쓰임이 달라 여기서는 그냥 "읽기만" 하고 bytes 로 보관
+                # → TRAIN_DATA_UPLOAD(1108) 같은 프로토콜이 실제 파일 바이트로 사용.
                 image_size = int(msg.get("image_size", 0))
+                image_bytes: bytes = b""
                 if image_size > 0:
-                    # 이미지 데이터를 읽되, 여기서는 사용하지 않는다 (버퍼에서 소비만 함).
-                    await reader.readexactly(image_size)
+                    image_bytes = await reader.readexactly(image_size)
 
                 # JSON에서 protocol_no(프로토콜 번호)를 꺼낸다.
                 protocol_no = msg.get("protocol_no", 0)
@@ -277,6 +278,9 @@ class TrainingServer:
                 elif protocol_no == ProtocolNo.TRAIN_START_REQ:
                     # 학습 시작 요청 -> 학습 시작 처리
                     await self._handle_train_start(writer, msg)
+                elif protocol_no == ProtocolNo.TRAIN_DATA_UPLOAD:
+                    # v0.13.0: 메인서버로부터 학습용 이미지 1장 수신 → 디스크 저장 + ACK
+                    await self._handle_train_data_upload(writer, msg, image_bytes)
                 else:
                     # 알 수 없는 프로토콜 번호 -> 디버그 로그만 남김
                     logger.debug("Unknown protocol_no: %d", protocol_no)
@@ -298,6 +302,84 @@ class TrainingServer:
             except Exception:
                 # 이미 닫힌 경우 등의 에러는 무시한다.
                 pass
+
+    # ── TRAIN_DATA_UPLOAD 처리 (v0.13.0: 클라이언트 업로드 이미지 저장) ──
+
+    async def _handle_train_data_upload(self, writer: asyncio.StreamWriter,
+                                         msg: dict, image_bytes: bytes) -> None:
+        """TRAIN_DATA_UPLOAD(1108) 수신 → 파일 저장 + ACK(1109) 회신.
+
+        JSON 필드:
+          session_id: 업로드 세션 식별자 (동일 세션의 파일들을 한 폴더에 모음)
+          station_id: 1 or 2 — 저장 경로 분기
+          model_type: "PatchCore" / "YOLO11" — 저장 경로 분기
+          filename:   원본 파일명 (path traversal 방지용 basename 화)
+          image_size: 뒤따르는 바이너리 크기
+
+        저장 경로:
+          ./data/station{N}/uploads/{session_id}/{sanitized_filename}
+
+        동일 session_id 로 여러 번 호출 가능 (한 장씩 누적 저장).
+        _handle_train_start 가 나중에 data_path 로 이 폴더를 지정받아 학습 실행.
+        """
+        request_id  = msg.get("request_id", "")
+        session_id  = msg.get("session_id", "")
+        station_id  = int(msg.get("station_id", 0))
+        model_type  = msg.get("model_type", "")
+        filename    = msg.get("filename", "")
+
+        # 기본 검증: 세션 ID 필수, station 1/2 만, 파일명 traversal 차단
+        ok = True
+        err_msg = ""
+        saved_path = ""
+
+        if not session_id or station_id not in (1, 2) or not filename:
+            ok = False
+            err_msg = "invalid_upload_request"
+        else:
+            # basename 화로 경로 탐색 공격 차단 + 확장자 허용 목록
+            safe_name = Path(filename).name
+            if ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+                ok = False
+                err_msg = "invalid_filename"
+            elif len(image_bytes) == 0:
+                ok = False
+                err_msg = "empty_image"
+            elif len(image_bytes) > 50 * 1024 * 1024:
+                ok = False
+                err_msg = "image_too_large"
+            else:
+                # station/model_type 별 폴더 분기
+                #   Station1: PatchCore 만 → station1/uploads/{session}/
+                #   Station2: YOLO/PatchCore 구분 위해 세부 폴더 추가 가능하나, 여기서는 통일
+                upload_dir = Path(self._config.data_root) / f"station{station_id}" \
+                             / "uploads" / session_id
+                try:
+                    upload_dir.mkdir(parents=True, exist_ok=True)
+                    dst = upload_dir / safe_name
+                    dst.write_bytes(image_bytes)
+                    saved_path = str(dst)
+                    logger.info("업로드 이미지 저장 | session=%s station=%d type=%s file=%s (%d bytes)",
+                                session_id, station_id, model_type, safe_name, len(image_bytes))
+                except Exception as exc:
+                    ok = False
+                    err_msg = f"save_failed: {exc}"
+                    logger.error("업로드 이미지 저장 실패 | %s", exc)
+
+        # ACK 회신 (1109) — JSON 만 (바이너리 없음)
+        ack_body = {
+            "session_id": session_id,
+            "success": ok,
+            "saved_path": saved_path,
+            "message": err_msg,
+        }
+        packet = PacketBuilder.build_packet(
+            protocol_no=int(ProtocolNo.TRAIN_DATA_UPLOAD_ACK),
+            body_dict=ack_body,
+            request_id=request_id,
+        )
+        writer.write(packet)
+        await writer.drain()
 
     # ── HEALTH_PING 응답 ──
 

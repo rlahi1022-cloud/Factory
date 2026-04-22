@@ -71,6 +71,8 @@ enum ProtocolNo : int {
     RETRAIN_PROGRESS_PUSH  = 154,   // 재학습 진행률 푸시: 서버 → 클라이언트
     MODEL_DEPLOY_NOTIFY    = 156,   // 모델 배포 완료 알림
     MODEL_DEPLOY_ACK_EXT   = 157,   // 배포 알림 수신 확인
+    RETRAIN_UPLOAD         = 158,   // v0.13.0: 학습용 이미지 1장 업로드 (JSON+binary)
+    RETRAIN_UPLOAD_ACK     = 159,   // v0.13.0: 업로드 결과 ACK
 
     // ===== 서버 상태 관련 (170~189) =====
     SERVER_HEALTH_PUSH     = 170,   // 서버 헬스체크 상태 푸시: 서버 → 클라이언트

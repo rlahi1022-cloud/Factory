@@ -216,6 +216,50 @@ Camera → AI Server → Main Server → DB → MFC Client
   보내는데 서버가 "미처리 프로토콜" 로 로깅하던 노이즈 제거. EXT_ACK(190) 와
   동일하게 silent pass.
 
+### v0.13.0 — 클라이언트 학습 이미지 업로드 End-to-End
+
+**배경**: v0.12.x 까지 클라 "폴더 선택" 은 파일명 수집만 했고, 실제 학습은
+학습서버에 미리 준비된 `./data/station*/...` 폴더로만 이뤄짐 → UI 와 실제
+동작 불일치. 제품 전환 시 학습 데이터 교체가 번거로웠음.
+
+**해결**: 3 컴포넌트(클라/메인/학습) 동시 확장으로 엔드투엔드 업로드 파이프라인
+구현. 신규 프로토콜 4 개 추가:
+
+| 번호 | 이름 | 방향 | 역할 |
+|------|------|------|------|
+| 158 | `RETRAIN_UPLOAD` | 클라→메인 | 학습용 이미지 1장 업로드 (JSON + binary) |
+| 159 | `RETRAIN_UPLOAD_ACK` | 메인→클라 | 파일별 업로드 ACK + 진행률 |
+| 1108 | `TRAIN_DATA_UPLOAD` | 메인→학습 | 이미지 중계 (JSON + binary) |
+| 1109 | `TRAIN_DATA_UPLOAD_ACK` | 학습→메인 | 저장 결과 ACK |
+
+**동작 흐름**:
+```
+① 클라: 폴더 선택 → 파일 개수 + 폴더 경로 보관
+② 클라: "재학습 실행" 클릭 → session_id 생성 (sess-YYYYMMDD-HHMMSS-NNNNN)
+   → 파일별로 RETRAIN_UPLOAD(158) 순차 송신
+③ 메인: 파일 수신 → ./storage/training_upload/{session_id}/{file} 로컬 저장
+   → 학습서버 TCP 로 TRAIN_DATA_UPLOAD(1108) 중계
+④ 학습서버: ./data/station{N}/uploads/{session_id}/{file} 저장 → ACK(1109)
+⑤ 메인: ACK(159) 를 클라에 회신 → 진행률 표시 (0~50%)
+⑥ 클라: 모든 ACK 수신 완료 → RETRAIN_REQ(152) 에 session_id 동봉하여 송신
+⑦ 메인: TRAIN_START_REQ(1100) 에 data_path="./data/station{N}/uploads/{session_id}" 주입
+⑧ 학습서버: data_path 로 학습 실행 (기본 경로 대신 업로드 폴더 사용)
+```
+
+**주요 안전장치**:
+- 파일명 path traversal 차단 (basename 화 + ".." / "/" / "\\" 검사)
+- 파일당 50MB 상한
+- `image_size` > 0 이면 GUI 리스너가 JSON 뒤 바이너리를 추가 수신 (`recv_one_request` 확장)
+- 메인 로컬 저장 실패해도 학습서버 중계는 계속 시도 → 이중 저장으로 복구력 강화
+
+**신규 클래스/함수**:
+- C++  `GuiService::receive_retrain_upload()` — 수신 + 중계 + ACK 파싱
+- C++  `GuiRouter::handle_retrain_upload()` — 요청 분기
+- C++  `GuiTcpListener::recv_one_request(json, binary)` — 바이너리 동반 수신
+- Py   `TrainingServer._handle_train_data_upload()` — 디스크 저장 + ACK
+- MFC  `CPacketBuilder::BuildRetrainUploadFrame()` / `GenerateSessionId()`
+- MFC  `CPageModel::OnRetrainUploadAck()` — ACK 수신 → 진행률 + RETRAIN_REQ 자동 발행
+
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고
 (CRITICAL 7 + HIGH 12 + MEDIUM 16 + LOW 11 = 총 46/47 완료)

@@ -20,11 +20,14 @@
 #include "core/logger.h"
 #include "core/tcp_utils.h"
 #include "Protocol.h"
+#include "security/json_safety.h"
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <chrono>
 #include <ctime>
@@ -150,7 +153,8 @@ static std::string make_timestamp() {
 // ---------------------------------------------------------------------------
 RetrainResult GuiService::request_retrain(int station_id, const std::string& model_type,
                                            const std::string& product_name, int image_count,
-                                           const std::string& request_id) {
+                                           const std::string& request_id,
+                                           const std::string& session_id) {
     RetrainResult result;
 
     // ── 1) 동시 학습 방지 — mutex 로 is_training_ 원자 검사/설정 ──
@@ -201,9 +205,17 @@ RetrainResult GuiService::request_retrain(int station_id, const std::string& mod
     }
 
     // ── 4) TRAIN_START_REQ(1100) JSON 조립 ──
-    // 수동 조립 이유: 외부 JSON 라이브러리 의존성 회피 + 필드 고정 스키마.
-    // 이스케이프가 필요한 필드는 현재 product_name 정도이나 입력 검증이 상위 단
-    // (GuiRouter)에서 이루어지므로 여기서는 단순 concat.
+    // v0.13.0: session_id 가 있으면 data_path 를 학습서버 로컬 업로드 경로로 명시.
+    //   학습서버의 _train_patchcore/_train_yolo 가 data_path 가 채워져 있으면
+    //   기본 경로 대신 이 값을 사용하도록 구현되어 있음 (TrainingMain.py).
+    std::string data_path;
+    if (!session_id.empty()) {
+        // 학습서버 로컬 기준 경로 — TrainingMain 의 _handle_train_data_upload 가
+        // ./data/station{N}/uploads/{session_id}/ 로 저장하므로 동일 경로 지정.
+        data_path = "./data/station" + std::to_string(station_id)
+                    + "/uploads/" + session_id;
+    }
+
     std::ostringstream os;
     os << "{\"protocol_no\":1100"
        << ",\"protocol_version\":\"1.0\""
@@ -212,6 +224,8 @@ RetrainResult GuiService::request_retrain(int station_id, const std::string& mod
        << ",\"model_type\":\"" << model_type << "\""
        << ",\"product_name\":\"" << product_name << "\""
        << ",\"image_count\":" << image_count
+       << ",\"data_path\":\"" << data_path << "\""
+       << ",\"session_id\":\"" << session_id << "\""
        << ",\"timestamp\":\"" << make_timestamp() << "\"}";
 
     // ── 5) 원샷 송신 후 close ──
@@ -231,6 +245,191 @@ RetrainResult GuiService::request_retrain(int station_id, const std::string& mod
 
     ::close(train_fd);
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// receive_retrain_upload (v0.13.0) — 클라 업로드 이미지 1장 처리
+//
+// 처리 순서:
+//   1) 입력 검증 (session_id/filename path traversal, 크기 상한)
+//   2) MainServer 로컬 저장 (./storage/training_upload/{session_id}/{filename})
+//      — 감사/복구 용도. 저장 실패해도 학습서버 전달은 시도.
+//   3) 학습서버로 TCP 중계:
+//      · 접속 → TRAIN_DATA_UPLOAD(1108) 송신 (JSON + 이미지 바이트)
+//      · ACK(1109) 수신 대기 (최대 10초)
+//      · close
+//   4) 학습서버 응답을 그대로 RetrainUploadResult 에 담아 반환
+//
+// 구조 주의:
+//   여기서는 매 파일마다 새 TCP 를 여닫는다 (request_retrain 과 동일한 패턴).
+//   단순하지만 연결 오버헤드가 있으므로, 고빈도 업로드 시 향후 지속 연결로 전환 여지.
+// ---------------------------------------------------------------------------
+RetrainUploadResult GuiService::receive_retrain_upload(
+    const std::string& session_id,
+    int station_id,
+    const std::string& model_type,
+    const std::string& filename,
+    const std::vector<uint8_t>& image_bytes)
+{
+    RetrainUploadResult out;
+
+    // ── 1) 입력 검증 ──
+    if (session_id.empty() || session_id.size() > 64 ||
+        session_id.find("..") != std::string::npos ||
+        session_id.find('/')  != std::string::npos ||
+        session_id.find('\\') != std::string::npos) {
+        out.message = "invalid_session_id";
+        return out;
+    }
+    if (station_id != 1 && station_id != 2) {
+        out.message = "invalid_station_id";
+        return out;
+    }
+    if (filename.empty() || filename.size() > 128) {
+        out.message = "invalid_filename";
+        return out;
+    }
+    // filesystem::path().filename() 로 basename 만 뽑아 경로 탐색 차단
+    std::string safe_name = std::filesystem::path(filename).filename().string();
+    if (safe_name.empty() || safe_name == "." || safe_name == "..") {
+        out.message = "invalid_filename";
+        return out;
+    }
+    if (image_bytes.empty() || image_bytes.size() > 50ULL * 1024 * 1024) {
+        out.message = "invalid_image_size";
+        return out;
+    }
+
+    // ── 2) 로컬 저장 (./storage/training_upload/{session}/{file}) ──
+    //     실패는 경고 레벨로만 남기고 학습서버 전달은 계속 시도.
+    try {
+        std::filesystem::path dir = std::filesystem::path("./storage/training_upload")
+                                  / session_id;
+        std::filesystem::create_directories(dir);
+        std::filesystem::path local_path = dir / safe_name;
+        std::ofstream ofs(local_path, std::ios::binary);
+        if (ofs) {
+            ofs.write(reinterpret_cast<const char*>(image_bytes.data()),
+                      static_cast<std::streamsize>(image_bytes.size()));
+        } else {
+            log_warn("CLT", "학습 업로드 로컬 저장 실패 | %s", local_path.c_str());
+        }
+    } catch (const std::exception& exc) {
+        log_warn("CLT", "학습 업로드 로컬 저장 예외 | %s", exc.what());
+    }
+
+    // ── 3) 학습서버 TCP 중계 ──
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        out.message = "socket_create_failed";
+        return out;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(train_port_);
+    inet_pton(AF_INET, train_host_.c_str(), &addr.sin_addr);
+
+    // 송/수신 타임아웃 10초 — 큰 파일 전송 고려
+    struct timeval tv{10, 0};
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
+
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        log_err_train("학습서버 연결 실패 | upload session=%s file=%s",
+                      session_id.c_str(), safe_name.c_str());
+        ::close(fd);
+        out.message = "train_server_connect_failed";
+        return out;
+    }
+
+    // JSON 조립
+    std::ostringstream os;
+    os << "{\"protocol_no\":" << static_cast<int>(ProtocolNo::TRAIN_DATA_UPLOAD)
+       << ",\"protocol_version\":\"1.0\""
+       << ",\"session_id\":\""  << factory::security::escape_json(session_id)  << "\""
+       << ",\"station_id\":"    << station_id
+       << ",\"model_type\":\""  << factory::security::escape_json(model_type)  << "\""
+       << ",\"filename\":\""    << factory::security::escape_json(safe_name)   << "\""
+       << ",\"image_size\":"    << image_bytes.size()
+       << "}";
+    const std::string json_body = os.str();
+
+    // [4B length][JSON] 프레이밍으로 헤더+JSON 송신
+    if (!send_json_frame(fd, json_body)) {
+        ::close(fd);
+        out.message = "train_upload_json_send_failed";
+        return out;
+    }
+    // 이미지 바이너리 송신
+    if (!image_bytes.empty() &&
+        !send_all(fd, image_bytes.data(), image_bytes.size())) {
+        ::close(fd);
+        out.message = "train_upload_binary_send_failed";
+        return out;
+    }
+
+    // ACK(1109) 수신
+    uint8_t hdr[4];
+    auto recv_n_bytes = [](int sock, void* buf, std::size_t n) -> bool {
+        std::size_t total = 0;
+        auto* p = static_cast<char*>(buf);
+        while (total < n) {
+            ssize_t got = ::recv(sock, p + total, n - total, 0);
+            if (got <= 0) return false;
+            total += static_cast<std::size_t>(got);
+        }
+        return true;
+    };
+    if (!recv_n_bytes(fd, hdr, 4)) {
+        ::close(fd);
+        out.message = "train_upload_ack_header_timeout";
+        return out;
+    }
+    uint32_t ack_size = (uint32_t)hdr[0] << 24 | (uint32_t)hdr[1] << 16 |
+                        (uint32_t)hdr[2] << 8  | (uint32_t)hdr[3];
+    if (ack_size == 0 || ack_size > 4096) {
+        ::close(fd);
+        out.message = "train_upload_ack_invalid_size";
+        return out;
+    }
+    std::string ack_json(ack_size, '\0');
+    if (!recv_n_bytes(fd, ack_json.data(), ack_size)) {
+        ::close(fd);
+        out.message = "train_upload_ack_body_timeout";
+        return out;
+    }
+    ::close(fd);
+
+    // ACK 파싱 (경량) — success 와 saved_path 추출
+    auto find_val = [&](const std::string& key) -> std::string {
+        std::string needle = "\"" + key + "\"";
+        auto pos = ack_json.find(needle);
+        if (pos == std::string::npos) return "";
+        auto colon = ack_json.find(':', pos);
+        if (colon == std::string::npos) return "";
+        // 문자열이면 따옴표 사이, bool 이면 raw
+        auto fq = ack_json.find('"', colon);
+        auto comma = ack_json.find_first_of(",}", colon);
+        if (fq != std::string::npos && fq < comma) {
+            auto lq = ack_json.find('"', fq + 1);
+            if (lq == std::string::npos) return "";
+            return ack_json.substr(fq + 1, lq - fq - 1);
+        }
+        // non-string value (bool/number)
+        std::string raw = ack_json.substr(colon + 1, comma - colon - 1);
+        // trim
+        while (!raw.empty() && (raw.front() == ' ' || raw.front() == '\t')) raw.erase(raw.begin());
+        while (!raw.empty() && (raw.back()  == ' ' || raw.back()  == '\t')) raw.pop_back();
+        return raw;
+    };
+
+    const std::string success_raw = find_val("success");
+    out.success    = (success_raw == "true" || success_raw == "1");
+    out.saved_path = find_val("saved_path");
+    if (!out.success) out.message = find_val("message");
+
+    return out;
 }
 
 } // namespace factory

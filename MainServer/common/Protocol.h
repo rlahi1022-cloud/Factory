@@ -65,6 +65,8 @@ enum class ProtocolNo : int {
     RETRAIN_PROGRESS_PUSH  = 154,
     MODEL_DEPLOY_NOTIFY    = 156,
     MODEL_DEPLOY_ACK_EXT   = 157,
+    RETRAIN_UPLOAD         = 158,   // v0.13.0: 클라→메인 학습용 이미지 1장 업로드 (JSON+binary)
+    RETRAIN_UPLOAD_ACK     = 159,   // v0.13.0: 메인→클라 업로드 결과 ACK
     SERVER_HEALTH_PUSH     = 170,
     EXT_ACK                = 190,
     EXT_NACK               = 191,
@@ -89,6 +91,8 @@ enum class ProtocolNo : int {
     TRAIN_COMPLETE_ACK     = 1105,
     TRAIN_FAIL             = 1106,
     TRAIN_FAIL_ACK         = 1107,
+    TRAIN_DATA_UPLOAD      = 1108,  // v0.13.0: 메인→학습 학습용 이미지 1장 (JSON+binary)
+    TRAIN_DATA_UPLOAD_ACK  = 1109,  // v0.13.0: 학습→메인 업로드 결과 ACK
 
     // 헬스체크 1200~
     HEALTH_PING            = 1200,

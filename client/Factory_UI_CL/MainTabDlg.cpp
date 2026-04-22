@@ -100,6 +100,7 @@ CMainTabDlg::~CMainTabDlg()
     KillTimer(IDT_LIVE_UPDATE);
     KillTimer(IDT_STATUSBAR);
     KillTimer(IDT_RECONNECT);
+    KillTimer(IDT_HEARTBEAT);
 
     // 네트워크 연결 해제
     m_net.Disconnect();
@@ -175,6 +176,11 @@ BOOL CMainTabDlg::OnInitDialog()
     SetTimer(IDT_LIVE_UPDATE, 3000, nullptr);
     // IDT_STATUSBAR: 1초마다 상태바 시각 갱신
     SetTimer(IDT_STATUSBAR, 1000, nullptr);
+    // IDT_HEARTBEAT: 10초마다 능동 heartbeat (v0.13.1)
+    // 기존엔 recv 타임아웃(5초) 시에만 heartbeat 를 보냈는데, 푸시가 많을 땐
+    // recv 가 성공해서 heartbeat 가 suppressed → 서버 recv 타임아웃 유발.
+    // 별도 타이머로 무조건 주기적으로 보내 세션을 유지한다.
+    SetTimer(IDT_HEARTBEAT, 10000, nullptr);
 
     // ── 각 페이지에 NetworkClient 주입 (생성 성공한 페이지만) ──
     if (m_stats) m_stats->SetNetworkClient(&m_net);
@@ -484,6 +490,17 @@ void CMainTabDlg::OnTimer(UINT_PTR id)
             KillTimer(IDT_RECONNECT);
         }
     }
+    else if (id == IDT_HEARTBEAT) {
+        // v0.13.1: recv 상태와 무관하게 10초마다 능동 heartbeat 송신.
+        // 이유: 서버 푸시가 빈번하면 recv 타임아웃이 안 떠서 기존 heartbeat(recv-타임아웃
+        //      기반) 가 suppressed 됨 → 서버가 클라→서버 트래픽이 없다고 판단해
+        //      recv 타임아웃으로 close 시키던 문제.
+        // 연결 상태일 때만 보내고, 실패해도 조용히 넘김 (다음 주기에 재시도).
+        if (m_net.IsConnected()) {
+            CString pkt = CPacketBuilder::BuildAck(factory_client::EXT_ACK, _T("heartbeat"));
+            m_net.SendJson(pkt);
+        }
+    }
     CDialogEx::OnTimer(id);
 }
 
@@ -543,8 +560,10 @@ void CMainTabDlg::ConnectToServer()
         if (m_model) m_model->RequestModelList();
 
         // 검사 이력 + 통계를 자동 조회 → 홈 화면에 실데이터 표시
+        // v0.13.2: 홈 NG 리스트가 20+건 나오도록 limit 200 으로 확대
+        //          (NG 비율 10% 가정 → 평균 20건 확보)
         CString histReq = CPacketBuilder::BuildInspectHistoryReq(
-            0, _T(""), _T(""), 100);  // 전체 스테이션, 최대 100건
+            0, _T(""), _T(""), 200);
         m_net.SendJson(histReq);
 
         CString statsReq = CPacketBuilder::BuildStatsReq(0, _T(""), _T(""));
@@ -716,6 +735,9 @@ LRESULT CMainTabDlg::OnNetNgPush(WPARAM, LPARAM lParam)
     if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
     LeaveCriticalSection(&m_csRecs);
 
+    // v0.13.2: 홈 페이지 NG 리스트 맨 위에 prepend (실시간)
+    if (m_home && rec.isNG) m_home->AddNgRow(rec);
+
     // 모든 페이지 업데이트
     PushUpdate();
     if (m_st1) m_st1->Tick();
@@ -791,8 +813,9 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
 
     switch (protocolNo) {
     case factory_client::INSPECT_HISTORY_RES:
-        // 검사 이력 응답 → 통계 페이지에 전달
+        // 검사 이력 응답 → 통계 페이지 + 홈 NG 리스트에 전달 (v0.13.2)
         if (m_stats) m_stats->OnInspectHistoryRes(*pJson);
+        if (m_home)  m_home ->OnInspectHistoryRes(*pJson);
 
         // 접속 직후 1회만: 스테이션별 최신 N건(기본 10)의 이미지를 자동 요청하여
         // 상단 대형 3뷰 + 하단 이력 리스트에 DB 기반 실데이터를 즉시 표시.
@@ -828,6 +851,11 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
     case factory_client::RETRAIN_RES:
         // 재학습 시작 응답
         if (m_model) m_model->OnRetrainRes(*pJson);
+        break;
+
+    case factory_client::RETRAIN_UPLOAD_ACK:
+        // v0.13.0: 학습 이미지 업로드 개별 ACK — 진행률 업데이트 + 전부 끝나면 RETRAIN_REQ 발행
+        if (m_model) m_model->OnRetrainUploadAck(*pJson);
         break;
 
     default:
