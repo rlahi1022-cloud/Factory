@@ -26,6 +26,14 @@ Station2 이중모델(YOLO + PatchCore) 중 해당 슬롯만 교체합니다. �
 학습서버 주소를 `network.training_server_host` (기본값 10.10.10.120) 에서 읽어
 별도 PC에 학습서버를 배치할 수 있습니다.
 
+**HealthChecker 동적 감지 (v0.11.0):** `config.json` 의 `health_check.targets.ip`
+를 비워두면 `ConnectionRegistry` 에 태깅된 `server_type` 으로 매칭 →
+추론/학습 서버를 임의의 PC 에 배치해도 자동 감지. 로그에는 실제 접속 IP 표시.
+
+**Pylon 카메라 연동 (v0.11.0):** `AiServer/Common/PylonCamera.py` 가 Basler
+Pylon SDK 를 감싸 실제 프레임 grab. pypylon 미설치/카메라 미연결 환경에서는
+자동으로 더미 이미지 모드로 폴백.
+
 ## 명명 규칙
 
 | 대상     | 규칙       | 예시 |
