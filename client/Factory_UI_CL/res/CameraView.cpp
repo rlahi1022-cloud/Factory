@@ -46,19 +46,18 @@ bool LoadImageFromBytes(const std::vector<BYTE>& bytes, CImage& out) {
 // StretchBlt 이미지 → 대상 사각형에 맞춰 그리기 (비율 유지 X, 단순 stretch)
 static void DrawImageStretched(CImage& img, CDC& dc, const CRect& rc) {
     if (img.IsNull() || rc.Width() <= 0 || rc.Height() <= 0) return;
-    // CImage 내부 DC 캐시를 사용하지 않고 별도 DC를 생성 — DC 캐시 충돌 완전 방지
-    HDC hSrcDC = ::CreateCompatibleDC(dc.GetSafeHdc());
-    HBITMAP hOld = (HBITMAP)::SelectObject(hSrcDC, (HBITMAP)img);
+    // CImage::StretchBlt(HDC) 대신 명시적 GetDC/ReleaseDC 사용
+    // — 더블버퍼 mem DC와 CImage 내부 DC 캐시 충돌 방지
+    HDC hImgDC = img.GetDC();
     int oldMode = ::SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
     ::SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, nullptr);
     ::StretchBlt(dc.GetSafeHdc(),
                  rc.left, rc.top, rc.Width(), rc.Height(),
-                 hSrcDC,
+                 hImgDC,
                  0, 0, img.GetWidth(), img.GetHeight(),
                  SRCCOPY);
     ::SetStretchBltMode(dc.GetSafeHdc(), oldMode);
-    ::SelectObject(hSrcDC, hOld);
-    ::DeleteDC(hSrcDC);
+    img.ReleaseDC();
 }
 
 } // namespace CameraViewUtil
@@ -514,21 +513,20 @@ void CNgHistoryList::DrawRow(CDC& dc, const Entry& e, const CRect& rowRc) {
         int x = rowRc.left + pad + labelW + pad + (thumbW + pad) * colIndex;
         int y = rowRc.top + pad;
         CRect tc(x, y, x + thumbW, y + thumbH);
+        // 배경
         dc.FillSolidRect(&tc, RGB(10, 10, 14));
         if (!img.IsNull() && thumbW > 4 && thumbH > 4) {
-            // CImage 내부 DC 캐시를 사용하지 않고 별도 DC를 생성해서 충돌 방지
-            HDC hSrcDC = ::CreateCompatibleDC(dc.GetSafeHdc());
-            HBITMAP hOld = (HBITMAP)::SelectObject(hSrcDC, (HBITMAP)img);
+            CImage& imgMut = const_cast<CImage&>(img);
+            HDC hImgDC = imgMut.GetDC();
             int oldMode = ::SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
             ::SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, nullptr);
             ::StretchBlt(dc.GetSafeHdc(),
                          tc.left, tc.top, tc.Width(), tc.Height(),
-                         hSrcDC,
+                         hImgDC,
                          0, 0, img.GetWidth(), img.GetHeight(),
                          SRCCOPY);
             ::SetStretchBltMode(dc.GetSafeHdc(), oldMode);
-            ::SelectObject(hSrcDC, hOld);
-            ::DeleteDC(hSrcDC);
+            imgMut.ReleaseDC();
         }
         // 외곽선 + 캡션
         CPen pen(PS_SOLID, 1, RGB(68, 68, 78));

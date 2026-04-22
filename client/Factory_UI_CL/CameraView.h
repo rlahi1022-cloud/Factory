@@ -3,6 +3,7 @@
 #include "InspectionData.h"
 #include <atlimage.h>   // CImage — PNG/JPEG/BMP 디코드용 (ATL, MFC 프로젝트에 기본 포함)
 #include <vector>
+#include <deque>
 
 // 카메라 뷰 (Pylon 이미지 플레이스홀더 + 서버 수신 이미지 렌더링)
 class CCameraView : public CStatic {
@@ -21,7 +22,8 @@ protected:
     double  m_score;
     EDefect m_defect;
     bool    m_flash;
-    CImage  m_img;  // 디코드된 이미지 (비었으면 IsNull() == true)
+    CImage  m_img;          // 디코드된 이미지 (비었으면 IsNull() == true)
+    CRITICAL_SECTION m_cs;  // m_img 스레드 보호
     void DrawBg(CDC& dc, CRect& rc);
     void DrawYolo(CDC& dc, CRect& rc);
     void DrawNgBox(CDC& dc, CRect& rc);
@@ -41,7 +43,8 @@ public:
     void SetImage(const std::vector<BYTE>& bytes);
 protected:
     bool   m_active;
-    CImage m_img;   // 디코드된 히트맵 (비었으면 플레이스홀더 배경)
+    CImage m_img;           // 디코드된 히트맵 (비었으면 플레이스홀더 배경)
+    CRITICAL_SECTION m_cs;  // m_img 스레드 보호
     afx_msg void OnPaint();
     DECLARE_MESSAGE_MAP()
 };
@@ -62,9 +65,10 @@ public:
     void SetImage(const std::vector<BYTE>& bytes);
 protected:
     bool   m_active;
-    double m_cx1, m_cy1;  // 이상 영역 1 중심 (비율)
-    double m_cx2, m_cy2;  // 이상 영역 2 중심 (비율)
-    CImage m_img;         // 디코드된 마스크 이미지
+    double m_cx1, m_cy1;    // 이상 영역 1 중심 (비율)
+    double m_cx2, m_cy2;    // 이상 영역 2 중심 (비율)
+    CImage m_img;           // 디코드된 마스크 이미지
+    CRITICAL_SECTION m_cs;  // m_img 스레드 보호
     void draw_bg(CDC& dc, CRect& rc);
     void draw_mask_circles(CDC& dc, CRect& rc);
     void draw_label(CDC& dc, CRect& rc);
@@ -98,6 +102,13 @@ public:
         CImage  img;                 // 디코드된 원본
         CImage  heat;                // 디코드된 히트맵
         CImage  mask;                // 디코드된 마스크
+
+        // CImage는 복사 불가 — move만 허용
+        Entry() = default;
+        Entry(Entry&&) = default;
+        Entry& operator=(Entry&&) = default;
+        Entry(const Entry&) = delete;
+        Entry& operator=(const Entry&) = delete;
     };
 
     // 새 NG 1건을 리스트 맨 위에 추가. 초과분은 꼬리부터 버림.
@@ -112,7 +123,8 @@ public:
     int  Count() const { return static_cast<int>(m_entries.size()); }
 
 protected:
-    std::vector<Entry> m_entries;
+    std::deque<Entry>  m_entries;   // deque: 재할당 시 복사 없음 → CImage 안전
+    CRITICAL_SECTION   m_cs;        // m_entries 스레드 보호
     int m_maxEntries = 10;
     int m_rowH       = 58;           // 각 행 높이 (px)
     int m_scrollY    = 0;            // 현재 세로 스크롤 오프셋 (px)
