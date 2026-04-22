@@ -38,8 +38,7 @@ struct UserSession {
 // ── QCUtil — 유틸리티 함수 모음 ──────────────────────────────────────────
 namespace QCUtil {
     CString DefectName(EDefect d);                          // 결함 → 한글 이름
-    InspectionRecord GenRecord(int nextId);                  // 시뮬레이션 레코드 1건 생성
-    std::vector<InspectionRecord> GenInitialHistory();       // 초기 이력 20건 생성
+    // v0.14.6: 시뮬레이션 데이터 생성 함수(GenRecord/GenInitialHistory) 제거 — 실서버 전용.
     COLORREF ColOK();         // 정상 초록: (0,128,0)
     COLORREF ColNG();         // 불량 빨강: (204,0,0)
     COLORREF ColWarn();       // 경고 주황: (255,140,0)

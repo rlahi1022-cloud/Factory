@@ -26,41 +26,8 @@ CString DefectName(EDefect d) {
     }
 }
 
-// GenRecord: 시뮬레이션용 랜덤 검사 레코드 1건 생성
-// 파라미터: nextId — 부여할 검사 ID
-// 반환값: 랜덤 생성된 검사 레코드
-// 동작: 8% 확률로 NG, 나머지는 OK. Station은 1/2 랜덤 배정.
-InspectionRecord GenRecord(int nextId) {
-    InspectionRecord r;
-    r.id      = nextId;
-    r.station = (rand() % 2) + 1;         // 1(입고) 또는 2(조립) 랜덤
-    r.isNG    = (rand() % 100) < 8;       // 8% 확률로 불량
-    SYSTEMTIME st; GetLocalTime(&st);
-    r.time.Format(_T("%02d:%02d:%02d"), st.wHour, st.wMinute, st.wSecond);
-    if (r.isNG) {
-        r.score  = 0.60 + (rand() % 35) / 100.0;
-        if (r.station == 1) r.defect = EDefect::Anomaly;
-        else {
-            static EDefect pool[] = { EDefect::CapLoose, EDefect::CapMissing,
-                EDefect::LabelTilt, EDefect::LabelTorn, EDefect::FillLow };
-            r.defect = pool[rand() % 5];
-        }
-    } else {
-        r.score  = (rand() % 30) / 100.0;
-        r.defect = EDefect::None;
-    }
-    r.latencyMs = 40 + rand() % 80;
-    return r;
-}
-
-// GenInitialHistory: 프로그램 시작 시 초기 이력 20건 생성
-// srand: 난수 시드를 현재 시각으로 초기화 (매번 다른 데이터 생성)
-std::vector<InspectionRecord> GenInitialHistory() {
-    srand((unsigned)time(nullptr));
-    std::vector<InspectionRecord> v;
-    for (int i = 0; i < 20; ++i) v.push_back(GenRecord(10000 + i));
-    return v;
-}
+// v0.14.6: GenRecord / GenInitialHistory 제거 — 시뮬레이션 데이터 생성 기능 삭제.
+//   실서버 데이터만 UI 에 반영되도록 정리. 헤더(InspectionData.h) 선언도 함께 제거.
 
 // ── 색상 유틸리티 ─────────────────────────────────────────────────────────
 // MFC 클래식 UI 스타일에 맞는 색상값을 반환합니다.

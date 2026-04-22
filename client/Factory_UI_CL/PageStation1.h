@@ -29,6 +29,11 @@ public:
                     const std::vector<BYTE>& image,
                     const std::vector<BYTE>& heatmap,
                     const std::vector<BYTE>& pred_mask);
+
+    // v0.14.6: 로그인 직후 DB 이력 응답(INSPECT_HISTORY_RES) 에서 station_id=1 NG 만
+    //   골라 하단 m_ngList 를 초기 채움. 텍스트 전용 리스트이므로 이미지는 주입하지 않음.
+    //   실시간 NG_PUSH 가 들어오면 기존 AddNgEntry 경로로 맨 위에 누적됨.
+    void PopulateNgHistoryFromJson(const std::string& json);
 protected:
     CCameraView     m_cam;     // 패널 1: 원본 이미지 (Image)
     CHeatmapView    m_heat;    // 패널 2: Anomaly Map 오버레이

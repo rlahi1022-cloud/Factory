@@ -88,8 +88,13 @@ void GuiRouter::route(int client_fd, const std::string& remote_addr,
             // v0.14.0: 검사 pause/resume 요청 → 추론서버에 중계
             handle_inspect_control(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::EXT_ACK):
+            // heartbeat — 너무 빈번해서 로그 생략
+            break;
         case static_cast<int>(ProtocolNo::INSPECT_NG_ACK_EXT):
-            // 클라이언트 → 서버 ACK (keepalive, NG 수신 확인 등) — 별도 응답 불필요
+            // NG 푸시 수신 확인 — 클라가 **무사히** 푸시를 디코드한 신호.
+            // 이 로그가 "클라이언트 해제" 직전에 찍히면 ACK 보낸 뒤 끊긴 것(정상 경로 중 끊김).
+            // 이 로그가 안 찍히고 바로 해제되면 NG 수신 직후 프로세스가 죽었다는 뜻(크래시 의심).
+            log_clt("NG ACK 수신 | fd=%d ip=%s", client_fd, remote_addr.c_str());
             break;
         default:
             log_clt("미처리 프로토콜 | no=%d ip=%s", protocol_no, remote_addr.c_str());

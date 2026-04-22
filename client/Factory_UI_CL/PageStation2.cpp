@@ -27,9 +27,10 @@ BEGIN_MESSAGE_MAP(CPageStation2, CDialogEx)
 END_MESSAGE_MAP()
 
 CPageStation2::CPageStation2(CWnd* p) : CDialogEx(IDD_PAGE_STATION2,p), m_last{} {
-    m_last.id = 10000; m_last.station = 2;
+    // v0.14.6: 초기 상태 = 검사 대기. 더미 score 제거.
+    m_last.id = 0; m_last.station = 2;
     m_last.time = _T("--:--:--"); m_last.isNG = false;
-    m_last.score = 0.15; m_last.defect = EDefect::None; m_last.latencyMs = 65;
+    m_last.score = 0.0; m_last.defect = EDefect::None; m_last.latencyMs = 0;
 }
 void CPageStation2::DoDataExchange(CDataExchange* pDX) {
     CDialogEx::DoDataExchange(pDX);
@@ -50,21 +51,34 @@ BOOL CPageStation2::OnInitDialog() {
 
     Refresh(); return TRUE;
 }
+// v0.14.6: Station1 과 동일 정책 — NG 만 실시간 창에 반영.
+//   OK 레코드는 무시해 점수/결과 깜빡임 차단.
 void CPageStation2::Update(const std::vector<InspectionRecord>& recs) {
-    for (int i=(int)recs.size()-1;i>=0;--i)
-        if(recs[i].station==2){m_last=recs[i];break;}
-    Refresh();
+    for (int i=(int)recs.size()-1; i>=0; --i) {
+        if (recs[i].station == 2 && recs[i].isNG) {
+            m_last = recs[i];
+            Refresh();
+            return;
+        }
+    }
 }
 void CPageStation2::Tick() { m_cam.Tick(); }
 void CPageStation2::Refresh() {
-    m_cam.SetInspection(2,m_last.isNG,m_last.score,m_last.defect);
+    m_cam.SetInspection(2, m_last.isNG, m_last.score, m_last.defect);
     m_heat.SetActive(m_last.isNG);
     CWnd* w;
-    if ((w=GetDlgItem(IDC_STATIC_S2_RESULT))) w->SetWindowText(m_last.isNG?_T("NG"):_T("OK"));
-    CString s; s.Format(_T("PatchCore 이상 점수: %.2f"),m_last.score);
-    if ((w=GetDlgItem(IDC_STATIC_S2_SCORE))) w->SetWindowText(s);
-    if ((w=GetDlgItem(IDC_STATIC_S2_LED)))
-        w->SetWindowText(m_last.isNG?CString(_T("⚠ "))+QCUtil::DefectName(m_last.defect):_T("대기중"));
+    // v0.14.6: NG 때만 결과/점수 표시. OK 상태면 "--" / 대기.
+    if (m_last.isNG) {
+        if ((w = GetDlgItem(IDC_STATIC_S2_RESULT))) w->SetWindowText(_T("NG"));
+        CString s; s.Format(_T("PatchCore 이상 점수: %.2f"), m_last.score);
+        if ((w = GetDlgItem(IDC_STATIC_S2_SCORE))) w->SetWindowText(s);
+        if ((w = GetDlgItem(IDC_STATIC_S2_LED)))
+            w->SetWindowText(CString(_T("⚠ ")) + QCUtil::DefectName(m_last.defect));
+    } else {
+        if ((w = GetDlgItem(IDC_STATIC_S2_RESULT))) w->SetWindowText(_T("--"));
+        if ((w = GetDlgItem(IDC_STATIC_S2_SCORE)))  w->SetWindowText(_T(""));
+        if ((w = GetDlgItem(IDC_STATIC_S2_LED)))    w->SetWindowText(_T("대기중"));
+    }
     // YOLO list
     m_listYolo.DeleteAllItems();
     struct Det{LPCTSTR cls;double conf;bool ok;};

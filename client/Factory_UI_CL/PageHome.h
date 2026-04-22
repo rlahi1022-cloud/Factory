@@ -2,8 +2,11 @@
 #include "pch.h"
 #include "Resource.h"
 #include "InspectionData.h"
+#include <functional>
 #include <string>
 #include <vector>
+
+class CNetworkClient;  // fwd — 더블클릭 시 이미지 요청 송신용
 
 class CPageHome : public CDialogEx {
     DECLARE_DYNAMIC(CPageHome)
@@ -25,6 +28,13 @@ public:
     // 상한 MAX_NG_ROWS 초과 시 가장 오래된 항목 자동 제거.
     void AddNgRow(const InspectionRecord& r);
 
+    // v0.14.6: 네트워크 핸들 + 탭 전환 콜백 주입.
+    //   더블클릭 시 해당 행의 inspection_id 로 서버에 이미지 요청 + 해당 Station 탭으로 전환.
+    void SetNetworkClient(CNetworkClient* net) { m_net = net; }
+    void SetOnRequestShowImage(std::function<void(int station_id, int inspection_id)> cb) {
+        m_onRequestShowImage = std::move(cb);
+    }
+
 protected:
     CListCtrl m_listNG;
 
@@ -34,8 +44,13 @@ protected:
     // 리스트에 한 행을 맨 위에 삽입하는 내부 헬퍼
     void InsertNgItem(int row, const InspectionRecord& r);
 
+    CNetworkClient* m_net = nullptr;
+    std::function<void(int, int)> m_onRequestShowImage;  // (station_id, inspection_id)
+
     virtual BOOL OnInitDialog() override;
     virtual void DoDataExchange(CDataExchange* pDX) override;
     afx_msg void OnPaint();
+    // v0.14.6: NG 리스트 더블클릭 → 해당 inspection 이미지 요청
+    afx_msg void OnLvnDoubleClickNgList(NMHDR* pNMHDR, LRESULT* pResult);
     DECLARE_MESSAGE_MAP()
 };

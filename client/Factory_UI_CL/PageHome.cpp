@@ -18,11 +18,14 @@
 
 #include "pch.h"
 #include "PageHome.h"
+#include "NetworkClient.h"
 #include "PacketBuilder.h"   // ExtractInt/String/Double/Bool
 
 IMPLEMENT_DYNAMIC(CPageHome, CDialogEx)
 BEGIN_MESSAGE_MAP(CPageHome, CDialogEx)
     ON_WM_PAINT()
+    // v0.14.6: NG 리스트 더블클릭 → 이미지 요청
+    ON_NOTIFY(NM_DBLCLK, IDC_LIST_NG, &CPageHome::OnLvnDoubleClickNgList)
 END_MESSAGE_MAP()
 
 CPageHome::CPageHome(CWnd* p) : CDialogEx(IDD_PAGE_HOME, p) {}
@@ -93,7 +96,8 @@ void CPageHome::Update(const std::vector<InspectionRecord>& recs)
     s.Format(_T("%d"), ng);      set(IDC_STATIC_NG, s);
     s.Format(_T("%.2f%%"), total > 0 ? 100.0 * ng / total : 0.0);
     set(IDC_STATIC_DEFECT_RATE, s);
-    set(IDC_STATIC_UPTIME, _T("98.7%"));
+    // v0.14.6: 더미 98.7% 제거. 실 uptime 은 서버 헬스체크로 추후 채울 예정.
+    set(IDC_STATIC_UPTIME, _T("-"));
 
     // ── 2) 스테이션별 통계 (목업의 ①입고 / ②조립 개별 박스) ──
     s.Format(_T("%d"), s1Total - s1Ng);  set(IDC_STATIC_S1_OK, s);
@@ -233,5 +237,58 @@ void CPageHome::AddNgRow(const InspectionRecord& r)
     while (total > MAX_NG_ROWS) {
         m_listNG.DeleteItem(total - 1);
         --total;
+    }
+}
+
+// ============================================================================
+// OnLvnDoubleClickNgList (v0.14.6) — 더블클릭 → 해당 NG 이미지 로드 + 탭 전환
+// ============================================================================
+// 흐름:
+//   1) 클릭된 row 에서 ID 컬럼(0) 과 스테이션 컬럼(1) 텍스트 추출
+//   2) CNetworkClient::SendJson 으로 INSPECT_IMAGE_REQ(116) 전송
+//      → 서버가 해당 inspection_id 의 원본/히트맵/마스크 3장을 INSPECT_IMAGE_RES(117)
+//         로 회신 → NetworkClient 가 WM_NET_NG_IMAGE 로 UI에 전달
+//      → MainTabDlg::OnNetNgImage 가 station_id 에 따라 Station1/2 페이지에 주입
+//   3) m_onRequestShowImage 콜백으로 MainTabDlg 에 "Station N 탭으로 전환" 요청.
+//      사용자가 이미지 즉시 확인 가능.
+void CPageHome::OnLvnDoubleClickNgList(NMHDR* pNMHDR, LRESULT* pResult)
+{
+    LPNMITEMACTIVATE p = reinterpret_cast<LPNMITEMACTIVATE>(pNMHDR);
+    *pResult = 0;
+
+    const int row = p->iItem;
+    if (row < 0) return;
+
+    // 컬럼 0: ID (정수). 컬럼 1: "#1" / "#2" 형태 스테이션.
+    CString idText   = m_listNG.GetItemText(row, 0);
+    CString staText  = m_listNG.GetItemText(row, 1);
+
+    int inspectionId = _ttoi(idText);
+    if (inspectionId <= 0) {
+        TRACE(_T("[PageHome] 더블클릭 — 잘못된 id=%s\n"), (LPCTSTR)idText);
+        return;
+    }
+
+    // 스테이션 파싱 — "#1" → 1, "#2" → 2. 실패 시 1 로 폴백.
+    int stationId = 1;
+    if (staText.GetLength() >= 2) {
+        stationId = _ttoi(staText.Mid(1));
+        if (stationId != 1 && stationId != 2) stationId = 1;
+    }
+
+    TRACE(_T("[PageHome] 더블클릭 → 이미지 요청 | id=%d station=%d\n"),
+          inspectionId, stationId);
+
+    // 1) 이미지 요청 송신
+    if (m_net && m_net->IsConnected()) {
+        CString req = CPacketBuilder::BuildInspectImageReq(inspectionId);
+        m_net->SendJson(req);
+    } else {
+        TRACE(_T("[PageHome] 네트워크 미연결 — 이미지 요청 생략\n"));
+    }
+
+    // 2) 부모(MainTabDlg) 에게 탭 전환 요청. 응답이 오면 해당 Station 페이지 상단에 표시됨.
+    if (m_onRequestShowImage) {
+        m_onRequestShowImage(stationId, inspectionId);
     }
 }

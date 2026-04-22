@@ -132,7 +132,9 @@ void CPageModel::OnBtnSelectFolder()
     m_folderPath = dlg.GetPathName();
     m_files.clear();
 
-    // 선택한 폴더의 이미지 파일 목록 수집 (.jpg + .png 모두 수집)
+    // 선택한 폴더의 이미지 파일 목록 수집.
+    // v0.14.6: Basler Pylon 산업카메라 저장본은 BMP 로 떨어지는 경우가 많아 BMP 포함.
+    //   jpg/jpeg/png/bmp 네 가지 확장자 전부 수용.
     auto collect = [&](LPCTSTR pattern) {
         CFileFind finder;
         BOOL found = finder.FindFile(m_folderPath + pattern);
@@ -152,7 +154,9 @@ void CPageModel::OnBtnSelectFolder()
         finder.Close();
     };
     collect(_T("\\*.jpg"));
+    collect(_T("\\*.jpeg"));
     collect(_T("\\*.png"));
+    collect(_T("\\*.bmp"));
 
     if (m_files.empty()) {
         MessageBox(_T("선택한 폴더에 이미지 파일이 없습니다."),

@@ -63,6 +63,7 @@ protected:
     virtual void DoDataExchange(CDataExchange* pDX) override;
 
     afx_msg void OnPaint();
+    afx_msg BOOL OnEraseBkgnd(CDC* pDC);   // v0.14.6: 깜빡임 방지
     afx_msg void OnBtnQuery();
     afx_msg void OnBtnExportCSV();
 

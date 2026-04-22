@@ -20,6 +20,7 @@
 IMPLEMENT_DYNAMIC(CPageStats, CDialogEx)
 BEGIN_MESSAGE_MAP(CPageStats, CDialogEx)
     ON_WM_PAINT()
+    ON_WM_ERASEBKGND()   // v0.14.6: 배경 지움 억제해 깜빡임 차단
     ON_BN_CLICKED(IDC_BTN_QUERY,      OnBtnQuery)
     ON_BN_CLICKED(IDC_BTN_EXPORT_CSV, OnBtnExportCSV)
 END_MESSAGE_MAP()
@@ -40,18 +41,34 @@ void CPageStats::Rebuild(){
     m_pareto={{_T("라벨기울어짐"),5},{_T("캡미체결"),3},{_T("이물질"),2},{_T("크랙"),1},{_T("미충전"),1}};
 }
 
+// v0.14.6: 통계 차트 영역 더블버퍼링 — 갱신 시 깜빡임 제거.
 void CPageStats::OnPaint(){
     CPaintDC dc(this);
     CRect cr; GetClientRect(&cr);
+
+    CDC mem; CBitmap bmp;
+    mem.CreateCompatibleDC(&dc);
+    bmp.CreateCompatibleBitmap(&dc, cr.Width(), cr.Height());
+    CBitmap* pOld = mem.SelectObject(&bmp);
+
+    // 다이얼로그 기본 배경색으로 채우고 그 위에 차트 렌더링
+    mem.FillSolidRect(&cr, ::GetSysColor(COLOR_BTNFACE));
+
     int mg=6, top=36, ch=160, lh=110;
     int hw=(cr.Width()-mg*3)/2;
     CRect trendRc(mg,top,mg+hw,top+ch);
     CRect paretoRc(mg*2+hw,top,cr.right-mg,top+ch);
     CRect latRc(mg,top+ch+mg,cr.right-mg,top+ch+mg+lh);
-    DrawTrend(dc,trendRc);
-    DrawPareto(dc,paretoRc);
-    DrawLatency(dc,latRc);
+    DrawTrend(mem,trendRc);
+    DrawPareto(mem,paretoRc);
+    DrawLatency(mem,latRc);
+
+    dc.BitBlt(0, 0, cr.Width(), cr.Height(), &mem, 0, 0, SRCCOPY);
+    mem.SelectObject(pOld);
 }
+
+// v0.14.6: 배경 지움 억제 — OnPaint 가 더블버퍼 안에서 배경까지 그림.
+BOOL CPageStats::OnEraseBkgnd(CDC* /*pDC*/) { return TRUE; }
 
 void CPageStats::DrawGrid(CDC& dc, CRect rc, int rows, int cols){
     CPen gp(PS_SOLID,1,RGB(204,204,204)); CPen* p=dc.SelectObject(&gp);
