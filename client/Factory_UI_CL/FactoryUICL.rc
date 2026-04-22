@@ -208,7 +208,7 @@ BEGIN
     // x=583 (392+185+6), w=210
     GROUPBOX "Result",                IDC_STATIC,         583, 14, 210,  80
     LTEXT    "OK",                    IDC_STATIC_S1_RESULT, 593, 24, 190, 42, SS_CENTER
-    LTEXT    "Score: 0.00 / Thresh: 0.50", IDC_STATIC_S1_SCORE, 591, 68, 196, 10
+    LTEXT    "이상 점수: 0.00", IDC_STATIC_S1_SCORE, 591, 68, 196, 10
 
     GROUPBOX "Settings",              IDC_STATIC,         583,  98, 210,  74
     LTEXT    "Model:",                IDC_STATIC,         591, 110,  40,  10

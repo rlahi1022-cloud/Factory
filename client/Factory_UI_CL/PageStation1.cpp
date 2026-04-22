@@ -51,7 +51,10 @@ BOOL CPageStation1::OnInitDialog() {
     };
     set(IDC_STATIC_S1_CFG_MODEL,    _T("PatchCore v1.2.0"));
     set(IDC_STATIC_S1_CFG_INPUT,    _T("224×224"));
-    set(IDC_STATIC_S1_CFG_THRESH,   _T("0.50"));
+    // v0.14.9: 하드코딩 "0.50" 제거. 추론서버가 F1-score 최적화로 학습 후
+    // 자동 계산한 임계값(station1_patchcore_threshold.json) 을 사용하므로
+    // 클라이언트는 고정값을 표기하지 않고 "AUTO (F1 최적화)" 로 표시한다.
+    set(IDC_STATIC_S1_CFG_THRESH,   _T("AUTO (F1 최적화)"));
     set(IDC_STATIC_S1_CFG_BACKBONE, _T("ResNet-18 (사전학습)"));
 
     // v0.14.3: Start/Stop 버튼 초기 상태 — 기본 "검사 중"으로 간주해 Start 비활성
