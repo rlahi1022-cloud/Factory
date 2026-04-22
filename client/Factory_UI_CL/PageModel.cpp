@@ -46,8 +46,10 @@ BOOL CPageModel::OnInitDialog()
 
     CComboBox* cb = (CComboBox*)GetDlgItem(IDC_COMBO_TARGET);
     if (cb) {
-        cb->AddString(_T("Station #1 — PatchCore"));
-        cb->AddString(_T("Station #2 — YOLO11"));
+        // 인덱스는 OnBtnRetrain() 분기와 동일한 순서를 유지해야 함
+        cb->AddString(_T("Station #1 — PatchCore"));   // 0
+        cb->AddString(_T("Station #2 — YOLO11"));      // 1
+        cb->AddString(_T("Station #2 — PatchCore"));   // 2 (라벨 표면 품질)
         cb->SetCurSel(0);
     }
 
@@ -142,13 +144,17 @@ void CPageModel::OnBtnRetrain()
 {
     if (m_files.empty() || m_training) return;
 
-    // 학습 대상 정보 추출
+    // 학습 대상 정보 추출 (콤보 인덱스 순서: OnInitDialog 의 AddString 순서와 일치)
+    //   0: Station #1 — PatchCore
+    //   1: Station #2 — YOLO11
+    //   2: Station #2 — PatchCore (라벨 표면)
     int station_id = 1;
     CString model_type = _T("PatchCore");
     CComboBox* cb = (CComboBox*)GetDlgItem(IDC_COMBO_TARGET);
     if (cb) {
         int sel = cb->GetCurSel();
-        if (sel == 1) { station_id = 2; model_type = _T("YOLO11"); }
+        if (sel == 1)      { station_id = 2; model_type = _T("YOLO11");    }
+        else if (sel == 2) { station_id = 2; model_type = _T("PatchCore"); }
     }
 
     CString product_name;

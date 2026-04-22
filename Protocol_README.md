@@ -113,6 +113,29 @@
 
 **최대 8분 동안 재시도** — 짧은 순단(1~5초) 및 중기 장애(수십 초) 모두 복구 가능.
 
+#### MODEL_RELOAD_CMD JSON 본문 (v0.11.0 갱신)
+
+```json
+{
+  "protocol_no": 1010,
+  "protocol_version": "1.0",
+  "station_id": 2,
+  "model_type": "PatchCore",   // ← v0.11.0 추가: "PatchCore" | "YOLO11"
+  "model_path": "./storage/models/station2/v20260422_1530.ckpt",
+  "version":    "v20260422_1530",
+  "image_size": 123456789       // 뒤따르는 모델 바이너리 바이트 수
+}
+```
+
+**브로드캐스트 + 수신측 필터 정책 (v0.11.0)**
+- MainServer 는 ConnectionRegistry 에 등록된 **모든 추론서버 연결**로 브로드캐스트한다.
+- 추론서버(`StationRunner._handle_model_reload`)가 다음을 검사한다:
+  1. `station_id` 가 자신의 `config.station_id` 와 다르면 **조용히 무시**.
+  2. Station2 이중모델 구조에서 `model_type` 으로 슬롯 구분:
+     - `"YOLO11"`  → `config.model_path`          (YOLO 슬롯)
+     - `"PatchCore"` → `config.patchcore_model_path` (PatchCore 슬롯)
+  3. `Inferencer.load_model()` 이 양쪽 슬롯을 모두 재로드한다 (바뀌지 않은 슬롯은 동일 파일 재로딩).
+
 ## 필수 필드 (중요)
 
 ### TRAIN_COMPLETE (1104) 본문 필수 필드

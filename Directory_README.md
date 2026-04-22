@@ -20,6 +20,12 @@ Factory/
 학습 완료된 가중치(`*.ckpt`, `*.pt`)는 TCP 바이너리 전송으로
 메인서버(130)를 경유하여 추론서버에 배포됩니다 (MODEL_RELOAD_CMD).
 
+**배포 라우팅 (v0.11.0):** MODEL_RELOAD_CMD JSON 에 `station_id` + `model_type`
+(PatchCore/YOLO11) 필드가 포함되어, 추론서버가 자신의 스테이션이 아닌 메시지는 무시하고
+Station2 이중모델(YOLO + PatchCore) 중 해당 슬롯만 교체합니다. 메인서버는
+학습서버 주소를 `network.training_server_host` (기본값 10.10.10.120) 에서 읽어
+별도 PC에 학습서버를 배치할 수 있습니다.
+
 ## 명명 규칙
 
 | 대상     | 규칙       | 예시 |

@@ -38,6 +38,9 @@
 - TCP 클라이언트는 끊김 시 자동 재연결 + 백그라운드 receiver가 ACK 라우팅.
 - HEALTH_PING(1200) 수신 시 HEALTH_PONG(1201) 자동 응답.
 - MODEL_RELOAD_CMD(1010) 수신 시 콜백 실행 + MODEL_RELOAD_RES(1011) 응답.
+  - **station_id 필터 (v0.11.0)**: JSON 의 `station_id` 가 자신과 다르면 무시.
+  - **model_type 슬롯 라우팅 (v0.11.0)**: Station2 이중모델에서 `"YOLO11"` → `config.model_path`,
+    `"PatchCore"` → `config.patchcore_model_path` 로 분기 업데이트 후 `Inferencer.load_model()` 호출.
 - 종료는 sentinel 객체를 큐에 주입 → 워커가 자연 종료.
 
 ## 신뢰성 개선 (v0.8.0)

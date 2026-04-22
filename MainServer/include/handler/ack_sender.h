@@ -53,7 +53,9 @@ private:
     void on_model_reload_requested(const std::any& payload);
 
     /// 추론서버에 MODEL_RELOAD_CMD(1010) + 모델 바이너리 전송
+    /// @param model_type "PatchCore" 또는 "YOLO11" — 추론서버가 교체할 슬롯 구분용
     bool send_model_reload(int station_id,
+                           const std::string& model_type,
                            const std::string& model_path,
                            const std::string& version,
                            const std::vector<uint8_t>& model_bytes);

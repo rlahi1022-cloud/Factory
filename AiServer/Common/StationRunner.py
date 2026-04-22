@@ -790,26 +790,55 @@ class StationRunner:
     # 목적: 메인 서버에서 MODEL_RELOAD_CMD(모델 재로드 명령)가 수신되었을 때 호출되는
     #       콜백 함수입니다. 새 모델 파일 경로로 AI 모델을 다시 로드합니다.
     #       이를 통해 서버를 재시작하지 않고도 모델을 업데이트할 수 있습니다.
+    #
+    # 필터/라우팅:
+    #   - station_id 가 자신과 다르면 무시 (메인서버는 전 추론서버에 브로드캐스트)
+    #   - Station2 이중모델(YOLO+PatchCore)의 경우 model_type 으로 슬롯 구분:
+    #       model_type="YOLO11"   → self._config.model_path (YOLO 슬롯)
+    #       model_type="PatchCore"→ self._config.patchcore_model_path (PatchCore 슬롯)
+    #   - Station1은 PatchCore 단일이므로 항상 model_path 에 배정
+    #
     # 매개변수:
-    #   cmd_dict (dict): 메인 서버에서 보낸 명령 딕셔너리. "model_path" 키에 새 모델 경로가 담깁니다.
+    #   cmd_dict (dict): {"station_id", "model_type", "model_path", "version", ...}
     # 반환값: None
     # -----------------------------------------------------------------------
     def _handle_model_reload(self, cmd_dict: dict) -> None:
         """MODEL_RELOAD_CMD 수신 시 추론기 모델 재로드."""
-        # 명령 딕셔너리에서 새 모델 파일 경로를 가져옵니다.
-        # .get()을 사용하여 키가 없으면 빈 문자열("")을 기본값으로 반환합니다.
+        # 1) station_id 필터 — 자신의 스테이션이 아니면 무시
+        target_station = int(cmd_dict.get("station_id", 0))
+        my_station = int(getattr(self._config, "station_id", 0))
+        if target_station and target_station != my_station:
+            logger.debug("MODEL_RELOAD 무시 | target=%d my=%d",
+                         target_station, my_station)
+            return
+
+        # 2) 새 모델 경로 / 타입 추출
         model_path = cmd_dict.get("model_path", "")
+        model_type = cmd_dict.get("model_type", "")
+        if not model_path:
+            logger.warning("MODEL_RELOAD: model_path 비어있음 — 재로드만 수행")
+            self._inferencer.load_model()
+            return
 
-        # 모델 경로가 있으면(빈 문자열이 아니면) 설정 객체의 모델 경로를 업데이트합니다.
-        # 빈 문자열이면 기존 경로를 유지합니다 (모델 경로 변경 없이 재로드만 하는 경우).
-        if model_path:
+        # 3) 모델 타입에 따라 올바른 슬롯에 배정
+        #    Station2 + "PatchCore" → patchcore_model_path
+        #    그 외 (Station1 전체, Station2 YOLO11) → model_path
+        is_station2_patchcore = (
+            my_station == 2 and model_type.upper().startswith("PATCHCORE")
+        )
+        if is_station2_patchcore:
+            old = getattr(self._config, "patchcore_model_path", "")
+            self._config.patchcore_model_path = model_path
+            logger.info("Reloading PatchCore slot (station2) | %s → %s",
+                        old, model_path)
+        else:
+            old = getattr(self._config, "model_path", "")
             self._config.model_path = model_path
+            logger.info("Reloading main model slot (station=%d, type=%s) | %s → %s",
+                        my_station, model_type, old, model_path)
 
-        # 모델 재로드 시작을 로그에 기록합니다. 운영 중 언제 모델이 바뀌었는지 추적합니다.
-        logger.info("Reloading inferencer model: %s", model_path)
-
-        # 추론기의 모델을 다시 로드합니다.
-        # 내부적으로 기존 모델을 해제하고 새 모델 파일을 읽어 GPU/CPU에 올립니다.
+        # 4) 추론기가 양쪽 슬롯(model_path + patchcore_model_path)을 모두 재로드한다.
+        #    반대쪽 슬롯은 config 값이 그대로라 동일 파일이 다시 로드될 뿐 영향 없음.
         self._inferencer.load_model()
 
     # -----------------------------------------------------------------------

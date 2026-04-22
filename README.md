@@ -138,6 +138,21 @@ Camera → AI Server → Main Server → DB → MFC Client
 * **ISO8601 → MySQL DATETIME 자동 변환**: DAO에서 timestamp 파싱 처리
 * **DB 스키마 개선**: `bottle_id`, `model_id` NULL 허용 (AI 시스템 설계상)
 
+### v0.11.0 — 학습·배포 파이프라인 재설계 (이중모델/멀티호스트)
+
+* **학습서버 주소 분리**: `config.json` 에 `network.training_server_host` 키 추가 —
+  학습서버를 메인서버와 별도 PC(기본 10.10.10.120)에 배치 가능.
+  환경변수 `TRAIN_HOST` 는 기존대로 오버라이드 우선순위 유지.
+* **MODEL_RELOAD_CMD (1010) JSON 에 `model_type` 필드 추가**:
+  Station2 이중모델(YOLO + PatchCore) 재학습 시 교체할 슬롯을 명시적으로 전달.
+* **추론서버 수신측 필터 (`StationRunner._handle_model_reload`)**:
+  - `station_id` 불일치 시 조용히 무시 (브로드캐스트 오배송 방지)
+  - `model_type` 기반 슬롯 라우팅:
+    `"YOLO11"` → `config.model_path`, `"PatchCore"` → `config.patchcore_model_path`
+  - Station2 PatchCore 재학습 완료 시 YOLO 슬롯 덮어쓰기 버그 해결
+* **클라이언트 UI (`CPageModel`) — Station2 PatchCore 항목 추가**:
+  콤보박스에 "Station #2 — PatchCore" 옵션 추가, YOLO11 과 독립적으로 재학습 요청 가능.
+
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고
 (CRITICAL 7 + HIGH 12 + MEDIUM 16 + LOW 11 = 총 46/47 완료)
