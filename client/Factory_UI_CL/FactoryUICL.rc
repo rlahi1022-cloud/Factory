@@ -164,17 +164,19 @@ IDD_PAGE_HOME DIALOGEX 0, 0, 900, 490
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Tahoma", 0, 0, 0x1
 BEGIN
-    GROUPBOX        "Summary",             IDC_STATIC,       4,  4,890, 58
-    LTEXT           "Total",               IDC_STATIC,       14, 16, 60,  9
-    LTEXT           "0",                   IDC_STATIC_TOTAL, 14, 26, 60, 18, SS_CENTER
-    LTEXT           "OK",                  IDC_STATIC,       90, 16, 60,  9
-    LTEXT           "0",                   IDC_STATIC_OK,    90, 26, 60, 18, SS_CENTER
-    LTEXT           "NG",                  IDC_STATIC,      165, 16, 60,  9
-    LTEXT           "0",                   IDC_STATIC_NG,   165, 26, 60, 18, SS_CENTER
-    LTEXT           "Defect Rate",         IDC_STATIC,      240, 16, 60,  9
-    LTEXT           "0.00%",               IDC_STATIC_DEFECT_RATE, 240, 26, 60, 18, SS_CENTER
-    LTEXT           "Uptime",              IDC_STATIC,      315, 16, 60,  9
-    LTEXT           "98.7%",               IDC_STATIC_UPTIME,315, 26, 60, 18, SS_CENTER
+    // v0.14.7: Summary 컬럼 정렬 정리 + Uptime 제거.
+    //   - 라벨/값 모두 같은 x/width 로 정렬 (둘 다 SS_CENTER)
+    //   - 컬럼 간격 100px 고정, "Defect Rate" 라벨이 잘리지 않도록 width=90
+    //   - Uptime 라벨/값 삭제 (서버측 실 데이터 없음)
+    GROUPBOX        "Summary",             IDC_STATIC,       4,   4, 890, 58
+    LTEXT           "Total",               IDC_STATIC,      20,  16,  90,  9, SS_CENTER
+    LTEXT           "0",                   IDC_STATIC_TOTAL,20,  26,  90, 18, SS_CENTER
+    LTEXT           "OK",                  IDC_STATIC,     120,  16,  90,  9, SS_CENTER
+    LTEXT           "0",                   IDC_STATIC_OK,  120,  26,  90, 18, SS_CENTER
+    LTEXT           "NG",                  IDC_STATIC,     220,  16,  90,  9, SS_CENTER
+    LTEXT           "0",                   IDC_STATIC_NG,  220,  26,  90, 18, SS_CENTER
+    LTEXT           "Defect Rate",         IDC_STATIC,     320,  16,  90,  9, SS_CENTER
+    LTEXT           "0.00%",               IDC_STATIC_DEFECT_RATE, 320, 26, 90, 18, SS_CENTER
     GROUPBOX        "NG History",          IDC_STATIC,        4, 66,890,200
     CONTROL         "", IDC_LIST_NG, "SysListView32",
                     LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,

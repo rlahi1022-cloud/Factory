@@ -83,17 +83,16 @@ void CPageStation1::Refresh() {
     // 패널 3: NG 시 마스크 원 표시 (위치는 기본값 사용 — 실서버 연동 시 좌표 수신 예정)
     m_mask.SetMask(m_last.isNG);
     CWnd* w;
-    // v0.14.6: OK 상태면 결과/점수 창을 비워서 "깜빡임" 차단. NG 때만 텍스트 갱신.
+    // v0.14.7: Result 패널에서 "임계값" 표기 제거 — 점수만 표시.
     if (m_last.isNG) {
         if ((w = GetDlgItem(IDC_STATIC_S1_RESULT))) w->SetWindowText(_T("NG"));
-        CString s; s.Format(_T("이상 점수: %.2f  / 임계값: 0.50"), m_last.score);
+        CString s; s.Format(_T("이상 점수: %.2f"), m_last.score);
         if ((w = GetDlgItem(IDC_STATIC_S1_SCORE))) w->SetWindowText(s);
         if ((w = GetDlgItem(IDC_STATIC_S1_LED)))
             w->SetWindowText(_T("⚠ NG 경고 LED 점등!"));
     } else {
-        // v0.14.7: 초기/대기 상태에서 임계값도 0 으로 표시 (하드코딩 0.50 제거).
         if ((w = GetDlgItem(IDC_STATIC_S1_RESULT))) w->SetWindowText(_T("--"));
-        if ((w = GetDlgItem(IDC_STATIC_S1_SCORE)))  w->SetWindowText(_T("이상 점수: 0.00  / 임계값: 0.00"));
+        if ((w = GetDlgItem(IDC_STATIC_S1_SCORE)))  w->SetWindowText(_T("이상 점수: 0.00"));
         if ((w = GetDlgItem(IDC_STATIC_S1_LED)))    w->SetWindowText(_T("대기중"));
     }
 }

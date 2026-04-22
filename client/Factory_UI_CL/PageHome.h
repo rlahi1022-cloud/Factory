@@ -28,6 +28,11 @@ public:
     // 상한 MAX_NG_ROWS 초과 시 가장 오래된 항목 자동 제거.
     void AddNgRow(const InspectionRecord& r);
 
+    // v0.14.7: 로그인 직후 STATS_RES(130) 받아서 Summary 초기 수치 세팅.
+    //   JSON 파싱: total / ok / ng / s1_ok / s1_ng / s2_ok / s2_ng.
+    //   이후엔 실시간 OK_COUNT_PUSH(112) + NG_PUSH(110) 로 증분 업데이트.
+    void ApplyStatsRes(const std::string& json);
+
     // v0.14.6: 네트워크 핸들 + 탭 전환 콜백 주입.
     //   더블클릭 시 해당 행의 inspection_id 로 서버에 이미지 요청 + 해당 Station 탭으로 전환.
     void SetNetworkClient(CNetworkClient* net) { m_net = net; }
@@ -46,6 +51,16 @@ protected:
 
     CNetworkClient* m_net = nullptr;
     std::function<void(int, int)> m_onRequestShowImage;  // (station_id, inspection_id)
+
+    // v0.14.7: Summary 누적 카운터 (클라 시작 이후 계속 증가, 제한 없음).
+    //   index 1 = Station1, index 2 = Station2. 0 은 사용 안 함.
+    //   UpdateStationCount/ApplyStatsRes 가 서버 값으로 덮어쓰고(절대값),
+    //   AddNgRow 는 NG 증분 +1 (다음 OK_COUNT_PUSH 까지 잠정치).
+    int m_cumOk[3] = {0, 0, 0};
+    int m_cumNg[3] = {0, 0, 0};
+
+    // Summary 영역을 현재 누적 카운터로 다시 그림 (Total/OK/NG/DefectRate).
+    void RefreshSummary();
 
     virtual BOOL OnInitDialog() override;
     virtual void DoDataExchange(CDataExchange* pDX) override;

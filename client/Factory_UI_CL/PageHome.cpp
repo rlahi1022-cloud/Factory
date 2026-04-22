@@ -62,71 +62,85 @@ BOOL CPageHome::OnInitDialog()
 //   1) 종합 통계 계산 및 표시
 //   2) 스테이션별 통계 계산 및 표시 (목업 대비 추가)
 //   3) NG 이력 리스트 갱신
-void CPageHome::Update(const std::vector<InspectionRecord>& recs)
+// v0.14.7: Summary 값은 **누적 카운터(m_cumOk/m_cumNg)** 기반으로만 찍힌다.
+//   로그인 직후 ApplyStatsRes 가 DB 절대값을 세팅하고,
+//   이후엔 OK_COUNT_PUSH / NG_PUSH 가 증분을 반영 → RefreshSummary 호출로 재그림.
+//   Update(recs) 는 이제 Summary 를 건드리지 않음 — 50건 cap 문제 해소.
+void CPageHome::Update(const std::vector<InspectionRecord>& /*recs*/)
 {
-    // ── 1) 종합 통계 계산 ──
-    int total = (int)recs.size();
-    int ng = 0;
-    // 스테이션별 카운트
-    int s1Total = 0, s1Ng = 0;
-    int s2Total = 0, s2Ng = 0;
-
-    for (const auto& r : recs) {
-        if (r.isNG) ++ng;
-        if (r.station == 1) {
-            ++s1Total;
-            if (r.isNG) ++s1Ng;
-        } else if (r.station == 2) {
-            ++s2Total;
-            if (r.isNG) ++s2Ng;
-        }
-    }
-    int ok = total - ng;
-
-    // 컨트롤에 값 설정하는 헬퍼 람다
+    // Summary 는 RefreshSummary 에서 담당. 여기선 모델 정보만.
     auto set = [&](int id, CString v) {
         CWnd* w = GetDlgItem(id);
         if (w) w->SetWindowText(v);
     };
-
-    CString s;
-    // ── 종합 현황 ──
-    s.Format(_T("%d"), total);   set(IDC_STATIC_TOTAL, s);
-    s.Format(_T("%d"), ok);      set(IDC_STATIC_OK, s);
-    s.Format(_T("%d"), ng);      set(IDC_STATIC_NG, s);
-    s.Format(_T("%.2f%%"), total > 0 ? 100.0 * ng / total : 0.0);
-    set(IDC_STATIC_DEFECT_RATE, s);
-    // v0.14.6: 더미 98.7% 제거. 실 uptime 은 서버 헬스체크로 추후 채울 예정.
-    set(IDC_STATIC_UPTIME, _T("-"));
-
-    // ── 2) 스테이션별 통계 (목업의 ①입고 / ②조립 개별 박스) ──
-    s.Format(_T("%d"), s1Total - s1Ng);  set(IDC_STATIC_S1_OK, s);
-    s.Format(_T("%d"), s1Ng);            set(IDC_STATIC_S1_NG, s);
-    s.Format(_T("%d"), s2Total - s2Ng);  set(IDC_STATIC_S2_OK, s);
-    s.Format(_T("%d"), s2Ng);            set(IDC_STATIC_S2_NG, s);
-
-    // 스테이션별 모델 정보 표시
     set(IDC_STATIC_S1_MODEL_INFO, _T("모델: PatchCore v1.2.0 | Latency: ~52ms"));
     set(IDC_STATIC_S2_MODEL_INFO, _T("모델: YOLO11 v1.0.0 + PatchCore v1.1.0"));
 
-    // v0.13.2: NG 이력 리스트는 OnInspectHistoryRes(DB 로드) + AddNgRow(실시간)
-    // 가 직접 관리하므로 여기서는 건드리지 않는다 (중복 방지).
+    // 누적 카운터로 Summary/스테이션 박스 다시 그림
+    RefreshSummary();
 }
 
 void CPageHome::UpdateStationCount(int stationId, int okCount, int ngCount)
 {
+    // v0.14.7: 서버 절대값으로 덮어쓰기 — OK_COUNT_PUSH(112) 는 누적 카운트.
+    if (stationId == 1 || stationId == 2) {
+        m_cumOk[stationId] = okCount;
+        m_cumNg[stationId] = ngCount;
+    }
+    RefreshSummary();
+}
+
+// v0.14.7: 클라 시작 이후 "현재까지의 누적 수치"로 Summary + 스테이션 박스 갱신.
+void CPageHome::RefreshSummary()
+{
     auto set = [&](int id, CString v) {
         CWnd* w = GetDlgItem(id);
         if (w) w->SetWindowText(v);
     };
     CString s;
-    if (stationId == 1) {
-        s.Format(_T("%d"), okCount);  set(IDC_STATIC_S1_OK, s);
-        s.Format(_T("%d"), ngCount);  set(IDC_STATIC_S1_NG, s);
-    } else if (stationId == 2) {
-        s.Format(_T("%d"), okCount);  set(IDC_STATIC_S2_OK, s);
-        s.Format(_T("%d"), ngCount);  set(IDC_STATIC_S2_NG, s);
+
+    // ── 스테이션별 박스 ──
+    s.Format(_T("%d"), m_cumOk[1]);  set(IDC_STATIC_S1_OK, s);
+    s.Format(_T("%d"), m_cumNg[1]);  set(IDC_STATIC_S1_NG, s);
+    s.Format(_T("%d"), m_cumOk[2]);  set(IDC_STATIC_S2_OK, s);
+    s.Format(_T("%d"), m_cumNg[2]);  set(IDC_STATIC_S2_NG, s);
+
+    // ── 종합 Summary (Total / OK / NG / Defect Rate) ──
+    int ok    = m_cumOk[1] + m_cumOk[2];
+    int ng    = m_cumNg[1] + m_cumNg[2];
+    int total = ok + ng;
+
+    s.Format(_T("%d"), total); set(IDC_STATIC_TOTAL, s);
+    s.Format(_T("%d"), ok);    set(IDC_STATIC_OK, s);
+    s.Format(_T("%d"), ng);    set(IDC_STATIC_NG, s);
+    s.Format(_T("%.2f%%"), total > 0 ? 100.0 * ng / total : 0.0);
+    set(IDC_STATIC_DEFECT_RATE, s);
+}
+
+// v0.14.7: 로그인 직후 STATS_RES(130) 응답으로 초기 누적값 세팅.
+//   서버 JSON 필드: total, ok_count, ng_count, s1_ok, s1_ng, s2_ok, s2_ng ...
+//   station 별 필드가 있으면 그걸 쓰고, 없으면 합계로 폴백.
+void CPageHome::ApplyStatsRes(const std::string& json)
+{
+    CStringA jsonA(json.c_str());
+    int s1Ok = CPacketBuilder::ExtractInt(jsonA, "s1_ok");
+    int s1Ng = CPacketBuilder::ExtractInt(jsonA, "s1_ng");
+    int s2Ok = CPacketBuilder::ExtractInt(jsonA, "s2_ok");
+    int s2Ng = CPacketBuilder::ExtractInt(jsonA, "s2_ng");
+    // station 필드가 비어있으면(구서버) 합계로 Station1 에 몰아넣기
+    if (s1Ok == 0 && s1Ng == 0 && s2Ok == 0 && s2Ng == 0) {
+        int total = CPacketBuilder::ExtractInt(jsonA, "total");
+        int okC   = CPacketBuilder::ExtractInt(jsonA, "ok_count");
+        int ngC   = CPacketBuilder::ExtractInt(jsonA, "ng_count");
+        if (total > 0 && okC == 0 && ngC == 0) {
+            ngC = CPacketBuilder::ExtractInt(jsonA, "ng");
+            okC = total - ngC;
+        }
+        s1Ok = okC; s1Ng = ngC;
     }
+    m_cumOk[1] = s1Ok; m_cumNg[1] = s1Ng;
+    m_cumOk[2] = s2Ok; m_cumNg[2] = s2Ng;
+    RefreshSummary();
 }
 
 void CPageHome::OnPaint() { Default(); }
@@ -238,6 +252,13 @@ void CPageHome::AddNgRow(const InspectionRecord& r)
         m_listNG.DeleteItem(total - 1);
         --total;
     }
+
+    // v0.14.7: Summary 누적 NG 카운터 +1 (station 별).
+    //   OK_COUNT_PUSH(112) 가 다음에 올 때 서버 절대값으로 덮어쓰므로 일시적 오차는 자동 수렴.
+    if (r.station == 1 || r.station == 2) {
+        ++m_cumNg[r.station];
+    }
+    RefreshSummary();
 }
 
 // ============================================================================

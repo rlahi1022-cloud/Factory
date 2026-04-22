@@ -786,7 +786,12 @@ LRESULT CMainTabDlg::OnNetNgPush(WPARAM, LPARAM lParam)
     try {
         CStringA jsonA(pJson->c_str());
         InspectionRecord rec;
-        rec.id        = m_nextId++;
+        // v0.14.7: 서버가 NG_PUSH JSON 에 DB AUTO_INCREMENT id 를 "id" 필드로 실어 보냄.
+        //   이전엔 클라 로컬 카운터(m_nextId)를 써서 종합현황 NG 리스트의 id 가
+        //   실제 DB row id 와 완전히 달라 보이던 문제. 이제 DB id 를 그대로 사용.
+        //   구버전 서버 호환: "id" 필드가 없거나 0 이면 로컬 카운터로 폴백.
+        int dbId = CPacketBuilder::ExtractInt(jsonA, "id");
+        rec.id        = (dbId > 0) ? dbId : m_nextId++;
         rec.station   = CPacketBuilder::ExtractInt(jsonA, "station_id");
         rec.isNG      = true;
         rec.score     = CPacketBuilder::ExtractDouble(jsonA, "score");
@@ -917,8 +922,9 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
         break;
 
     case factory_client::STATS_RES:
-        // 통계 데이터 응답
+        // 통계 데이터 응답 — PageStats(전용) + PageHome(Summary 누적값 초기화, v0.14.7)
         if (m_stats) m_stats->OnStatsRes(*pJson);
+        if (m_home)  m_home ->ApplyStatsRes(*pJson);
         break;
 
     case factory_client::MODEL_LIST_RES:
