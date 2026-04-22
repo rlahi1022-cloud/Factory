@@ -152,6 +152,23 @@ Camera → AI Server → Main Server → DB → MFC Client
   - Station2 PatchCore 재학습 완료 시 YOLO 슬롯 덮어쓰기 버그 해결
 * **클라이언트 UI (`CPageModel`) — Station2 PatchCore 항목 추가**:
   콤보박스에 "Station #2 — PatchCore" 옵션 추가, YOLO11 과 독립적으로 재학습 요청 가능.
+* **HealthChecker 동적 서버 감지**: `ConnectionRegistry` 에 `server_type` 필드 추가.
+  Router 가 수신 패킷(`station_id`/TRAIN_*/HEALTH_PONG) 으로 server_type 자동 태깅 →
+  HealthChecker 가 IP 하드코딩 대신 server_type 으로 매칭. `config.json` 의
+  `health_check.targets.ip` 를 비워두면 배포 PC 가 변경되어도 설정 수정 없이 자동 감지.
+  로그에는 실제 접속 IP 가 표시된다.
+* **Pylon 카메라 실제 연동** (`Common/PylonCamera.py` 신규):
+  Basler 카메라를 `StationRunner._run_grab_producer` 에서 실제로 grab. pypylon 미설치
+  또는 카메라 미연결 시 is_open=False 로 떨어져 자동으로 더미 이미지 모드로 폴백 →
+  개발/CI 환경에서도 파이프라인 동작. `config.json` 의 `ai_server.station*.camera_enabled`
+  / `camera_serial` / `camera_fps` 로 스테이션별 카메라 지정 가능.
+* **GuiRouter 진입 로그 추가**: 클라이언트 버튼 액션(재학습/이력/통계/모델목록/이미지)
+  진입 시 fd + 파라미터를 즉시 로그 → 추적성 확보.
+* **재학습 플래그 누수 수정**: `GuiService::request_retrain` 의 소켓 생성/송신 실패
+  경로에서 `is_training_` 해제 누락 2건 수정 (영구 "학습중" 상태 방지).
+* **Station2 PatchCore 학습 데이터 경로 버그 수정**: `_train_patchcore` 가
+  Station2 의 경우 `./data/station2/patchcore/` 를 사용하도록 조건 분기 추가
+  (기존엔 `./data/station{N}/normal` 고정으로 Station2 PatchCore 학습이 실제로 불가).
 
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고
@@ -315,9 +332,9 @@ python -m Station2.Station2Main      # 조립 검사
 ## 향후 계획
 
 ### 하드웨어 연동
-* Pylon 카메라 SDK 연동 (현재 더미 이미지)
+* ✅ Pylon 카메라 SDK 연동 (v0.11.0 — 미연결/미설치 시 자동 더미 폴백)
 * Arduino 시리얼 통신 연동
-* HealthChecker PING/PONG 프로토콜 완성
+* ✅ HealthChecker 동적 서버 감지 (v0.11.0 — server_type 기반 매칭)
 
 ### 확장 기능
 * 모델 정확도 개선 및 최적화

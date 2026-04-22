@@ -1,11 +1,21 @@
 """SerialCtrl.py — Arduino 시리얼 통신 제어
 
-이 파일은 AI 추론 서버가 Arduino에 시리얼(USB) 명령을 보내는 기능을 제공한다.
+역할:
+  AI 추론서버가 NG(불량) 판정을 내렸을 때 Arduino 에 시리얼(USB) 명령을 보내
+  물리적 동작(리젝트 서보/LED/부저/LCD 알림) 을 트리거한다.
 
-Station1 (입고검사): NG 시 → "REJECT:결함유형\n" 전송 → 서보모터 리젝트 + 빨간 LED + 부저
-Station2 (조립검사): NG 시 → "ALERT:결함목록\n" 전송 → RGB LED + LCD 불량 유형 표시
+명령 프로토콜 (줄바꿈으로 구분된 평문):
+  Station1 (입고검사)  "REJECT:결함유형\\n"      → 서보모터 리젝트 + 빨간 LED + 부저
+  Station2 (조립검사)  "ALERT:결함목록\\n"       → RGB LED + LCD 에 불량 유형 표시
+  아두이노 스케치는 Arduino/arduino_led_control/ 참조.
 
-실제 사용 시 pyserial 패키지가 필요하다: pip install pyserial
+설계 특징:
+  - pyserial 미설치/포트 미연결 시에도 예외를 던지지 않고 "no-op" 로 동작.
+    개발/CI 환경에서 아두이노 없이 검사 파이프라인을 테스트할 수 있도록 함.
+  - port=None 이면 "Arduino 미사용" 으로 간주하고 open()/send_command() 가 모두 조용히 패스.
+
+의존성:
+  실제 사용 시 pyserial 필요 → `pip install pyserial`
 """
 
 from __future__ import annotations  # 타입 힌트를 문자열로 처리

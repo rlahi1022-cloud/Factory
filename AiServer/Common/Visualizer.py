@@ -1,15 +1,23 @@
 """Visualizer.py — 추론 결과 시각화 유틸리티
 
-이 파일은 PatchCore/YOLO 추론 결과를 이미지로 합성하여 저장하거나
-메인서버로 전송하기 위한 시각화 함수를 제공한다.
+역할:
+  PatchCore 가 출력한 anomaly map(float 점수 맵) 과 pred mask(이진 영역) 를
+  원본 이미지 위에 합성하여 검사원이 한눈에 확인할 수 있는 이미지를 만든다.
+  결과는 PNG 바이트로 인코딩되어 TCP 로 메인서버 → 클라이언트에 전달됨.
 
-주요 기능:
-  1. 원본 + Anomaly Map 히트맵 합성
-  2. 원본 + Pred Mask 윤곽선 합성
-  3. JPEG/PNG 바이트 인코딩 (TCP 전송용)
+3장 이미지 파이프라인 (v0.9.0+):
+  1) 원본 JPEG  — 카메라 캡처 그대로
+  2) 히트맵 PNG — make_heatmap_overlay(original, anomaly_map) 의 결과
+                   파랑(정상) → 빨강(이상) 컬러맵 오버레이
+  3) 마스크 PNG — make_pred_mask_overlay(original, pred_mask)  의 결과
+                   이상 영역 윤곽선을 초록색으로 표시
 
-클라이언트(MFC)가 3개 영역에 각각 표시할 수 있도록
-완성된 합성 이미지를 생성한다.
+클라이언트(MFC) 는 세 이미지를 3분할 뷰에 동시 표시하여 "어디가 왜 NG 인지"
+를 즉각 파악할 수 있도록 한다.
+
+안전 장치:
+  cv2(OpenCV) 가 없는 환경에서는 ImportError 를 삼키고 함수들이 원본을 그대로
+  반환 → 시각화 없이도 파이프라인이 돌아가도록 fail-safe 설계.
 """
 
 from __future__ import annotations  # 타입 힌트 지연 평가

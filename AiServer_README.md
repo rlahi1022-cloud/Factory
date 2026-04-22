@@ -65,10 +65,28 @@
 
 | 코루틴 | 개수 | 역할 |
 |--------|------|------|
-| `_run_grab_producer` | 1 | Pylon 카메라 grab → grab_queue |
+| `_run_grab_producer` | 1 | Pylon 카메라 grab → grab_queue (v0.11.0: 실제 Basler 연동 + 더미 폴백) |
 | `_run_inference_worker` | N (Config) | grab_queue 소비 → 추론 → INSPECT_META 송신 + (NG면 result_queue) |
 | `_run_sender_worker` | N (Config) | result_queue 소비 → STATION_NG 송신 + ACK 대기/재전송 |
 | `_run_ok_count_reporter` | 1 | 5초 주기로 OK/NG 누적 카운트 STATION_OK_COUNT 송신 |
+
+## 카메라 (v0.11.0 Pylon 실제 연동)
+
+`Common/PylonCamera.py` 가 Basler Pylon SDK (pypylon) 를 감싸 다음을 처리:
+- `camera_serial` 로 특정 장치 선택 (빈값이면 첫 번째 발견 카메라)
+- `GrabStrategy_LatestImageOnly` 로 지연 누적 방지
+- `PixelType_BGR8packed` 변환 — OpenCV 호환 ndarray 반환
+- ImportError / 장치 미연결 시 `is_open=False` 로 폴백 → `_run_grab_producer` 가
+  자동으로 더미 이미지(numpy 랜덤) 로 전환. 개발/CI 환경에서도 파이프라인 동작.
+
+**config.json 설정** (`ai_server.station{1,2}` 하위):
+```json
+"camera_enabled": true,     // false 면 강제 더미 모드
+"camera_serial":  "",       // 빈값 → 첫 번째 장치
+"camera_fps":     2.0       // grab 주기(초) = 1/fps
+```
+
+설치: `pip install pypylon` (미설치 시에도 크래시 없이 더미 모드로 실행).
 
 ## 추론 모델
 

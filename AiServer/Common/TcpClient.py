@@ -32,7 +32,10 @@ logger = logging.getLogger(__name__)
 
 # ── ACK 타임아웃 / 재시도 정책 ──
 # 요구사항: NG 전송 후 1초 내 ACK 미수신 시 최대 3회 재전송
-ACK_TIMEOUT_SEC = 1.0    # ACK 응답 대기 시간 (초)
+ACK_TIMEOUT_SEC = 3.0    # ACK 응답 대기 시간 (초)
+                         # v0.12.0 부터 MainServer 가 validate 후 즉시 ACK 를
+                         # 발행(이미지 저장/DB 는 백그라운드) 하므로 1초도 충분하지만,
+                         # 네트워크 지연/GC 여유를 고려해 3초 로 둔다.
 MAX_SEND_ATTEMPTS = 3    # 최대 재전송 횟수
 
 

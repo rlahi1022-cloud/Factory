@@ -1,16 +1,36 @@
 // ============================================================================
-// NetworkClient.cpp
+// NetworkClient.cpp — MainServer GUI 포트(9010) 전용 TCP 클라이언트
 // ============================================================================
-// 목적:
-//   메인서버(포트 9010)와 TCP 통신을 수행하는 네트워크 클라이언트 구현부입니다.
-//   백그라운드 스레드에서 서버의 푸시 데이터를 수신하고,
-//   PostMessage를 통해 UI 스레드에 안전하게 전달합니다.
+// 책임:
+//   - 서버 접속/해제 (Connect / Disconnect)
+//   - 프레임 송수신: [4바이트 BE 길이] + [JSON 본문] (+ [바이너리 페이로드])
+//   - 수신 백그라운드 스레드 운영 (RecvLoop)
+//   - 서버 푸시 이벤트를 UI 스레드로 PostMessage 전달
+//   - 주기적 heartbeat (EXT_ACK) 전송으로 세션 유지
 //
-// 핵심 개념:
-//   - WinSock2: Windows에서 소켓 프로그래밍을 위한 API
-//   - _beginthreadex: C 런타임 라이브러리와 호환되는 스레드 생성 함수
-//   - PostMessage: 스레드 간 안전한 메시지 전달 (비동기)
-//   - CRITICAL_SECTION: 공유 자원(소켓)에 대한 동시 접근 방지
+// 스레드 모델:
+//   UI 스레드  — Send*, Disconnect, 파라미터 설정
+//   Recv 스레드 — RecvLoop 무한 루프 (select 타임아웃 5초 기반)
+//   m_csSend CRITICAL_SECTION 으로 Send 경쟁 차단.
+//
+// 수신 이벤트 라우팅:
+//   RecvLoop 가 프로토콜 번호를 파싱해 해당하는 WM_NET_* 메시지를
+//   m_hNotifyWnd (MainTabDlg) 로 PostMessage → 메시지맵 핸들러가 처리.
+//     110 INSPECT_NG_PUSH         → WM_NET_NG_PUSH (+ 이미지 바이너리 포인터)
+//     112 INSPECT_OK_COUNT_PUSH   → WM_NET_OK_COUNT_PUSH
+//     115 INSPECT_HISTORY_RES     → WM_NET_RESPONSE (범용)
+//     117 INSPECT_IMAGE_RES       → WM_NET_NG_IMAGE (바이너리 동봉)
+//     151 MODEL_LIST_RES          → WM_NET_RESPONSE
+//     153 RETRAIN_RES             → WM_NET_RESPONSE
+//     154 RETRAIN_PROGRESS_PUSH   → WM_NET_RETRAIN_PROGRESS
+//     170 SERVER_HEALTH_PUSH      → WM_NET_HEALTH_PUSH
+//
+// 보안/안정성:
+//   - recv_n 으로 TCP 스트림에서 정확한 바이트 수 보장
+//   - JSON 크기 상한 64KB / 이미지 블록 상한 50MB — 비정상 입력 차단
+//   - RecvLoop 에서 에러 감지 시 WM_NET_DISCONNECTED 발송 → UI 자동 복구
+//
+// 대응 서버 모듈: MainServer/src/session/gui_tcp_listener.cpp + gui_router.cpp
 // ============================================================================
 
 #include "pch.h"

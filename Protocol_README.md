@@ -77,7 +77,15 @@
 | 번호 | 이름 | 방향 | 구현 상태 |
 |------|------|------|----------|
 | 1200 | HEALTH_PING | 운용 → 각 서버 | 메인서버: TCP connect만 |
-| 1201 | HEALTH_PONG | 각 서버 → 운용 | AI서버: 자동응답 완성 |
+| 1201 | HEALTH_PONG | 각 서버 → 운용 | AI서버: 자동응답 완성 (server_type 포함) |
+
+**v0.11.0 동적 서버 감지**:
+HealthChecker 는 더 이상 `config.json` 의 IP 하드코딩에 의존하지 않는다.
+Router 가 수신 패킷(inspection/train/HEALTH_PONG 의 `station_id` 또는 `server_type`)
+에서 자동으로 server_type 을 추론해 `ConnectionRegistry` 에 태깅 →
+HealthChecker 는 `target.name == server_type` 으로 매칭한다.
+덕분에 추론/학습 서버를 임의의 PC 에 배치해도 config 수정 없이 자동 감지되고,
+로그에는 실제 접속 IP 가 표시된다.
 
 ### 내부 공통 — 1900~
 

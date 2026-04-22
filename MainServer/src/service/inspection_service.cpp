@@ -36,29 +36,73 @@
 #include "service/inspection_service.h"
 #include "core/logger.h"
 
+#include <cctype>     // std::tolower (result 문자열 정규화)
 #include <chrono>
+#include <cmath>      // std::isfinite (score NaN/Inf 체크)
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 
 namespace factory {
 
-InspectionService::InspectionService(ConnectionPool& pool, const std::string& image_root_dir)
-    : inspection_dao_(pool),
+InspectionService::InspectionService(EventBus& bus,
+                                     ConnectionPool& pool,
+                                     const std::string& image_root_dir)
+    : event_bus_(bus),
+      inspection_dao_(pool),
       assembly_dao_(pool),
       image_root_dir_(image_root_dir) {
 }
 
-InspectionResult InspectionService::process(const InspectionEvent& ev) {
-    InspectionResult result;
+// ---------------------------------------------------------------------------
+// register_handlers — EventBus 구독 등록 (main.cpp 에서 1회 호출)
+// INSPECTION_VALIDATED 이벤트를 받으면 백그라운드 워커에서 persist 실행.
+// ---------------------------------------------------------------------------
+void InspectionService::register_handlers() {
+    event_bus_.subscribe(EventType::INSPECTION_VALIDATED,
+                         [this](const std::any& p) { this->on_validated(p); });
+}
 
-    // 1. 검증
-    if (!validate(ev, result.error_message)) {
-        log_err_ai("검증 실패 | %s", result.error_message.c_str());
-        return result;
+// ---------------------------------------------------------------------------
+// validate_only — 빠른 검증만 (I/O 無, <1ms)
+// StationHandler 가 호출 → true 면 즉시 ACK + INSPECTION_VALIDATED 발행.
+// 부수효과: ev.result 를 "OK"/"NG" 대문자 수용해 소문자로 정규화.
+// ---------------------------------------------------------------------------
+bool InspectionService::validate_only(InspectionEvent& ev, std::string& out_error) {
+    return validate(ev, out_error);
+}
+
+// ---------------------------------------------------------------------------
+// on_validated — INSPECTION_VALIDATED 이벤트 수신 (EventBus 워커 스레드)
+// ACK 는 이미 StationHandler 에서 먼저 전송됐으므로, 여기서 실패해도 재전송
+// 불가. 실패는 로그에 또렷이 남기고(운영자가 봐야 함) 이후 처리는 포기.
+// ---------------------------------------------------------------------------
+void InspectionService::on_validated(const std::any& payload) {
+    const auto& ev = std::any_cast<const InspectionEvent&>(payload);
+
+    auto result = persist(ev);
+    if (!result.success) {
+        // Sliced failure: AI 서버에는 이미 ACK(ok) 를 보냈는데 서버쪽 저장 실패.
+        // 데이터 유실 가능 → ERROR 레벨로 강하게 남긴다. 모니터링/알림 연동 권장.
+        log_err_db("[SLICED-FAILURE] 저장 실패 (ACK 는 이미 송신됨) | "
+                   "id=%s station=%d err=%s",
+                   ev.inspection_id.c_str(), ev.station_id,
+                   result.error_message.c_str());
+        return;
     }
 
-    // 2. NG 이미지 3장 저장 (DB INSERT 전에 먼저 저장 — 경로를 DB에 바로 기록하기 위함)
+    // 성공: 클라이언트 실시간 푸시
+    event_bus_.publish(EventType::GUI_PUSH_REQUESTED, ev);
+}
+
+// ---------------------------------------------------------------------------
+// persist — 이미지 3장 저장 + DB INSERT inspections (+ assemblies for station2)
+// 순서 주의: 이미지 저장 먼저 → 그 경로를 DB INSERT 에 포함.
+// ---------------------------------------------------------------------------
+InspectionResult InspectionService::persist(const InspectionEvent& ev) {
+    InspectionResult result;
+
+    // 1. NG 이미지 3장 저장 (DB INSERT 전에 먼저 저장 — 경로를 DB에 바로 기록하기 위함)
     //    각 저장 실패는 치명적이지 않고 해당 경로만 비움.
     if (!ev.image_bytes.empty()) {
         result.image_path = save_blob(ev.station_id, ev.timestamp,
@@ -82,7 +126,7 @@ InspectionResult InspectionService::process(const InspectionEvent& ev) {
         }
     }
 
-    // 3. inspections 테이블 INSERT (세 이미지 경로 포함)
+    // 2. inspections 테이블 INSERT (세 이미지 경로 포함)
     long long inspection_id = inspection_dao_.insert(ev,
                                                      result.image_path,
                                                      result.heatmap_path,
@@ -94,7 +138,7 @@ InspectionResult InspectionService::process(const InspectionEvent& ev) {
     }
     result.inspection_id = inspection_id;
 
-    // 4. Station2면 assemblies 테이블 INSERT
+    // 3. Station2면 assemblies 테이블 INSERT
     if (ev.station_id == 2) {
         long long assembly_id = assembly_dao_.insert(ev, inspection_id);
         if (assembly_id < 0) {
@@ -107,7 +151,7 @@ InspectionResult InspectionService::process(const InspectionEvent& ev) {
     return result;
 }
 
-bool InspectionService::validate(const InspectionEvent& ev, std::string& out_error) {
+bool InspectionService::validate(InspectionEvent& ev, std::string& out_error) {
     if (ev.station_id < 1 || ev.station_id > 2) {
         out_error = "invalid_station_id";
         return false;
@@ -116,11 +160,22 @@ bool InspectionService::validate(const InspectionEvent& ev, std::string& out_err
         out_error = "invalid_inspection_id";
         return false;
     }
-    if (ev.result.empty() || (ev.result != "ok" && ev.result != "ng")) {
-        out_error = "invalid_result";
-        return false;
+    // result 는 대소문자 무관하게 수용 (AiServer 는 "OK"/"NG" 대문자 송신).
+    //   - 경로상 소문자 "ok"/"ng" 로 정규화해 이후 로직/DB 저장 일관성 확보.
+    {
+        std::string r = ev.result;
+        for (auto& c : r) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (r != "ok" && r != "ng") {
+            out_error = "invalid_result";
+            return false;
+        }
+        ev.result = r;  // 소문자로 정규화 (이후 DB 저장 일관성)
     }
-    if (ev.score < 0.0 || ev.score > 1.0) {
+
+    // score 는 PatchCore 원시 anomaly_score 를 그대로 받을 수 있어 0~1 로 고정할 수 없다.
+    //   - 임계값은 추론서버에서 이미 적용되어 result(ok/ng) 에 반영됨.
+    //   - 여기서는 NaN/Inf 등 유효하지 않은 숫자만 차단.
+    if (!std::isfinite(ev.score)) {
         out_error = "invalid_score";
         return false;
     }

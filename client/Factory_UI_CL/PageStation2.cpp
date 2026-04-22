@@ -1,4 +1,19 @@
-﻿#include "pch.h"
+﻿// ============================================================================
+// PageStation2.cpp — 조립검사(Station2) 페이지 (YOLO + PatchCore 하이브리드)
+// ============================================================================
+// 책임:
+//   Station2 검사 결과 실시간 표시. Station1 과 유사한 3분할 뷰 + 하단 리스트
+//   구조이나, YOLO 디텍션(cap/label/fill_ok 등) 결과를 함께 렌더링한다는 점이 다름.
+//
+// 데이터 흐름:
+//   MainTabDlg 가 STATION2_NG(1002) 수신 → SetImages(원본/히트맵/마스크)
+//                                       → UpdateDetections(cap_ok, label_ok, fill_ok)
+//
+// 수동 버튼:
+//   OnBtnDefect/OnBtnRework — 로컬 더미 결과 주입(개발/데모용).
+//   실제 환경에서는 버튼 없이 추론서버의 결과만 표시됨.
+// ============================================================================
+#include "pch.h"
 #include "PageStation2.h"
 
 IMPLEMENT_DYNAMIC(CPageStation2, CDialogEx)
