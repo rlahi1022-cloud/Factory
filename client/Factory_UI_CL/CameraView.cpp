@@ -81,50 +81,27 @@ void CCameraView::OnPaint() {
     bmp.CreateCompatibleBitmap(&dc, rc.Width(), rc.Height());
     CBitmap* pOld = mem.SelectObject(&bmp);
     DrawBg(mem, rc);
-    if (m_station == 2) DrawYolo(mem, rc);
-    if (m_isNG) DrawNgBox(mem, rc);
-    DrawBadge(mem, rc);
-    DrawScoreBar(mem, rc);
+    DrawBadge(mem, rc);  // OK/NG 배지는 유지
     dc.BitBlt(0, 0, rc.Width(), rc.Height(), &mem, 0, 0, SRCCOPY);
     mem.SelectObject(pOld);
 }
 
 void CCameraView::DrawBg(CDC& dc, CRect& rc) {
+    // 배경 — 항상 검은색
     dc.FillSolidRect(&rc, RGB(17,17,17));
 
-    // 서버 수신 이미지가 있으면 배경으로 렌더링 (상단 스코어바/하단 뱃지 영역 제외)
+    // 서버 수신 이미지가 있으면 전체 영역에 렌더링
     if (!m_img.IsNull()) {
-        CRect inner(rc.left+2, rc.top+14, rc.right-2, rc.bottom-32);
+        CRect inner(rc.left+2, rc.top+2, rc.right-2, rc.bottom-2);
         CameraViewUtil::DrawImageStretched(m_img, dc, inner);
-        // 외곽선만 그리고 리턴 — 크로스헤어/레이블은 이미지 있을 때 생략
-        CPen pen(PS_SOLID, 2, RGB(68,68,68)); CPen* p = dc.SelectObject(&pen);
-        CBrush* pb = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
-        dc.Rectangle(&rc);
-        dc.SelectObject(p); dc.SelectObject(pb);
-        return;
     }
 
-    // ── 이미지 없을 때 플레이스홀더 렌더링 ──
-    // 외곽선 — OK/NG 무관하게 단색 유지
-    CPen pen(PS_SOLID, 2, RGB(68,68,68)); CPen* p = dc.SelectObject(&pen);
+    // 외곽선만 그림 — 이미지 유무 무관
+    CPen pen(PS_SOLID, 1, RGB(68,68,68)); CPen* p = dc.SelectObject(&pen);
     CBrush* pb = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
     dc.Rectangle(&rc);
     dc.SelectObject(p); dc.SelectObject(pb);
-    // 내부 박스
-    CRect inner(rc.left+8, rc.top+14, rc.right-8, rc.bottom-32);
-    dc.FillSolidRect(&inner, RGB(30,45,60));
-    // 레이블
-    dc.SetBkMode(TRANSPARENT); dc.SetTextColor(RGB(70,90,110));
-    CFont f; f.CreatePointFont(70, _T("Courier New"));
-    CFont* pf = dc.SelectObject(&f);
-    CString lbl; lbl.Format(_T("Camera #%d"), m_station);
-    dc.DrawText(lbl, &inner, DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-    // 크로스헤어
-    int cx=rc.Width()/2, cy=rc.Height()/2-10;
-    CPen cp(PS_SOLID,1,RGB(50,150,80)); CPen* cp2=dc.SelectObject(&cp);
-    dc.MoveTo(cx-8,cy); dc.LineTo(cx+8,cy);
-    dc.MoveTo(cx,cy-8); dc.LineTo(cx,cy+8);
-    dc.SelectObject(cp2); dc.SelectObject(pf);
+    // 이미지 없을 때 — 크로스헤어/레이블/내부박스 없이 검은 배경만 유지
 }
 
 void CCameraView::DrawYolo(CDC& dc, CRect& rc) {
