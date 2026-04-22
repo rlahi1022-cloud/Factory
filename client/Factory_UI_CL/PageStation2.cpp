@@ -67,10 +67,13 @@ void CPageStation2::Refresh() {
     m_cam.SetInspection(2, m_last.isNG, m_last.score, m_last.defect);
     m_heat.SetActive(m_last.isNG);
     CWnd* w;
+    // v0.14.6: s 를 함수 최상단에 선언 — 아래 YOLO 리스트 루프에서도 재사용.
+    //   이전 편집에서 if-블록 안에만 선언해 "식별자 s 를 찾을 수 없음" 컴파일 에러 발생.
+    CString s;
     // v0.14.6: NG 때만 결과/점수 표시. OK 상태면 "--" / 대기.
     if (m_last.isNG) {
         if ((w = GetDlgItem(IDC_STATIC_S2_RESULT))) w->SetWindowText(_T("NG"));
-        CString s; s.Format(_T("PatchCore 이상 점수: %.2f"), m_last.score);
+        s.Format(_T("PatchCore 이상 점수: %.2f"), m_last.score);
         if ((w = GetDlgItem(IDC_STATIC_S2_SCORE))) w->SetWindowText(s);
         if ((w = GetDlgItem(IDC_STATIC_S2_LED)))
             w->SetWindowText(CString(_T("⚠ ")) + QCUtil::DefectName(m_last.defect));
