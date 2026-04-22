@@ -913,12 +913,18 @@ class StationRunner:
     def _handle_inference_control(self, cmd_dict: dict) -> bool:
         action = str(cmd_dict.get("action", "")).lower()
         if action == "pause":
+            # v0.14.5: grab 루프만 정지하면 카메라 HW 는 계속 프레임 생성 → 버퍼 누적.
+            #          실제 카메라 grabbing 자체를 정지해 리소스/버퍼를 해제한다.
             self._pause_event.clear()   # wait() 가 블록되어 grab 루프 정지
-            logger.info("INFERENCE_CONTROL: pause (grab 루프 정지)")
+            if self._camera is not None and self._camera.is_open:
+                self._camera.stop_grabbing()
+            logger.info("INFERENCE_CONTROL: pause (카메라 grab 정지 + 루프 블록)")
             return True
         elif action == "resume":
+            if self._camera is not None and self._camera.is_open:
+                self._camera.start_grabbing()
             self._pause_event.set()     # wait() 풀림 → grab 재개
-            logger.info("INFERENCE_CONTROL: resume (grab 루프 재개)")
+            logger.info("INFERENCE_CONTROL: resume (카메라 grab 재개 + 루프 진행)")
             return False
         else:
             logger.warning("INFERENCE_CONTROL: unknown action=%s", action)

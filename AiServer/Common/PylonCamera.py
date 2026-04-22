@@ -151,6 +151,41 @@ class PylonCamera:
             return None
 
     # -----------------------------------------------------------------------
+    # start_grabbing / stop_grabbing — pause/resume 용 grab 일시중단 API (v0.14.5)
+    # -----------------------------------------------------------------------
+    # 목적:
+    #   INSPECT_CONTROL(pause/resume) 수신 시 grab 루프만 블록하면 카메라 하드웨어는
+    #   계속 프레임을 뽑고 있다가 USB/GigE 버퍼에 쌓인다 → resume 순간 오래된 프레임이
+    #   한꺼번에 흘러나와 latency 스파이크. 실제 카메라 grabbing 자체를 정지시켜
+    #   버퍼에 프레임이 누적되지 않게 한다.
+    # 안전:
+    #   - 이미 정지/실행 중인 상태면 no-op (IsGrabbing() 체크).
+    #   - 실패해도 예외를 던지지 않고 False 반환.
+    def start_grabbing(self) -> bool:
+        if not self._is_open or self._camera is None or pylon is None:
+            return False
+        try:
+            if not self._camera.IsGrabbing():
+                self._camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+                logger.info("Pylon 카메라 grab 재개")
+            return True
+        except Exception as exc:
+            logger.error("Pylon start_grabbing 예외: %s", exc)
+            return False
+
+    def stop_grabbing(self) -> bool:
+        if not self._is_open or self._camera is None:
+            return False
+        try:
+            if self._camera.IsGrabbing():
+                self._camera.StopGrabbing()
+                logger.info("Pylon 카메라 grab 정지")
+            return True
+        except Exception as exc:
+            logger.error("Pylon stop_grabbing 예외: %s", exc)
+            return False
+
+    # -----------------------------------------------------------------------
     # close — 카메라 종료. 종료 중 예외는 삼킴 (shutdown 경로의 안정성 우선)
     # -----------------------------------------------------------------------
     def close(self) -> None:

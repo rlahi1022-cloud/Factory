@@ -95,6 +95,14 @@ std::vector<char> CPacketBuilder::BuildPacketWithImage(
 // ============================================================================
 // ParseHeader — 4바이트 Big-Endian 헤더에서 JSON 크기 추출
 // ============================================================================
+// v0.14.5: JSON 상한 64KB → 1MB 확대.
+//   [문제] 검사이력(INSPECT_HISTORY_RES) 응답에 200 건을 담으면 각 레코드가
+//   image_path/heatmap_path/pred_mask_path 같은 긴 문자열 포함 → ~88KB 로 커짐.
+//   기존 64KB 상한에서 ParseHeader 가 false 반환 → RecvLoop break →
+//   로그인 직후 연결 해제. 서버 로그상 "검사이력 응답 200건" 직후 "클라이언트 해제"
+//   로 관측된 현상의 실제 원인.
+//   [결정] 상한을 1MB 로 확대. 이미지 바이너리는 JSON 뒤에 별도 블록으로 오므로
+//   JSON 본문이 이보다 클 일은 사실상 없음 (한도 초과는 여전히 방어).
 bool CPacketBuilder::ParseHeader(const char* headerBuf, UINT32& outJsonSize)
 {
     // 4바이트를 Big-Endian으로 해석하여 정수로 변환합니다.
@@ -105,8 +113,8 @@ bool CPacketBuilder::ParseHeader(const char* headerBuf, UINT32& outJsonSize)
                 | (static_cast<UINT32>(headerBuf[2] & 0xFF) << 8)
                 | (static_cast<UINT32>(headerBuf[3] & 0xFF));
 
-    // 유효성 검사: 크기가 0이거나 64KB를 초과하면 비정상 패킷
-    if (outJsonSize == 0 || outJsonSize > 64 * 1024) {
+    // 유효성 검사: 크기가 0이거나 1MB를 초과하면 비정상 패킷
+    if (outJsonSize == 0 || outJsonSize > 1024 * 1024) {
         return false;
     }
     return true;
