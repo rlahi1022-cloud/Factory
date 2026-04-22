@@ -57,6 +57,9 @@
     <ClCompile Include="PacketBuilder.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="ClientConfig.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
     <ClCompile Include="MainTabDlg.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
@@ -123,6 +126,9 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="PacketBuilder.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
+    <ClInclude Include="ClientConfig.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="PageModel.h">

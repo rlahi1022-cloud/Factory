@@ -81,6 +81,7 @@ void CPageStats::DrawPareto(CDC& dc, CRect rc){
     if(m_pareto.empty())return;
     static COLORREF cols[]={RGB(204,0,0),RGB(224,96,0),RGB(212,160,0),RGB(0,112,192),RGB(128,128,128)};
     int n=(int)m_pareto.size(),maxC=m_pareto[0].cnt;
+    if(maxC<=0) maxC=1;  // 0 나눗셈 방지
     CRect pl(rc.left+28,rc.top+4,rc.right-4,rc.bottom-20);
     int bw=(pl.Width()/n)-4;
     dc.SetBkMode(TRANSPARENT);
@@ -120,7 +121,21 @@ void CPageStats::DrawLatency(CDC& dc, CRect rc){
     for(int i=1;i<n;++i)dc.LineTo(pt(i,m_trend[i].lat));
 }
 
-void CPageStats::OnBtnQuery(){Rebuild();Invalidate();}
+void CPageStats::OnBtnQuery(){
+    // 서버에 검사 이력 + 통계 요청 전송
+    if (m_net && m_net->IsConnected()) {
+        CString histReq = CPacketBuilder::BuildInspectHistoryReq(
+            0, _T(""), _T(""), 100);  // 전체 스테이션, 날짜 필터 없음, 최대 100건
+        m_net->SendJson(histReq);
+
+        CString statsReq = CPacketBuilder::BuildStatsReq(0, _T(""), _T(""));
+        m_net->SendJson(statsReq);
+    } else {
+        // 서버 미연결 시 로컬 더미 데이터로 갱신
+        Rebuild();
+        Invalidate();
+    }
+}
 void CPageStats::OnBtnExportCSV(){
     CFileDialog dlg(FALSE,_T("csv"),_T("log.csv"),OFN_OVERWRITEPROMPT,_T("CSV|*.csv||"),this);
     if(dlg.DoModal()!=IDOK)return;
@@ -174,11 +189,11 @@ void CPageStats::OnInspectHistoryRes(const std::string& json)
         InspectionRecord rec;
         rec.id        = CPacketBuilder::ExtractInt(obj, "id");
         rec.station   = CPacketBuilder::ExtractInt(obj, "station_id");
-        rec.score     = CPacketBuilder::ExtractDouble(obj, "score");
+        rec.score     = CPacketBuilder::ExtractDouble(obj, "confidence");  // DB 컬럼명 기준
         rec.latencyMs = CPacketBuilder::ExtractInt(obj, "latency_ms");
 
         CStringA resultA  = CPacketBuilder::ExtractString(obj, "result");
-        rec.isNG = (resultA == "NG");
+        rec.isNG = (resultA.CompareNoCase("ng") == 0);  // 대소문자 무관 (서버는 "ng" 소문자)
 
         CStringA tsA = CPacketBuilder::ExtractString(obj, "timestamp");
         if (tsA.GetLength() >= 19)
@@ -207,70 +222,125 @@ void CPageStats::OnInspectHistoryRes(const std::string& json)
 }
 
 // ============================================================================
+// RequestInspectionImage — 이력 이미지 on-demand 요청 (프로토콜 116)
+// ============================================================================
+// 서버는 INSPECT_IMAGE_RES(117)로 JSON + 3장 바이너리를 회신.
+// NetworkClient가 자동으로 WM_NET_NG_IMAGE 메시지로 UI에 전달하므로
+// 이 함수는 "요청만" 하면 됨. 결과는 PageStation1/2에서 자동 표시.
+void CPageStats::RequestInspectionImage(int inspectionId)
+{
+    if (!m_net || !m_net->IsConnected()) {
+        TRACE(_T("[PageStats] 이미지 요청 실패 — 네트워크 미연결\n"));
+        return;
+    }
+    if (inspectionId <= 0) {
+        TRACE(_T("[PageStats] 이미지 요청 실패 — 잘못된 id=%d\n"), inspectionId);
+        return;
+    }
+    CString req = CPacketBuilder::BuildInspectImageReq(inspectionId);
+    m_net->SendJson(req);
+    TRACE(_T("[PageStats] 이력 이미지 요청 송신 | id=%d\n"), inspectionId);
+}
+
+// 최근 NG 이력 id — m_recs 는 OnInspectHistoryRes 에서 시간 역순으로 채워짐.
+// 첫 NG 항목의 id 반환. 없으면 0.
+int CPageStats::GetLastNgInspectionId() const
+{
+    for (const auto& r : m_recs) {
+        if (r.isNG) return r.id;
+    }
+    return 0;
+}
+
+// 특정 스테이션의 최신 NG 이력 id — m_recs 는 시간 역순이므로 첫 매칭이 최신.
+// NG가 없으면 해당 스테이션의 최신 OK 레코드로 폴백 (뭐라도 보여주기 위해).
+int CPageStats::GetLastNgInspectionIdByStation(int station) const
+{
+    // 1순위: 해당 스테이션의 최신 NG
+    for (const auto& r : m_recs) {
+        if (r.station == station && r.isNG) return r.id;
+    }
+    // 2순위: 해당 스테이션의 최신 레코드 (OK도 포함)
+    for (const auto& r : m_recs) {
+        if (r.station == station) return r.id;
+    }
+    return 0;
+}
+
+// 특정 스테이션의 최신 inspection_id 리스트 (시간 역순, 최대 count개).
+// NG 우선으로 채우고 부족하면 OK로 보충 — 그래야 리스트가 비어보이지 않음.
+std::vector<int> CPageStats::GetRecentInspectionIdsByStation(int station, int count) const
+{
+    std::vector<int> out;
+    if (count <= 0) return out;
+    out.reserve(count);
+    // 1순위: NG 우선 (시간 역순 유지)
+    for (const auto& r : m_recs) {
+        if (r.station == station && r.isNG) {
+            out.push_back(r.id);
+            if (static_cast<int>(out.size()) >= count) return out;
+        }
+    }
+    // 2순위: OK로 보충
+    for (const auto& r : m_recs) {
+        if (r.station == station && !r.isNG) {
+            out.push_back(r.id);
+            if (static_cast<int>(out.size()) >= count) return out;
+        }
+    }
+    return out;
+}
+
+// inspection_id → (time, score) 조회. m_recs는 로그인 직후 히스토리 응답으로 채워짐.
+bool CPageStats::LookupInspectionMeta(int id, CString& outTime, double& outScore) const
+{
+    for (const auto& r : m_recs) {
+        if (r.id == id) {
+            outTime  = r.time;
+            outScore = r.score;
+            return true;
+        }
+    }
+    return false;
+}
+
+// ============================================================================
 // OnStatsRes — 통계 응답 수신 (프로토콜 131)
 // ============================================================================
-// MainTabDlg::OnNetResponse()에서 STATS_RES 수신 시 호출됩니다.
-// 서버가 보내는 시간대별 NG율과 결함 유형별 카운트로 차트 데이터를 교체합니다.
-// 서버 JSON 예시:
+// 서버 실제 응답 구조 (gui_router.cpp handle_stats):
 //   {"protocol_no":131,
-//    "trend":[{"hour":8,"s1_ng_rate":0.5,"s2_ng_rate":1.2,"avg_latency_ms":52}, ...],
-//    "pareto":[{"defect_type":"cap_loose","count":5}, ...]}
+//    "total":N, "ok_count":N, "ng_count":N, "ng_rate":%,
+//    "s1_ok":N, "s1_ng":N, "s2_ok":N, "s2_ng":N,
+//    "avg_latency_ms":ms}
+//
+// 클라이언트는 이 flat 구조를 받아 스테이션별 막대(파레토) +
+// 시간대 트렌드(검사 이력으로부터 대체 계산)로 변환하여 표시한다.
 void CPageStats::OnStatsRes(const std::string& json)
 {
     CStringA jsonA(json.c_str());
 
-    // ── 트렌드 배열 파싱 ──
-    int tStart = jsonA.Find("\"trend\"");
-    if (tStart >= 0) {
-        int arrS = jsonA.Find('[', tStart);
-        int arrE = jsonA.Find(']', arrS);
-        if (arrS >= 0 && arrE >= 0) {
-            CStringA arr = jsonA.Mid(arrS + 1, arrE - arrS - 1);
-            m_trend.clear();
-            int pos = 0;
-            while (pos < arr.GetLength()) {
-                int os = arr.Find('{', pos);
-                int oe = arr.Find('}', os);
-                if (os < 0 || oe < 0) break;
-                CStringA obj = arr.Mid(os, oe - os + 1);
-                TPoint p;
-                int hour = CPacketBuilder::ExtractInt(obj, "hour");
-                p.lbl.Format(_T("%d:00"), hour);
-                p.s1  = CPacketBuilder::ExtractDouble(obj, "s1_ng_rate");
-                p.s2  = CPacketBuilder::ExtractDouble(obj, "s2_ng_rate");
-                p.lat = CPacketBuilder::ExtractInt(obj, "avg_latency_ms");
-                m_trend.push_back(p);
-                pos = oe + 1;
-            }
-        }
-    }
+    int total    = CPacketBuilder::ExtractInt(jsonA, "total");
+    int okCount  = CPacketBuilder::ExtractInt(jsonA, "ok_count");
+    int ngCount  = CPacketBuilder::ExtractInt(jsonA, "ng_count");
+    double ngRate = CPacketBuilder::ExtractDouble(jsonA, "ng_rate");
+    int s1_ok    = CPacketBuilder::ExtractInt(jsonA, "s1_ok");
+    int s1_ng    = CPacketBuilder::ExtractInt(jsonA, "s1_ng");
+    int s2_ok    = CPacketBuilder::ExtractInt(jsonA, "s2_ok");
+    int s2_ng    = CPacketBuilder::ExtractInt(jsonA, "s2_ng");
+    int avgLat   = CPacketBuilder::ExtractInt(jsonA, "avg_latency_ms");
 
-    // ── 파레토 배열 파싱 ──
-    int pStart = jsonA.Find("\"pareto\"");
-    if (pStart >= 0) {
-        int arrS = jsonA.Find('[', pStart);
-        int arrE = jsonA.Find(']', arrS);
-        if (arrS >= 0 && arrE >= 0) {
-            CStringA arr = jsonA.Mid(arrS + 1, arrE - arrS - 1);
-            m_pareto.clear();
-            int pos = 0;
-            while (pos < arr.GetLength()) {
-                int os = arr.Find('{', pos);
-                int oe = arr.Find('}', os);
-                if (os < 0 || oe < 0) break;
-                CStringA obj  = arr.Mid(os, oe - os + 1);
-                CStringA name = CPacketBuilder::ExtractString(obj, "defect_type");
-                int cnt = CPacketBuilder::ExtractInt(obj, "count");
-                PItem item;
-                item.name = CString(name);
-                item.cnt  = cnt;
-                m_pareto.push_back(item);
-                pos = oe + 1;
-            }
-        }
+    // 스테이션별 NG 카운트를 파레토 차트로 표시
+    m_pareto.clear();
+    if (s1_ng > 0) {
+        PItem it; it.name = _T("입고 NG"); it.cnt = s1_ng;
+        m_pareto.push_back(it);
+    }
+    if (s2_ng > 0) {
+        PItem it; it.name = _T("조립 NG"); it.cnt = s2_ng;
+        m_pareto.push_back(it);
     }
 
     Invalidate();
-    TRACE(_T("[PageStats] 통계 수신: trend=%d, pareto=%d\n"),
-        (int)m_trend.size(), (int)m_pareto.size());
+    TRACE(_T("[PageStats] 통계 수신: total=%d OK=%d NG=%d (%.2f%%) s1=%d/%d s2=%d/%d avg=%dms\n"),
+          total, okCount, ngCount, ngRate, s1_ok, s1_ng, s2_ok, s2_ng, avgLat);
 }

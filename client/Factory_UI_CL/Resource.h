@@ -1,4 +1,4 @@
-﻿//{{NO_DEPENDENCIES}}
+//{{NO_DEPENDENCIES}}
 // Microsoft Visual C++에서 생성한 포함 파일입니다.
 #pragma once
 
@@ -57,6 +57,7 @@
 #define IDC_CAM1_VIEW                   2200
 #define IDC_HEATMAP1_VIEW               2201
 #define IDC_PREDMASK1_VIEW              2214    // Pred Mask 뷰 (3번째 패널)
+#define IDC_NG_LIST1                    2215    // NG 이벤트 이력 세로 리스트 (스테이션1)
 #define IDC_STATIC_S1_RESULT            2202
 #define IDC_STATIC_S1_SCORE             2203
 #define IDC_BTN_S1_OK                   2204
@@ -64,15 +65,29 @@
 #define IDC_BTN_S1_ARDUINO              2206
 #define IDC_STATIC_S1_LED               2207
 
-// ── 스테이션 2 ────────────────────────────────────────────────────────────
+// ── 스테이션 2 (기존) ─────────────────────────────────────────────────────
 #define IDC_CAM2_VIEW                   2300
 #define IDC_HEATMAP2_VIEW               2301
 #define IDC_LIST_YOLO                   2302
-#define IDC_STATIC_S2_RESULT            2303
+#define IDC_STATIC_S2_RESULT            2303    // 좌측 이미지 하단 OK/NG 바
 #define IDC_STATIC_S2_SCORE             2304
 #define IDC_BTN_S2_DEFECT               2305
 #define IDC_BTN_S2_REWORK               2306
-#define IDC_STATIC_S2_LED               2307
+#define IDC_STATIC_S2_LED               2307    // 아두이노 상태 "대기중"/"검사중"
+
+// ── 스테이션 2 (v0.14 신규) ───────────────────────────────────────────────
+#define IDC_PREDMASK2_VIEW              2310    // Pred Mask 뷰 (3번째 이미지)
+#define IDC_STATIC_S2_RESULT_PANEL      2313    // 우측 Final Result 텍스트
+#define IDC_BTN_S2_CAT_ALL              2314    // [전체] 버튼
+#define IDC_BTN_S2_CAT_YOLO             2315    // [YOLO] 버튼
+#define IDC_BTN_S2_CAT_PC               2316    // [PatchCore] 버튼
+#define IDC_STATIC_S2_CAT_DESC          2317    // 카테고리 설명 레이블
+#define IDC_NG_LIST2                    2318    // NG 이벤트 이력 CListCtrl
+#define IDC_STATIC_S2_NG_COUNT          2319    // "금일 N건" 레이블
+#define IDC_STATIC_S2_SERIAL            2324    // "● OK (COM5)"
+#define IDC_STATIC_S2_LAST              2325    // 마지막 신호 시각
+#define IDC_STATIC_S2_SOL               2326    // Solenoid ON/OFF
+#define IDC_STATIC_S2_SENS              2327    // Sensor Ready/Fault
 
 // ── 통계 페이지 ───────────────────────────────────────────────────────────
 #define IDC_DATE_FROM                   2400
@@ -93,37 +108,34 @@
 #define IDC_BTN_CLEAR_FILES             2508
 
 // ── 홈 페이지 추가 (입고/조립 별도 집계) ──────────────────────────────────
-#define IDC_STATIC_S1_OK                2110    // ① 입고 OK 수
-#define IDC_STATIC_S1_NG                2111    // ① 입고 NG 수
-#define IDC_STATIC_S2_OK                2112    // ② 조립 OK 수
-#define IDC_STATIC_S2_NG                2113    // ② 조립 NG 수
-#define IDC_STATIC_S1_MODEL_INFO        2114    // ① 입고 모델 정보
-#define IDC_STATIC_S2_MODEL_INFO        2115    // ② 조립 모델 정보
+#define IDC_STATIC_S1_OK                2110
+#define IDC_STATIC_S1_NG                2111
+#define IDC_STATIC_S2_OK                2112
+#define IDC_STATIC_S2_NG                2113
+#define IDC_STATIC_S1_MODEL_INFO        2114
+#define IDC_STATIC_S2_MODEL_INFO        2115
 
 // ── 스테이션1 추가 (검사 설정 정보) ───────────────────────────────────────
-#define IDC_STATIC_S1_CFG_MODEL         2210    // 모델명
-#define IDC_STATIC_S1_CFG_INPUT         2211    // 입력 크기
-#define IDC_STATIC_S1_CFG_THRESH        2212    // NG 임계값
-#define IDC_STATIC_S1_CFG_BACKBONE      2213    // 백본
+#define IDC_STATIC_S1_CFG_MODEL         2210
+#define IDC_STATIC_S1_CFG_INPUT         2211
+#define IDC_STATIC_S1_CFG_THRESH        2212
+#define IDC_STATIC_S1_CFG_BACKBONE      2213
 
 // ── 모델 페이지 추가 (학습 PC 정보) ──────────────────────────────────────
-#define IDC_STATIC_TRAIN_SERVER         2510    // 서버 OS
-#define IDC_STATIC_TRAIN_GPU            2511    // GPU 정보
-#define IDC_STATIC_TRAIN_FRAMEWORK      2512    // 프레임워크
+#define IDC_STATIC_TRAIN_SERVER         2510
+#define IDC_STATIC_TRAIN_GPU            2511
+#define IDC_STATIC_TRAIN_FRAMEWORK      2512
 
-// ── 네트워크 타이머 ──────────────────────────────────────────────────────
-#define IDT_RECONNECT                   410     // 서버 재접속 타이머
-
-// ── 메뉴 추가 (네트워크) ─────────────────────────────────────────────────
-#define ID_NET_CONNECT                  310     // 서버 접속
-#define ID_NET_DISCONNECT               311     // 서버 접속 해제
+// ── 네트워크 타이머 / 메뉴 ───────────────────────────────────────────────
+#define IDT_RECONNECT                   410
+#define ID_NET_CONNECT                  310
+#define ID_NET_DISCONNECT               311
 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        310
-#define _APS_NEXT_CONTROL_VALUE         3000
+#define _APS_NEXT_CONTROL_VALUE         2330    // 다음 신규 컨트롤은 2330부터
 #define _APS_NEXT_SYMED_VALUE           101
 #define _APS_NEXT_COMMAND_VALUE         32771
 #endif
 #endif
-

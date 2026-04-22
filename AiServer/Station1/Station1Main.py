@@ -82,86 +82,12 @@ async def main() -> None:
     """
 
     # -----------------------------------------------------------------------
-    # [설정 객체 생성] Station1에 필요한 모든 설정값을 한 곳에 모은다.
+    # [설정 객체 생성] config/config.json에서 Station1 설정 로드
     # -----------------------------------------------------------------------
-
-    # StationConfig 객체를 생성한다. 각 매개변수의 역할은 아래와 같다.
-    config = StationConfig(
-
-        # station_id: 이 스테이션의 고유 번호. 1번은 '입고 검사' 공정을 뜻한다.
-        # 메인 서버에 결과를 보낼 때, 어느 공정에서 온 데이터인지 구분하는 데 쓰인다.
-        station_id=1,
-
-        # main_server_host: 검사 결과를 수신하는 메인 서버의 IP 주소이다.
-        # "127.0.0.1"은 '자기 자신(로컬호스트)'을 의미한다.
-        # 실제 공장 배포 시에는 메인 서버의 실제 IP로 변경해야 한다.
-        main_server_host="10.10.10.130",
-
-        # main_server_port: 메인 서버가 대기(listen)하고 있는 포트 번호이다.
-        # 포트는 하나의 IP에서 여러 서비스를 구분하는 '문 번호' 같은 것이다.
-        # 메인 서버와 같은 포트(9000)를 맞춰야 통신이 된다.
-        main_server_port=9000,
-
-        # camera_serial: 산업용 카메라의 시리얼 번호이다.
-        # 여러 대의 카메라가 연결된 환경에서 특정 카메라를 지정할 때 사용한다.
-        # 빈 문자열("")이면 자동으로 첫 번째 카메라를 선택한다.
-        camera_serial="",
-
-        # model_path: PatchCore 이상탐지 모델 파일(.ckpt)의 경로이다.
-        # .ckpt는 PyTorch Lightning의 체크포인트 파일 형식으로,
-        # 학습이 완료된 모델의 가중치(weights)와 설정이 저장되어 있다.
-        # 이 모델이 페트병의 정상/불량을 판별하는 핵심 두뇌 역할을 한다.
-        model_path="./models/station1_patchcore.ckpt",
-
-        # patchcore_model_path: 2차 PatchCore 모델 경로이다.
-        # Station1은 PatchCore 하나만 사용하므로 빈 문자열로 비활성화한다.
-        # Station2처럼 YOLO + PatchCore 조합이 필요한 경우에만 이 경로를 지정한다.
-        patchcore_model_path="",           # Station1은 사용 안 함
-
-        # device: AI 모델이 연산을 수행할 하드웨어를 지정한다.
-        #   "auto" -> GPU(CUDA)가 있으면 GPU, 없으면 CPU를 자동 선택
-        #   "cuda" -> NVIDIA GPU 강제 사용 (없으면 에러)
-        #   "cpu"  -> CPU만 사용 (GPU가 있어도 무시)
-        # GPU를 쓰면 딥러닝 연산이 10~100배 빨라지므로 실시간 검사에 유리하다.
-        device="auto",                     # "auto" / "cuda" / "cpu"
-
-        # anomaly_threshold: PatchCore의 이상(anomaly) 점수 임계값이다.
-        # PatchCore는 각 이미지에 0~1 사이의 '이상 점수'를 매기는데,
-        # 이 값(0.5)보다 높으면 '불량(NG)', 낮으면 '정상(OK)'으로 판정한다.
-        # 임계값을 낮추면 불량 감지가 민감해지고(과검출 위험),
-        # 높이면 둔감해진다(미검출 위험). 현장 테스트로 최적값을 찾아야 한다.
-        anomaly_threshold=0.5,             # PatchCore 이상 점수 임계값
-
-        # patchcore_input_size: PatchCore 모델에 입력할 이미지의 가로/세로 크기(픽셀)이다.
-        # 카메라 원본 이미지를 이 크기로 리사이즈(resize)한 후 모델에 넣는다.
-        # 224는 ImageNet 기반 모델에서 가장 흔히 쓰이는 표준 크기이다.
-        patchcore_input_size=224,
-
-        # grab_queue_max: 카메라에서 촬영한 이미지를 임시 저장하는 큐(대기열)의 최대 크기이다.
-        # 큐가 가득 차면 새 이미지는 버려진다(오래된 이미지가 쌓이는 것을 방지).
-        # 16이면 최대 16장까지 대기열에 쌓을 수 있다.
-        grab_queue_max=16,
-
-        # inference_workers: 동시에 AI 추론을 수행하는 작업자(worker) 수이다.
-        # GPU가 1개이면 1로 두는 것이 일반적이다.
-        # 여러 GPU가 있을 때 늘리면 처리량(throughput)이 올라간다.
-        inference_workers=1,
-
-        # sender_workers: 추론 결과를 메인 서버로 전송하는 작업자 수이다.
-        # 네트워크 전송은 비교적 빠르므로 1이면 충분한 경우가 많다.
-        sender_workers=1,
-
-        # arduino_port: 아두이노(Arduino) 보드와 시리얼 통신할 포트 이름이다.
-        # 아두이노는 불량 판정 결과에 따라 물리적 장치(예: 솔레노이드, LED)를 제어한다.
-        # None이면 아두이노 연결을 사용하지 않는다.
-        # 실제 연결 시 Windows는 "COM3", Linux는 "/dev/ttyUSB0" 형태로 지정한다.
-        arduino_port=None,                 # 예: "COM3" 또는 "/dev/ttyUSB0"
-
-        # arduino_baud: 아두이노와의 시리얼 통신 속도(baud rate)이다.
-        # 9600은 아두이노 기본값이며, 아두이노 코드와 동일하게 맞춰야 통신이 된다.
-        # 단위는 bps(bits per second)로, 초당 전송 비트 수를 의미한다.
-        arduino_baud=9600,
-    )
+    # 모든 하드코딩된 값(IP/포트/모델 경로/임계값)은 프로젝트 루트의
+    # config/config.json에서 관리된다. 배포 환경이 바뀌어도 코드 수정 없이
+    # 설정 파일만 변경하면 된다.
+    config = StationConfig.from_json(station_id=1)
 
     # -----------------------------------------------------------------------
     # [추론 엔진 & 파이프라인 생성] 설정을 기반으로 핵심 객체들을 만든다.

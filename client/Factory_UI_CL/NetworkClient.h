@@ -32,6 +32,7 @@
 // ============================================================================
 
 #include "ClientProtocol.h"
+#include <atomic>
 #include <vector>
 #include <string>
 
@@ -57,6 +58,22 @@
 #define WM_NET_RESPONSE         (WM_APP + 106)
 // 재학습 진행률 푸시 수신 (프로토콜 154)
 #define WM_NET_RETRAIN_PROGRESS (WM_APP + 107)
+// 회원가입 응답 수신 (프로토콜 105)
+#define WM_NET_REGISTER_RES     (WM_APP + 108)
+// NG 이미지 3장 수신 (프로토콜 110의 바이너리 블록)
+// LPARAM = new NgImagePacket* → 수신자가 delete 해야 함
+#define WM_NET_NG_IMAGE         (WM_APP + 109)
+
+// ── NG 이미지 전달용 구조체 ────────────────────────────────────────────────
+// NG_PUSH(110) 수신 시 JSON 뒤에 붙어온 3장 이미지를 UI 스레드에 전달하기 위한 패킷
+// image/heatmap/pred_mask 각각 비어있을 수 있음(서버가 0 size로 보낸 경우)
+struct NgImagePacket {
+    int                station_id    = 0;  // 1=입고검사, 2=조립검사
+    int                inspection_id = 0;  // DB 레코드 id — NG_PUSH(110)/INSPECT_IMAGE_RES(117) 모두 포함
+    std::vector<BYTE>  image;              // 원본 JPEG
+    std::vector<BYTE>  heatmap;            // Anomaly Map PNG
+    std::vector<BYTE>  pred_mask;          // Pred Mask PNG
+};
 
 // ============================================================================
 // CNetworkClient 클래스
@@ -112,8 +129,8 @@ private:
     // m_hRecvThread: 백그라운드 수신 스레드의 핸들
     HANDLE m_hRecvThread;
     // m_bRunning: 수신 스레드의 실행 여부 플래그
-    // volatile: 다른 스레드에서 변경 시 즉시 반영되도록 최적화 방지
-    volatile bool m_bRunning;
+    // std::atomic: 스레드 간 안전한 동기화 보장 (volatile보다 안전)
+    std::atomic<bool> m_bRunning;
 
     // ── 스레드 안전 전송 ─────────────────────────────────────────────────
     // CRITICAL_SECTION: Windows의 뮤텍스 (상호 배제 잠금)

@@ -110,34 +110,48 @@ bool CPacketBuilder::ParseHeader(const char* headerBuf, UINT32& outJsonSize)
 // 동작: "key":"value" 패턴을 찾아서 value 부분을 반환
 CStringA CPacketBuilder::ExtractString(const CStringA& json, const CStringA& key)
 {
+    if (json.IsEmpty() || key.IsEmpty()) return "";
+
     // "key" 형태의 검색 문자열 생성
     CStringA needle;
     needle.Format("\"%s\"", (LPCSTR)key);
 
+    int jsonLen = json.GetLength();
+
     // JSON 안에서 키 위치 찾기
     int pos = json.Find(needle);
-    if (pos < 0) return "";  // 키를 찾지 못함
+    if (pos < 0) return "";
 
     // ':' (콜론) 찾기 — key: value 구분자
     int colon = json.Find(':', pos + needle.GetLength());
-    if (colon < 0) return "";
+    if (colon < 0 || colon >= jsonLen - 1) return "";
 
     // value의 시작 따옴표 찾기
     int firstQuote = json.Find('"', colon + 1);
-    if (firstQuote < 0) return "";
+    if (firstQuote < 0 || firstQuote >= jsonLen - 1) return "";
 
-    // value의 끝 따옴표 찾기
-    int lastQuote = json.Find('"', firstQuote + 1);
+    // value의 끝 따옴표 찾기 (이스케이프된 따옴표 건너뛰기)
+    int lastQuote = -1;
+    for (int i = firstQuote + 1; i < jsonLen; ++i) {
+        if (json[i] == '"' && (i == 0 || json[i - 1] != '\\')) {
+            lastQuote = i;
+            break;
+        }
+    }
     if (lastQuote < 0) return "";
 
-    // 따옴표 사이의 문자열 추출
-    return json.Mid(firstQuote + 1, lastQuote - firstQuote - 1);
+    // 길이 검증
+    int len = lastQuote - firstQuote - 1;
+    if (len < 0 || len > 4096) return "";  // 비정상 크기 차단
+
+    return json.Mid(firstQuote + 1, len);
 }
 
 // ExtractInt: JSON에서 정수 값 추출
-// 동작: "key":123 패턴을 찾아서 숫자 부분을 atoi로 변환
 int CPacketBuilder::ExtractInt(const CStringA& json, const CStringA& key)
 {
+    if (json.IsEmpty() || key.IsEmpty()) return 0;
+
     CStringA needle;
     needle.Format("\"%s\"", (LPCSTR)key);
 
@@ -145,16 +159,21 @@ int CPacketBuilder::ExtractInt(const CStringA& json, const CStringA& key)
     if (pos < 0) return 0;
 
     int colon = json.Find(':', pos + needle.GetLength());
-    if (colon < 0) return 0;
+    if (colon < 0 || colon >= json.GetLength() - 1) return 0;
 
-    // 콜론 다음부터 숫자가 시작됨 (공백 건너뛰기)
-    // atoi는 공백을 자동으로 건너뛰고 숫자를 읽음
-    return atoi((LPCSTR)json + colon + 1);
+    // strtol로 변환 — atoi보다 안전 (범위 검증 가능)
+    char* endptr = nullptr;
+    long val = strtol((LPCSTR)json + colon + 1, &endptr, 10);
+    if (endptr == (LPCSTR)json + colon + 1) return 0;  // 숫자 없음
+    if (val > INT_MAX || val < INT_MIN) return 0;       // 오버플로우
+    return static_cast<int>(val);
 }
 
 // ExtractDouble: JSON에서 실수 값 추출
 double CPacketBuilder::ExtractDouble(const CStringA& json, const CStringA& key)
 {
+    if (json.IsEmpty() || key.IsEmpty()) return 0.0;
+
     CStringA needle;
     needle.Format("\"%s\"", (LPCSTR)key);
 
@@ -162,10 +181,12 @@ double CPacketBuilder::ExtractDouble(const CStringA& json, const CStringA& key)
     if (pos < 0) return 0.0;
 
     int colon = json.Find(':', pos + needle.GetLength());
-    if (colon < 0) return 0.0;
+    if (colon < 0 || colon >= json.GetLength() - 1) return 0.0;
 
-    // atof: 문자열을 double로 변환
-    return atof((LPCSTR)json + colon + 1);
+    char* endptr = nullptr;
+    double val = strtod((LPCSTR)json + colon + 1, &endptr);
+    if (endptr == (LPCSTR)json + colon + 1) return 0.0;  // 숫자 없음
+    return val;
 }
 
 // ============================================================================
@@ -199,29 +220,133 @@ CStringA CPacketBuilder::GenerateRequestId()
 }
 
 // ============================================================================
+// ExtractBool — JSON의 불리언 값(true/false) 추출
+// ============================================================================
+// 중요: ExtractString은 따옴표 없는 원시값(true/false/123)을 잘못 파싱하므로
+//       boolean 필드는 반드시 이 함수를 사용해야 한다.
+//
+// 예) "success":true,"username":"admin123"
+//   ExtractString("success") → "username" (잘못됨!)
+//   ExtractBool("success")   → true (정상)
+bool CPacketBuilder::ExtractBool(const CStringA& json, const CStringA& key)
+{
+    if (json.IsEmpty() || key.IsEmpty()) return false;
+
+    CStringA needle;
+    needle.Format("\"%s\"", (LPCSTR)key);
+
+    int pos = json.Find(needle);
+    if (pos < 0) return false;
+
+    int colon = json.Find(':', pos + needle.GetLength());
+    if (colon < 0) return false;
+
+    // 콜론 다음부터 원시값 확인 (공백 스킵)
+    int i = colon + 1;
+    while (i < json.GetLength() &&
+           (json[i] == ' ' || json[i] == '\t')) ++i;
+
+    // "true" 시작이면 true, 그 외는 false
+    return (i + 3 < json.GetLength()) &&
+           json[i]   == 't' &&
+           json[i+1] == 'r' &&
+           json[i+2] == 'u' &&
+           json[i+3] == 'e';
+}
+
+// ============================================================================
+// Utf8ToWide — UTF-8 바이트 → Unicode CString 변환
+// ============================================================================
+// 목적:
+//   서버가 보낸 UTF-8 JSON에서 추출한 CStringA(ANSI)를
+//   Unicode CString으로 변환해 MFC 컨트롤에 올바르게 표시한다.
+//
+// 문제:
+//   CString(CStringA) 생성자는 CP949(한국어 Windows 기본 ANSI)로 해석 →
+//   UTF-8 바이트를 잘못 매핑하여 "溢웴헿???" 같은 깨진 문자 발생.
+//
+// 해결:
+//   MultiByteToWideChar(CP_UTF8, ...)로 UTF-8 → UTF-16 명시적 변환.
+CString CPacketBuilder::Utf8ToWide(const CStringA& utf8)
+{
+    if (utf8.IsEmpty()) return CString();
+
+    int wlen = MultiByteToWideChar(CP_UTF8, 0,
+        (LPCSTR)utf8, utf8.GetLength(), nullptr, 0);
+    if (wlen <= 0) return CString((LPCSTR)utf8);  // 변환 실패 시 폴백
+
+    CString result;
+    MultiByteToWideChar(CP_UTF8, 0,
+        (LPCSTR)utf8, utf8.GetLength(),
+        result.GetBuffer(wlen), wlen);
+    result.ReleaseBuffer(wlen);
+    return result;
+}
+
+// ExtractStringW: ExtractString + UTF-8 변환 (편의 함수)
+CString CPacketBuilder::ExtractStringW(const CStringA& json, const CStringA& key)
+{
+    return Utf8ToWide(ExtractString(json, key));
+}
+
+// ============================================================================
+// JSON 이스케이프 — 서버 측 security::escape_json과 동일 기준으로 정렬
+//   처리: " \ \n \r \t \b \f + 제어문자(0x00~0x1F) → \uXXXX
+// ============================================================================
+static CStringA EscapeJson(const CStringA& s)
+{
+    CStringA out;
+    out.Preallocate(s.GetLength() + 16);
+    for (int i = 0; i < s.GetLength(); ++i) {
+        char c = s[i];
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    CStringA hex;
+                    hex.Format("\\u%04x", static_cast<unsigned char>(c));
+                    out += hex;
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+// ============================================================================
 // 요청 메시지 빌더 — 각 프로토콜별 JSON 문자열 생성
 // ============================================================================
 
 // BuildLoginReq: 로그인 요청 JSON (프로토콜 100)
 // 서버로 전송할 인증 정보를 JSON 형태로 조립합니다.
+// 참고: 비밀번호는 내부 폐쇄망(10.10.10.x)에서만 전송되며,
+//       서버 측에서 bcrypt 해싱 처리. 실무에서는 TLS 적용 필요.
 CString CPacketBuilder::BuildLoginReq(const CString& username, const CString& password)
 {
     CStringA ts = GetTimestamp();
     CStringA reqId = GenerateRequestId();
 
-    // UTF-8 변환을 위해 CStringA(ANSI/UTF-8)로 작업
-    CStringA userA(username);   // CString(유니코드) → CStringA(ANSI)
-    CStringA passA(password);
+    // UTF-8 변환 + JSON 이스케이프 (injection 방지)
+    CStringA userA = EscapeJson(CStringA(username));
+    CStringA passA = EscapeJson(CStringA(password));
 
     CStringA json;
     json.Format(
         "{"
-        "\"protocol_no\":%d,"            // 프로토콜 번호 (100)
-        "\"protocol_version\":\"%s\","    // 프로토콜 버전 ("1.0")
-        "\"request_id\":\"%s\","          // 요청 식별자
-        "\"username\":\"%s\","            // 사용자 이름
-        "\"password\":\"%s\","            // 비밀번호 (실무에서는 해시 사용)
-        "\"timestamp\":\"%s\""            // 요청 시각
+        "\"protocol_no\":%d,"
+        "\"protocol_version\":\"%s\","
+        "\"request_id\":\"%s\","
+        "\"username\":\"%s\","
+        "\"password\":\"%s\","
+        "\"timestamp\":\"%s\""
         "}",
         factory_client::LOGIN_REQ,
         factory_client::PROTOCOL_VERSION,
@@ -231,6 +356,41 @@ CString CPacketBuilder::BuildLoginReq(const CString& username, const CString& pa
         (LPCSTR)ts);
 
     return CString(json);  // CStringA → CString(유니코드) 변환하여 반환
+}
+
+// BuildRegisterReq: 회원가입 요청 JSON (프로토콜 104)
+CString CPacketBuilder::BuildRegisterReq(const CString& username, const CString& password,
+                                          const CString& employeeId, const CString& role)
+{
+    CStringA ts = GetTimestamp();
+    CStringA reqId = GenerateRequestId();
+    CStringA userA = EscapeJson(CStringA(username));
+    CStringA passA = EscapeJson(CStringA(password));
+    CStringA empA  = EscapeJson(CStringA(employeeId));
+    CStringA roleA = EscapeJson(CStringA(role));
+
+    CStringA json;
+    json.Format(
+        "{"
+        "\"protocol_no\":%d,"
+        "\"protocol_version\":\"%s\","
+        "\"request_id\":\"%s\","
+        "\"username\":\"%s\","
+        "\"password\":\"%s\","
+        "\"employee_id\":\"%s\","
+        "\"role\":\"%s\","
+        "\"timestamp\":\"%s\""
+        "}",
+        factory_client::REGISTER_REQ,
+        factory_client::PROTOCOL_VERSION,
+        (LPCSTR)reqId,
+        (LPCSTR)userA,
+        (LPCSTR)passA,
+        (LPCSTR)empA,
+        (LPCSTR)roleA,
+        (LPCSTR)ts);
+
+    return CString(json);
 }
 
 // BuildLogoutReq: 로그아웃 요청 JSON (프로토콜 102)
@@ -285,6 +445,27 @@ CString CPacketBuilder::BuildInspectHistoryReq(
         limit,
         (LPCSTR)ts);
 
+    return CString(json);
+}
+
+// BuildInspectImageReq: 이력 이미지 on-demand 요청 JSON (프로토콜 116)
+// 서버는 inspection_id로 DB 조회 후 원본/히트맵/마스크 3장 바이너리를 회신한다.
+CString CPacketBuilder::BuildInspectImageReq(int inspectionId)
+{
+    CStringA ts    = GetTimestamp();
+    CStringA reqId = GenerateRequestId();
+    CStringA json;
+    json.Format(
+        "{\"protocol_no\":%d,"
+        "\"protocol_version\":\"%s\","
+        "\"request_id\":\"%s\","
+        "\"inspection_id\":%d,"
+        "\"timestamp\":\"%s\"}",
+        factory_client::INSPECT_IMAGE_REQ,
+        factory_client::PROTOCOL_VERSION,
+        (LPCSTR)reqId,
+        inspectionId,
+        (LPCSTR)ts);
     return CString(json);
 }
 

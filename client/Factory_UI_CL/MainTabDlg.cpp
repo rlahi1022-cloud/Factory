@@ -13,6 +13,7 @@
 #include "pch.h"
 #include "MainTabDlg.h"
 #include "LoginDlg.h"       // OnLogout()에서 로그인 다이얼로그 재표시용
+#include "ClientConfig.h"   // 서버 IP/포트 — config.json 기반
 
 // ── RTTI 매크로 ──────────────────────────────────────────────────────────
 // IMPLEMENT_DYNAMIC: MFC 런타임 클래스 정보 등록 (DECLARE_DYNAMIC과 쌍)
@@ -52,6 +53,7 @@ BEGIN_MESSAGE_MAP(CMainTabDlg, CDialogEx)
     ON_MESSAGE(WM_NET_RESPONSE,         OnNetResponse)
     ON_MESSAGE(WM_NET_RETRAIN_PROGRESS, OnNetRetrainProgress)
     ON_MESSAGE(WM_NET_LOGIN_RES,        OnNetLoginRes)   // 로그인 응답 (프로토콜 101)
+    ON_MESSAGE(WM_NET_NG_IMAGE,         OnNetNgImage)    // NG 이미지 3장 (프로토콜 110 바이너리)
 END_MESSAGE_MAP()
 
 // ============================================================================
@@ -69,6 +71,7 @@ CMainTabDlg::CMainTabDlg(const UserSession& s, CWnd* p)
     , m_sv2(true)           // 추론 PC #2: 정상
     , m_bConnected(false)   // 네트워크: 미연결
 {
+    InitializeCriticalSection(&m_csRecs);
     // 초기 시뮬레이션 데이터 20건 생성
     m_recs = QCUtil::GenInitialHistory();
 }
@@ -82,6 +85,8 @@ CMainTabDlg::~CMainTabDlg()
 
     // 네트워크 연결 해제
     m_net.Disconnect();
+
+    DeleteCriticalSection(&m_csRecs);
 }
 
 // ============================================================================
@@ -129,8 +134,22 @@ BOOL CMainTabDlg::OnInitDialog()
         (LPCTSTR)m_session.role, (LPCTSTR)m_session.employeeId);
     SetWindowText(title);
 
+    // ── 네트워크 자동 접속 시도 (페이지 생성 전에 선행) ──
+    // 페이지 생성 중 예외가 발생해도 서버 로그인 요청은 우선 발송되도록
+    // ConnectToServer를 먼저 호출한다. PostMessage는 m_hWnd에 큐잉되므로
+    // 이후 메시지 핸들러가 등록될 때까지 안전하게 대기한다.
+    ConnectToServer();
+
     // ── 페이지 생성 및 초기 표시 ──
-    CreatePages();
+    // 각 페이지 Create는 독립적으로 try-catch로 보호 — 한 페이지가 실패해도
+    // 나머지 페이지와 네트워크 기능은 살아남도록.
+    try {
+        CreatePages();
+    } catch (const std::exception& e) {
+        TRACE(_T("[MainTabDlg] CreatePages 예외: %hs\n"), e.what());
+    } catch (...) {
+        TRACE(_T("[MainTabDlg] CreatePages 알 수 없는 예외\n"));
+    }
     SwitchTab(0);
 
     // ── 타이머 시작 ──
@@ -139,10 +158,9 @@ BOOL CMainTabDlg::OnInitDialog()
     // IDT_STATUSBAR: 1초마다 상태바 시각 갱신
     SetTimer(IDT_STATUSBAR, 1000, nullptr);
 
-    // ── 네트워크 자동 접속 시도 ──
-    // 서버 IP와 포트는 ClientProtocol.h의 DEFAULT_SERVER_IP에서 설정합니다.
-    // 실패 시 시뮬레이션 모드로 동작하며 10초마다 재접속을 시도합니다.
-    ConnectToServer();
+    // ── 각 페이지에 NetworkClient 주입 (생성 성공한 페이지만) ──
+    if (m_stats) m_stats->SetNetworkClient(&m_net);
+    if (m_model) m_model->SetNetworkClient(&m_net);
 
     // ── 최대화 표시 ──
     ShowWindow(SW_SHOWMAXIMIZED);
@@ -156,21 +174,27 @@ BOOL CMainTabDlg::OnInitDialog()
 // CreatePages: 5개 탭 페이지를 자식 다이얼로그로 생성
 void CMainTabDlg::CreatePages()
 {
-    // make_unique: 스마트 포인터로 생성 (자동 메모리 관리)
-    m_home  = std::make_unique<CPageHome>(this);
-    m_st1   = std::make_unique<CPageStation1>(this);
-    m_st2   = std::make_unique<CPageStation2>(this);
-    m_stats = std::make_unique<CPageStats>(this);
-    m_model = std::make_unique<CPageModel>(this);
+    // 페이지별 생성을 독립적으로 수행 — 한 페이지가 실패해도 다른 페이지는 살림
+    // (PageStation1의 3분할 뷰 리소스/DDX 문제로 전체 앱이 다운되던 사례 방어)
+    auto create_safe = [this](const TCHAR* name, auto&& maker, int idd) -> bool {
+        try {
+            maker();
+            return true;
+        } catch (const std::exception& e) {
+            TRACE(_T("[MainTabDlg] %s 페이지 생성 예외: %hs\n"), name, e.what());
+        } catch (...) {
+            TRACE(_T("[MainTabDlg] %s 페이지 생성 실패 (IDD=%d)\n"), name, idd);
+        }
+        return false;
+    };
 
-    // Create: 실제 윈도우(HWND) 생성 — this(MainTabDlg)를 부모로 지정
-    m_home ->Create(IDD_PAGE_HOME,     this);
-    m_st1  ->Create(IDD_PAGE_STATION1, this);
-    m_st2  ->Create(IDD_PAGE_STATION2, this);
-    m_stats->Create(IDD_PAGE_STATS,    this);
-    m_model->Create(IDD_PAGE_MODEL,    this);
+    create_safe(_T("Home"),     [&]{ m_home  = std::make_unique<CPageHome>(this);     m_home ->Create(IDD_PAGE_HOME,     this); }, IDD_PAGE_HOME);
+    create_safe(_T("Station1"), [&]{ m_st1   = std::make_unique<CPageStation1>(this); m_st1  ->Create(IDD_PAGE_STATION1, this); }, IDD_PAGE_STATION1);
+    create_safe(_T("Station2"), [&]{ m_st2   = std::make_unique<CPageStation2>(this); m_st2  ->Create(IDD_PAGE_STATION2, this); }, IDD_PAGE_STATION2);
+    create_safe(_T("Stats"),    [&]{ m_stats = std::make_unique<CPageStats>(this);    m_stats->Create(IDD_PAGE_STATS,    this); }, IDD_PAGE_STATS);
+    create_safe(_T("Model"),    [&]{ m_model = std::make_unique<CPageModel>(this);    m_model->Create(IDD_PAGE_MODEL,    this); }, IDD_PAGE_MODEL);
 
-    // 초기 데이터 전달
+    // 초기 데이터 전달 (살아남은 페이지에만)
     PushUpdate();
 }
 
@@ -206,12 +230,17 @@ void CMainTabDlg::LayoutPages()
 }
 
 // PushUpdate: 최신 검사 데이터를 모든 페이지에 전달
+// 페이지 생성 실패 시 nullptr일 수 있으므로 null 체크 필수
 void CMainTabDlg::PushUpdate()
 {
-    m_home ->Update(m_recs);
-    m_st1  ->Update(m_recs);
-    m_st2  ->Update(m_recs);
-    m_stats->Update(m_recs);
+    EnterCriticalSection(&m_csRecs);
+    auto recs_copy = m_recs;  // 스냅샷 복사 후 락 해제
+    LeaveCriticalSection(&m_csRecs);
+
+    if (m_home)  m_home ->Update(recs_copy);
+    if (m_st1)   m_st1  ->Update(recs_copy);
+    if (m_st2)   m_st2  ->Update(recs_copy);
+    if (m_stats) m_stats->Update(recs_copy);
 }
 
 // ============================================================================
@@ -349,10 +378,12 @@ void CMainTabDlg::DrawStatus(CDC& dc)
     CFont* pf = dc.SelectObject(&m_fSmall);
 
     // 왼쪽: TCP/DB 상태 + 마지막 검사 시각
-    const auto& last = m_recs.back();
+    EnterCriticalSection(&m_csRecs);
+    InspectionRecord last = m_recs.empty() ? InspectionRecord{} : m_recs.back();
+    LeaveCriticalSection(&m_csRecs);
     CString leftText;
     leftText.Format(_T("TCP: :%d %s | DB: MariaDB | 마지막 검사: %s"),
-        factory_client::GUI_PORT,
+        factory_client::ClientConfig::GetServerPort(),
         m_bConnected ? _T("연결") : _T("미연결"),
         (LPCTSTR)last.time);
     CRect lr(6, rc.top, rc.right / 2, rc.bottom);
@@ -392,16 +423,35 @@ void CMainTabDlg::OnTimer(UINT_PTR id)
         if (!m_bConnected) {
             m_sv2 = (m_tick % 20 != 15);
         }
-        m_recs.push_back(QCUtil::GenRecord(m_nextId++));
-        if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
-
+        {
+            EnterCriticalSection(&m_csRecs);
+            m_recs.push_back(QCUtil::GenRecord(m_nextId++));
+            if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
+            LeaveCriticalSection(&m_csRecs);
+        }
         PushUpdate();
-        m_st1->Tick();
-        m_st2->Tick();
+        if (m_st1) m_st1->Tick();
+        if (m_st2) m_st2->Tick();
         InvalidateRect(ToolbarRect());
         InvalidateRect(StatusRect());
     }
     else if (id == IDT_STATUSBAR) {
+        // ── 연결 상태 실시간 동기화 ──
+        // UI의 m_bConnected는 WM_NET_CONNECTED/DISCONNECTED 메시지에 의존하는데,
+        // 네트워크 소리 없이 끊어진 경우(silent drop) 이 메시지가 안 올 수 있다.
+        // → 1초마다 실제 소켓 상태를 확인해 m_bConnected와 동기화한다.
+        bool actual = m_net.IsConnected();
+        if (actual != m_bConnected) {
+            m_bConnected = actual;
+            TRACE(_T("[MainTabDlg] 연결 상태 동기화: %s\n"),
+                  actual ? _T("연결됨") : _T("끊김 감지"));
+            if (!actual) {
+                // 끊김 감지 → 재접속 타이머 시작 (중복 방지 위해 KillTimer 선호출)
+                KillTimer(IDT_RECONNECT);
+                SetTimer(IDT_RECONNECT, 10000, nullptr);
+            }
+            InvalidateRect(ToolbarRect());  // LED/상태 그림 갱신
+        }
         InvalidateRect(StatusRect());
     }
     else if (id == IDT_RECONNECT) {
@@ -462,14 +512,27 @@ void CMainTabDlg::ConnectToServer()
 {
     if (m_net.IsConnected()) return;
 
-    if (m_net.Connect(factory_client::DEFAULT_SERVER_IP, factory_client::GUI_PORT, m_hWnd)) {
+    if (m_net.Connect(factory_client::ClientConfig::GetServerIp(),
+                      factory_client::ClientConfig::GetServerPort(), m_hWnd)) {
         // ── 접속 직후 LOGIN_REQ 전송 (서버 세션 유지 핵심!) ──
         // 서버의 handle_client()는 recv_one_request()로 첫 패킷을 기다리고 있음.
         // 이걸 안 보내면 서버가 "클라이언트가 아무 요청도 안 함" → 세션 제거.
         CString loginJson = CPacketBuilder::BuildLoginReq(
-            m_session.username, _T("local"));  // 비밀번호는 이미 인증됨
+            m_session.username, m_session.password);
         m_net.SendJson(loginJson);
-        TRACE(_T("[MainTabDlg] 서버 접속 + LOGIN_REQ 전송 완료\n"));
+
+        // 접속 직후 초기 데이터 요청 (DB 기반 실데이터 로드)
+        if (m_model) m_model->RequestModelList();
+
+        // 검사 이력 + 통계를 자동 조회 → 홈 화면에 실데이터 표시
+        CString histReq = CPacketBuilder::BuildInspectHistoryReq(
+            0, _T(""), _T(""), 100);  // 전체 스테이션, 최대 100건
+        m_net.SendJson(histReq);
+
+        CString statsReq = CPacketBuilder::BuildStatsReq(0, _T(""), _T(""));
+        m_net.SendJson(statsReq);
+
+        TRACE(_T("[MainTabDlg] 서버 접속 + LOGIN_REQ + 초기 데이터 요청 완료\n"));
     } else {
         TRACE(_T("[MainTabDlg] 서버 자동 접속 실패 — 시뮬레이션 모드\n"));
         SetTimer(IDT_RECONNECT, 10000, nullptr);
@@ -487,7 +550,8 @@ void CMainTabDlg::OnNetConnect()
     if (!m_net.IsConnected()) {
         CString errMsg;
         errMsg.Format(_T("서버 접속 실패\n\n서버 IP: %s\n포트: %d"),
-            factory_client::DEFAULT_SERVER_IP, factory_client::GUI_PORT);
+            (LPCTSTR)factory_client::ClientConfig::GetServerIp(),
+            factory_client::ClientConfig::GetServerPort());
         MessageBox(errMsg, _T("접속 실패"), MB_OK | MB_ICONERROR);
     }
 }
@@ -578,6 +642,8 @@ LRESULT CMainTabDlg::OnNetConnected(WPARAM, LPARAM)
 LRESULT CMainTabDlg::OnNetDisconnectedMsg(WPARAM, LPARAM)
 {
     m_bConnected = false;
+    // 재접속 시 스테이션 초기 이미지 다시 로드되도록 플래그 리셋
+    m_initialImagesLoaded = false;
     TRACE(_T("[MainTabDlg] 서버 연결 끊김\n"));
 
     // 재접속 타이머 시작 (10초 후 재시도)
@@ -626,14 +692,16 @@ LRESULT CMainTabDlg::OnNetNgPush(WPARAM, LPARAM lParam)
     else if (defectA == "fill_low")   rec.defect = EDefect::FillLow;
     else                              rec.defect = EDefect::Anomaly;
 
-    // 이력에 추가
+    // 이력에 추가 (스레드 보호)
+    EnterCriticalSection(&m_csRecs);
     m_recs.push_back(rec);
     if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
+    LeaveCriticalSection(&m_csRecs);
 
     // 모든 페이지 업데이트
     PushUpdate();
-    m_st1->Tick();
-    m_st2->Tick();
+    if (m_st1) m_st1->Tick();
+    if (m_st2) m_st2->Tick();
     InvalidateRect(StatusRect());
 
     // 힙에 할당된 JSON 문자열 해제 (메모리 누수 방지!)
@@ -654,7 +722,7 @@ LRESULT CMainTabDlg::OnNetOkCountPush(WPARAM, LPARAM lParam)
     int ngCount    = CPacketBuilder::ExtractInt(jsonA, "ng_count");
 
     // 홈 페이지의 스테이션별 OK/NG 표시에 반영
-    m_home->UpdateStationCount(stationId, okCount, ngCount);
+    if (m_home) m_home->UpdateStationCount(stationId, okCount, ngCount);
     TRACE(_T("[MainTabDlg] OK카운트 수신: station=%d ok=%d ng=%d\n"),
         stationId, okCount, ngCount);
 
@@ -707,6 +775,26 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
     case factory_client::INSPECT_HISTORY_RES:
         // 검사 이력 응답 → 통계 페이지에 전달
         if (m_stats) m_stats->OnInspectHistoryRes(*pJson);
+
+        // 접속 직후 1회만: 스테이션별 최신 N건(기본 10)의 이미지를 자동 요청하여
+        // 상단 대형 3뷰 + 하단 이력 리스트에 DB 기반 실데이터를 즉시 표시.
+        // 라이브 NG_PUSH가 오면 상단은 덮어쓰고, 하단 리스트에는 추가됨.
+        if (!m_initialImagesLoaded && m_stats) {
+            m_initialImagesLoaded = true;
+            constexpr int kHistoryImagesPerStation = 10;  // 리스트 상한과 일치
+            auto ids1 = m_stats->GetRecentInspectionIdsByStation(1, kHistoryImagesPerStation);
+            auto ids2 = m_stats->GetRecentInspectionIdsByStation(2, kHistoryImagesPerStation);
+            // 역순으로 보냄(오래된 것 먼저) — 응답이 오는 순서대로 리스트 앞에 prepend되면
+            // 최종적으로 시간 역순(최신이 맨 위)으로 정렬됨.
+            for (auto it = ids1.rbegin(); it != ids1.rend(); ++it) {
+                m_net.SendJson(CPacketBuilder::BuildInspectImageReq(*it));
+            }
+            for (auto it = ids2.rbegin(); it != ids2.rend(); ++it) {
+                m_net.SendJson(CPacketBuilder::BuildInspectImageReq(*it));
+            }
+            TRACE(_T("[MainTabDlg] 초기 이력 이미지 요청 | s1=%d건 s2=%d건\n"),
+                  (int)ids1.size(), (int)ids2.size());
+        }
         break;
 
     case factory_client::STATS_RES:
@@ -777,5 +865,41 @@ LRESULT CMainTabDlg::OnNetLoginRes(WPARAM, LPARAM lParam)
     }
 
     delete pJson;
+    return 0;
+}
+
+// ============================================================================
+// OnNetNgImage — NG 이미지 3장 수신 (WM_NET_NG_IMAGE, 프로토콜 110 바이너리)
+// ============================================================================
+// NetworkClient가 JSON + 3장 바이너리를 분해하여 NgImagePacket으로 전달.
+// station_id에 따라 PageStation1 또는 PageStation2에 이미지를 주입한다.
+// 각 페이지가 원본/히트맵/마스크를 해당 뷰(CCameraView/CHeatmapView/CPredMaskView)
+// 에 SetImage()로 주입 → OnPaint에서 BitBlt으로 렌더링.
+LRESULT CMainTabDlg::OnNetNgImage(WPARAM, LPARAM lParam)
+{
+    NgImagePacket* pkt = reinterpret_cast<NgImagePacket*>(lParam);
+    if (!pkt) return 0;
+
+    TRACE(_T("[MainTabDlg] NG 이미지 수신 | station=%d id=%d img=%zu heat=%zu mask=%zu\n"),
+          pkt->station_id, pkt->inspection_id,
+          pkt->image.size(), pkt->heatmap.size(), pkt->pred_mask.size());
+
+    // 메타데이터(timestamp/score)는 PageStats의 히스토리 캐시에서 조회 — 미발견 시 기본값.
+    CString timeLabel = _T("--:--:--");
+    double  score     = 0.0;
+    if (m_stats) m_stats->LookupInspectionMeta(pkt->inspection_id, timeLabel, score);
+
+    if (pkt->station_id == 1 && m_st1) {
+        // 상단 대형 3뷰 — 최신 1건만 유지 (덮어쓰기)
+        m_st1->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
+        // 하단 이력 리스트 — 최대 10건까지 누적 (동일 id는 교체)
+        m_st1->AddNgEntry(pkt->inspection_id, score, timeLabel,
+                          pkt->image, pkt->heatmap, pkt->pred_mask);
+    } else if (pkt->station_id == 2 && m_st2) {
+        m_st2->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
+        // 스테이션2는 후속 커밋에서 리스트 연결 예정
+    }
+
+    delete pkt;
     return 0;
 }

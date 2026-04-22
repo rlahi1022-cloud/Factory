@@ -73,26 +73,24 @@ bool CNetworkClient::Connect(const CString& host, UINT16 port, HWND hNotifyWnd)
     }
 
     // ── 소켓 옵션 설정 ──
-    // SO_KEEPALIVE: TCP 레벨에서 주기적으로 생존 확인 패킷을 보냄
-    //              → 상대방이 살아있는지 OS가 자동 확인, 끊어지면 recv 에러 반환
-    //              → 방화벽/NAT의 유휴 연결 타임아웃도 방지
     BOOL keepAlive = TRUE;
-    setsockopt(m_socket, SOL_SOCKET, SO_KEEPALIVE,
-               reinterpret_cast<const char*>(&keepAlive), sizeof(keepAlive));
+    if (setsockopt(m_socket, SOL_SOCKET, SO_KEEPALIVE,
+               reinterpret_cast<const char*>(&keepAlive), sizeof(keepAlive)) == SOCKET_ERROR) {
+        TRACE(_T("[NetworkClient] SO_KEEPALIVE 설정 실패: %d\n"), WSAGetLastError());
+    }
 
-    // TCP_NODELAY: Nagle 알고리즘 비활성화
-    //             → 작은 패킷(JSON)도 즉시 전송 (지연 없이)
     BOOL noDelay = TRUE;
-    setsockopt(m_socket, IPPROTO_TCP, TCP_NODELAY,
-               reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
+    if (setsockopt(m_socket, IPPROTO_TCP, TCP_NODELAY,
+               reinterpret_cast<const char*>(&noDelay), sizeof(noDelay)) == SOCKET_ERROR) {
+        TRACE(_T("[NetworkClient] TCP_NODELAY 설정 실패: %d\n"), WSAGetLastError());
+    }
 
-    // SO_RCVTIMEO: recv() 타임아웃 5초 설정
-    //             → recv가 5초마다 SOCKET_ERROR(WSAETIMEDOUT)를 반환
-    //             → RecvLoop이 멈추지 않고 주기적으로 깨어남
-    //             → 이를 이용해 heartbeat 패킷을 서버에 전송하여 세션 유지
-    DWORD recvTimeout = 5000;  // 5초 (밀리초)
-    setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO,
-               reinterpret_cast<const char*>(&recvTimeout), sizeof(recvTimeout));
+    // SO_RCVTIMEO: recv() 타임아웃 5초 → heartbeat 주기
+    DWORD recvTimeout = 5000;
+    if (setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char*>(&recvTimeout), sizeof(recvTimeout)) == SOCKET_ERROR) {
+        TRACE(_T("[NetworkClient] SO_RCVTIMEO 설정 실패: %d\n"), WSAGetLastError());
+    }
 
     // ── 서버 주소 설정 ──
     sockaddr_in serverAddr = {};
@@ -200,8 +198,12 @@ bool CNetworkClient::Send(const std::vector<char>& packet)
     // EnterCriticalSection: 다른 스레드가 이 구간에 있으면 여기서 대기
     EnterCriticalSection(&m_csSend);
 
-    // send: 소켓을 통해 데이터 전송
-    // 반환값: 실제로 보낸 바이트 수 (실패 시 SOCKET_ERROR)
+    // 패킷 크기 검증 — 2GB 초과 차단 (int 오버플로우 방지)
+    if (packet.size() > static_cast<size_t>(INT_MAX)) {
+        LeaveCriticalSection(&m_csSend);
+        return false;
+    }
+
     int totalSent = 0;
     int remaining = static_cast<int>(packet.size());
     const char* ptr = packet.data();
@@ -298,34 +300,99 @@ void CNetworkClient::RecvLoop()
             }
         }
 
-        // ── 2단계: 헤더에서 JSON 크기 추출 ──
+        // ── 2단계: 헤더에서 JSON 크기 추출 (ParseHeader가 64KB 상한 검증) ──
         UINT32 jsonSize = 0;
         if (!CPacketBuilder::ParseHeader(header, jsonSize)) {
             TRACE(_T("[NetworkClient] 비정상 헤더 (size=%u)\n"), jsonSize);
             break;
         }
 
-        // ── 3단계: JSON 본문 수신 ──
-        std::string jsonBuf(jsonSize, '\0');
+        // ── 3단계: JSON 본문 수신 (bad_alloc 방어) ──
+        std::string jsonBuf;
+        try {
+            jsonBuf.assign(jsonSize, '\0');
+        } catch (const std::bad_alloc&) {
+            TRACE(_T("[NetworkClient] JSON 버퍼 할당 실패 (size=%u)\n"), jsonSize);
+            break;
+        }
         if (!RecvN(&jsonBuf[0], static_cast<int>(jsonSize))) {
             break;
         }
 
-        // ── 4단계: 패킷 처리 ──
+        // ── 4단계: 이미지 바이너리 수신 (v0.9.0+: 원본/히트맵/마스크 3장) ──
+        // 서버 와이어 포맷 (gui_notifier.cpp on_gui_push):
+        //   [JSON] + [원본 JPEG][히트맵 PNG][마스크 PNG]
+        //   각 크기는 JSON의 image_size / heatmap_size / pred_mask_size
+        //   어느 size든 0이면 해당 이미지 생략(하위호환)
+        CStringA jsonA(jsonBuf.c_str());
+        int imageSize    = CPacketBuilder::ExtractInt(jsonA, "image_size");
+        int heatmapSize  = CPacketBuilder::ExtractInt(jsonA, "heatmap_size");
+        int predMaskSize = CPacketBuilder::ExtractInt(jsonA, "pred_mask_size");
+        const int totalBin = imageSize + heatmapSize + predMaskSize;
+
+        std::vector<BYTE> imgBytes, heatBytes, maskBytes;
+
+        if (totalBin > 0) {
+            // 개별 최대 50MB 상한 — 메모리 폭주 방지
+            constexpr int MAX_ONE = 50 * 1024 * 1024;
+            if (imageSize    < 0 || imageSize    > MAX_ONE ||
+                heatmapSize  < 0 || heatmapSize  > MAX_ONE ||
+                predMaskSize < 0 || predMaskSize > MAX_ONE) {
+                TRACE(_T("[NetworkClient] 비정상 이미지 크기 (img=%d heat=%d mask=%d)\n"),
+                      imageSize, heatmapSize, predMaskSize);
+                break;
+            }
+            // 순차 수신 — 서버 송신 순서와 동일 (원본 → 히트맵 → 마스크)
+            auto recv_to = [this](std::vector<BYTE>& buf, int sz) -> bool {
+                if (sz <= 0) return true;
+                try { buf.resize(sz); } catch (const std::bad_alloc&) { return false; }
+                return RecvN(reinterpret_cast<char*>(buf.data()), sz);
+            };
+            if (!recv_to(imgBytes,  imageSize))    { break; }
+            if (!recv_to(heatBytes, heatmapSize))  { break; }
+            if (!recv_to(maskBytes, predMaskSize)) { break; }
+        }
+
+        // ── 5단계: JSON 패킷 처리 (프로토콜 분기 + UI 이벤트 발송) ──
         OnPacketReceived(jsonBuf);
+
+        // ── 6단계: 이미지가 동반된 경우 UI로 전달 ──
+        // 프로토콜 110(INSPECT_NG_PUSH: 실시간) 또는 117(INSPECT_IMAGE_RES: 이력 on-demand)
+        // 두 경우 모두 와이어 포맷이 동일하므로 같은 경로로 UI에 전달.
+        // 힙 할당 후 PostMessage — UI 스레드가 수신 후 delete 책임.
+        int protocolNo = CPacketBuilder::ExtractInt(jsonA, "protocol_no");
+        const bool isNgImage    = (protocolNo == factory_client::INSPECT_NG_PUSH);
+        const bool isHistImage  = (protocolNo == factory_client::INSPECT_IMAGE_RES);
+        if ((isNgImage || isHistImage) && totalBin > 0 &&
+            m_hNotifyWnd && ::IsWindow(m_hNotifyWnd)) {
+            auto* pkt = new (std::nothrow) NgImagePacket{};
+            if (pkt) {
+                pkt->station_id    = CPacketBuilder::ExtractInt(jsonA, "station_id");
+                pkt->inspection_id = CPacketBuilder::ExtractInt(jsonA, "inspection_id");
+                pkt->image      = std::move(imgBytes);
+                pkt->heatmap    = std::move(heatBytes);
+                pkt->pred_mask  = std::move(maskBytes);
+                if (!::PostMessage(m_hNotifyWnd, WM_NET_NG_IMAGE, 0,
+                                   reinterpret_cast<LPARAM>(pkt))) {
+                    delete pkt;  // PostMessage 실패 시 즉시 해제
+                }
+            }
+        }
     }
 
-    // 수신 루프 종료
-    TRACE(_T("[NetworkClient] 수신 스레드 종료 (running=%d)\n"), (int)m_bRunning);
+    // ── 루프 종료 이유 판별 ──
+    //  1) Disconnect() 호출: 이전에 m_bRunning=false + socket close → while 조건이 false로 바뀜
+    //  2) Silent drop (서버 측 끊기, 네트워크 끊김): recv 에러로 break → m_bRunning이 여전히 true
+    bool silent_drop = m_bRunning.load();
 
-    // ※ 소켓은 여기서 닫지 않음! Disconnect()가 관리합니다.
+    TRACE(_T("[NetworkClient] 수신 스레드 종료 (silent_drop=%d)\n"), silent_drop);
     m_bRunning = false;
 
-    // ※ WM_NET_DISCONNECTED는 Disconnect()에서만 발송합니다.
-    //    여기서 중복 발송하면 MainTabDlg의 재접속 타이머가 2번 등록되어
-    //    IDT_RECONNECT가 중복 실행되는 부작용이 생깁니다.
-    //    Disconnect()가 소켓을 닫아 이 루프를 종료시키므로
-    //    이후 Disconnect() 내부의 PostMessage가 반드시 호출됩니다.
+    // Silent drop인 경우에만 UI에 알림
+    // (Disconnect()가 호출된 경우에는 Disconnect()가 직접 발송함 → 중복 방지)
+    if (silent_drop && m_hNotifyWnd && ::IsWindow(m_hNotifyWnd)) {
+        ::PostMessage(m_hNotifyWnd, WM_NET_DISCONNECTED, 0, 0);
+    }
 }
 
 // ============================================================================
@@ -382,11 +449,14 @@ void CNetworkClient::SendHeartbeat()
 //       UI 스레드의 메시지 핸들러에서 delete로 해제해야 합니다.
 void CNetworkClient::OnPacketReceived(const std::string& json)
 {
+    if (json.empty()) return;
+
     CStringA jsonA(json.c_str());
 
-    // protocol_no 추출 — 이 패킷이 어떤 종류의 메시지인지 판별
+    // protocol_no 추출
     int protocolNo = CPacketBuilder::ExtractInt(jsonA, "protocol_no");
 
+    // 민감정보 노출 방지 — JSON 본문은 로그하지 않고 메타데이터만 출력
     TRACE(_T("[NetworkClient] 수신: protocol_no=%d, size=%d\n"),
         protocolNo, (int)json.size());
 
@@ -398,46 +468,36 @@ void CNetworkClient::OnPacketReceived(const std::string& json)
         return;
     }
 
-    // ── 프로토콜 번호별 메시지 라우팅 ──
-    // new std::string: 힙에 JSON 데이터를 복사하여 UI 스레드에 전달
-    // UI 스레드의 메시지 핸들러가 이 포인터를 delete 해야 메모리 누수가 없습니다!
+    // PostMessage 안전 전송 헬퍼 — 실패 시 메모리 누수 방지
+    auto safePost = [this](UINT msg, WPARAM wp, const std::string& data) {
+        auto* pStr = new (std::nothrow) std::string(data);
+        if (!pStr) return;
+        if (!::PostMessage(m_hNotifyWnd, msg, wp, reinterpret_cast<LPARAM>(pStr))) {
+            delete pStr;  // PostMessage 실패 시 즉시 해제
+        }
+    };
+
     switch (protocolNo) {
     case factory_client::INSPECT_NG_PUSH:
-        // NG 검사 결과 푸시 → MainTabDlg가 검사 데이터 갱신
-        ::PostMessage(m_hNotifyWnd, WM_NET_NG_PUSH, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_NG_PUSH, 0, json);
         break;
-
     case factory_client::INSPECT_OK_COUNT_PUSH:
-        // OK/NG 카운트 푸시 → 종합 현황 갱신
-        ::PostMessage(m_hNotifyWnd, WM_NET_OK_COUNT_PUSH, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_OK_COUNT_PUSH, 0, json);
         break;
-
     case factory_client::SERVER_HEALTH_PUSH:
-        // 서버 헬스 상태 변경 → 서버 LED 업데이트
-        ::PostMessage(m_hNotifyWnd, WM_NET_HEALTH_PUSH, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_HEALTH_PUSH, 0, json);
         break;
-
     case factory_client::LOGIN_RES:
-        // 로그인 응답 → 인증 결과 처리
-        ::PostMessage(m_hNotifyWnd, WM_NET_LOGIN_RES, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_LOGIN_RES, 0, json);
         break;
-
+    case factory_client::REGISTER_RES:
+        safePost(WM_NET_REGISTER_RES, 0, json);
+        break;
     case factory_client::RETRAIN_PROGRESS_PUSH:
-        // 재학습 진행률 → 모델 페이지 진행바 업데이트
-        ::PostMessage(m_hNotifyWnd, WM_NET_RETRAIN_PROGRESS, 0,
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_RETRAIN_PROGRESS, 0, json);
         break;
-
     default:
-        // 그 외 응답 (INSPECT_HISTORY_RES, STATS_RES, MODEL_LIST_RES 등)
-        // WPARAM에 프로토콜 번호를 담아서 핸들러가 구분할 수 있게 함
-        ::PostMessage(m_hNotifyWnd, WM_NET_RESPONSE,
-            static_cast<WPARAM>(protocolNo),
-            reinterpret_cast<LPARAM>(new std::string(json)));
+        safePost(WM_NET_RESPONSE, static_cast<WPARAM>(protocolNo), json);
         break;
     }
 }
@@ -458,6 +518,22 @@ void CNetworkClient::SendAckIfNeeded(int protocolNo, const std::string& json)
     CStringA jsonA(json.c_str());
     CStringA inspId = CPacketBuilder::ExtractString(jsonA, "inspection_id");
 
+    // inspection_id 형식 검증 — "stationN-YYYYMMDD..." 패턴
+    // 길이 제한 (최대 128자) + 위험 문자 차단 (injection 방지)
+    if (inspId.IsEmpty() || inspId.GetLength() > 128) {
+        TRACE(_T("[NetworkClient] 비정상 inspection_id — ACK 생략 (len=%d)\n"),
+            inspId.GetLength());
+        return;
+    }
+    for (int i = 0; i < inspId.GetLength(); ++i) {
+        char c = inspId[i];
+        // 영숫자, '-', '_', '.'만 허용
+        if (!(isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.')) {
+            TRACE(_T("[NetworkClient] inspection_id 위험문자 — ACK 생략\n"));
+            return;
+        }
+    }
+
     // 대응하는 ACK 번호 계산
     int ackNo = factory_client::AckNoFor(protocolNo);
 
@@ -465,6 +541,6 @@ void CNetworkClient::SendAckIfNeeded(int protocolNo, const std::string& json)
     CString ackJson = CPacketBuilder::BuildAck(ackNo, CString(inspId));
     SendJson(ackJson);
 
-    TRACE(_T("[NetworkClient] ACK 전송: %d → %d (id=%S)\n"),
-        protocolNo, ackNo, (LPCSTR)inspId);
+    TRACE(_T("[NetworkClient] ACK 전송: %d → %d (len=%d)\n"),
+        protocolNo, ackNo, inspId.GetLength());
 }

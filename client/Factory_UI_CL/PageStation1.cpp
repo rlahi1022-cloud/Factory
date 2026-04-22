@@ -8,14 +8,17 @@ BEGIN_MESSAGE_MAP(CPageStation1, CDialogEx)
     ON_BN_CLICKED(IDC_BTN_S1_ARDUINO, OnBtnArduino)
 END_MESSAGE_MAP()
 
-CPageStation1::CPageStation1(CWnd* p) : CDialogEx(IDD_PAGE_STATION1, p) {
-    m_last={10000,1,_T("--:--:--"),false,0.12,EDefect::None,52};
+CPageStation1::CPageStation1(CWnd* p) : CDialogEx(IDD_PAGE_STATION1, p), m_last{} {
+    m_last.id = 10000; m_last.station = 1;
+    m_last.time = _T("--:--:--"); m_last.isNG = false;
+    m_last.score = 0.12; m_last.defect = EDefect::None; m_last.latencyMs = 52;
 }
 void CPageStation1::DoDataExchange(CDataExchange* pDX) {
     CDialogEx::DoDataExchange(pDX);
     DDX_Control(pDX, IDC_CAM1_VIEW,      m_cam);
     DDX_Control(pDX, IDC_HEATMAP1_VIEW,  m_heat);
     DDX_Control(pDX, IDC_PREDMASK1_VIEW, m_mask);  // 패널 3 연결
+    DDX_Control(pDX, IDC_NG_LIST1,       m_ngList); // 하단 NG 이벤트 리스트
 }
 BOOL CPageStation1::OnInitDialog() {
     CDialogEx::OnInitDialog();
@@ -62,4 +65,23 @@ void CPageStation1::OnBtnNG() {
 }
 void CPageStation1::OnBtnArduino() {
     MessageBox(_T("Arduino COM3 테스트 신호 전송"),_T("Arduino"),MB_OK|MB_ICONINFORMATION);
+}
+
+// SetImages: MainTabDlg::OnNetNgImage 에서 수신한 3장 바이너리를 각 뷰에 주입.
+// 비어있는 벡터는 SetImage 내부에서 "이미지 해제"로 처리되어 플레이스홀더로 복귀.
+void CPageStation1::SetImages(const std::vector<BYTE>& image,
+                              const std::vector<BYTE>& heatmap,
+                              const std::vector<BYTE>& pred_mask) {
+    m_cam.SetImage(image);
+    m_heat.SetImage(heatmap);
+    m_mask.SetImage(pred_mask);
+}
+
+// AddNgEntry: 하단 NG 이력 리스트에 누적. 상단 SetImages와 독립 — 둘 다 호출하면
+// 최신 1건은 상단 대형, 최대 10건은 하단 리스트.
+void CPageStation1::AddNgEntry(int id, double score, const CString& timeLabel,
+                               const std::vector<BYTE>& image,
+                               const std::vector<BYTE>& heatmap,
+                               const std::vector<BYTE>& pred_mask) {
+    m_ngList.AddEntry(id, 1 /*stationId*/, score, timeLabel, image, heatmap, pred_mask);
 }

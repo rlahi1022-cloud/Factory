@@ -47,6 +47,8 @@ enum ProtocolNo : int {
     LOGIN_RES              = 101,   // 로그인 응답: 서버 → 클라이언트
     LOGOUT_REQ             = 102,   // 로그아웃 요청
     LOGOUT_RES             = 103,   // 로그아웃 응답
+    REGISTER_REQ           = 104,   // 회원가입 요청: 클라이언트 → 서버
+    REGISTER_RES           = 105,   // 회원가입 응답: 서버 → 클라이언트
 
     // ===== 검사 결과 관련 (110~129) =====
     INSPECT_NG_PUSH        = 110,   // NG 결과 푸시: 서버 → 클라이언트 (실시간)
@@ -54,6 +56,8 @@ enum ProtocolNo : int {
     INSPECT_OK_COUNT_PUSH  = 112,   // OK/NG 카운트 푸시: 서버 → 클라이언트 (주기적)
     INSPECT_HISTORY_REQ    = 114,   // 검사 이력 조회 요청: 클라이언트 → 서버
     INSPECT_HISTORY_RES    = 115,   // 검사 이력 응답: 서버 → 클라이언트
+    INSPECT_IMAGE_REQ      = 116,   // 이력 이미지 요청: 클라 → 서버 (v0.10+)
+    INSPECT_IMAGE_RES      = 117,   // 이력 이미지 응답: JSON + 3장 바이너리
 
     // ===== 통계 관련 (130~149) =====
     STATS_REQ              = 130,   // 통계 데이터 요청

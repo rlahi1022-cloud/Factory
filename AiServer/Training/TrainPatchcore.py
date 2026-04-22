@@ -29,6 +29,9 @@ from __future__ import annotations
 # print() 대신 logging을 사용하면 로그 레벨(INFO, WARNING, ERROR)별로 필터링할 수 있다.
 import logging
 
+# json: 최적 임계값을 JSON 파일로 저장/로드하기 위한 표준 라이브러리
+import json
+
 # os: 운영체제와 상호작용하는 함수들을 제공한다 (파일 경로, 환경변수 등).
 import os
 
@@ -154,6 +157,17 @@ class PatchcoreTrainer:
                 root_dir = self._data_dir.parent
                 normal_dir_name = self._data_dir.name
 
+            # ── 불량 이미지 폴더(abnormal) 자동 감지 ──
+            # root_dir 아래에 "abnormal" 폴더가 있으면 AUROC 검증에 사용한다.
+            # 없으면 기존처럼 정상 이미지로만 학습한다 (정확도는 0으로 나옴).
+            abnormal_dir_path = root_dir / "abnormal"
+            has_abnormal = abnormal_dir_path.exists() and any(abnormal_dir_path.iterdir())
+            abnormal_dir_name = "abnormal" if has_abnormal else None
+            if has_abnormal:
+                logger.info("Found abnormal_dir: %s — AUROC validation enabled", abnormal_dir_path)
+            else:
+                logger.warning("No abnormal_dir found — AUROC will be 0.0")
+
             # 진행률 10%: 데이터셋 로딩 단계를 알린다.
             self._report_progress(10, "Loading dataset...")
 
@@ -165,16 +179,20 @@ class PatchcoreTrainer:
 
             if "image_size" in folder_params:
                 # Anomalib 구 버전 (v0.x ~ v1.0): image_size 매개변수를 직접 받는다
-                datamodule = Folder(
-                    name=model_name,
-                    root=str(root_dir),
-                    normal_dir=normal_dir_name,
-                    image_size=(self._input_size, self._input_size),
-                    train_batch_size=self._batch_size,
-                    eval_batch_size=self._batch_size,
-                    num_workers=self._num_workers,
-                    task="classification",
-                )
+                folder_kwargs = {
+                    "name": model_name,
+                    "root": str(root_dir),
+                    "normal_dir": normal_dir_name,
+                    "image_size": (self._input_size, self._input_size),
+                    "train_batch_size": self._batch_size,
+                    "eval_batch_size": self._batch_size,
+                    "num_workers": self._num_workers,
+                    "task": "classification",
+                }
+                # abnormal 폴더가 있으면 추가한다 (AUROC 검증용)
+                if abnormal_dir_name:
+                    folder_kwargs["abnormal_dir"] = abnormal_dir_name
+                datamodule = Folder(**folder_kwargs)
             else:
                 # Anomalib 최신 버전 (v1.1+): image_size 제거됨, 다른 방식으로 이미지 크기 지정
                 # 기본 매개변수만 사용하여 Folder 데이터 모듈을 생성한다
@@ -189,6 +207,9 @@ class PatchcoreTrainer:
                 # 최신 버전에서 지원하는 매개변수만 선택적으로 추가한다
                 if "task" in folder_params:
                     folder_kwargs["task"] = "classification"
+                # abnormal 폴더가 있으면 추가한다 (AUROC 검증용)
+                if abnormal_dir_name and "abnormal_dir" in folder_params:
+                    folder_kwargs["abnormal_dir"] = abnormal_dir_name
                 datamodule = Folder(**folder_kwargs)
 
             # 진행률 20%: 모델 생성 단계를 알린다.
@@ -284,6 +305,28 @@ class PatchcoreTrainer:
                     # 체크포인트가 전혀 없으면 에러를 발생시킨다.
                     raise FileNotFoundError("No checkpoint found after training")
 
+            # ── 최적 임계값 자동 탐색 (abnormal 폴더가 있을 때만) ──
+            # abnormal 폴더가 있으면 F1-score를 최대화하는 임계값을 자동 계산한다.
+            # 없으면 기본값 50.0을 사용한다.
+            optimal_threshold = 50.0  # 기본값
+            threshold_info = {"threshold": optimal_threshold, "auto_detected": False}
+            if abnormal_dir_name:
+                try:
+                    self._report_progress(90, "Finding optimal threshold...")
+                    optimal_threshold, threshold_info = self._find_optimal_threshold(
+                        model, root_dir, normal_dir_name, abnormal_dir_name
+                    )
+                    logger.info("Optimal threshold found: %.4f (F1=%.4f)",
+                                optimal_threshold, threshold_info.get("f1_score", 0))
+                except Exception as exc:
+                    logger.warning("Threshold auto-detection failed: %s", exc)
+
+            # 임계값을 JSON 파일로 저장 (추론 시 자동 로드됨)
+            threshold_path = self._output_dir / f"{model_name}_threshold.json"
+            with open(threshold_path, "w", encoding="utf-8") as f:
+                json.dump(threshold_info, f, indent=2, ensure_ascii=False)
+            logger.info("Threshold saved to: %s", threshold_path)
+
             # 진행률 100%: 학습 완료를 알린다.
             self._report_progress(100, "Training complete!")
 
@@ -311,6 +354,153 @@ class PatchcoreTrainer:
             # 실패 결과를 반환한다.
             return {"success": False, "model_path": "", "version": version,
                     "accuracy": 0.0, "message": msg}
+
+    def _find_optimal_threshold(self, model: Any, root_dir: Path,
+                                normal_dir_name: str,
+                                abnormal_dir_name: str) -> tuple[float, dict]:
+        """학습된 PatchCore 모델에 대해 최적 임계값(threshold)을 자동 탐색한다.
+
+        용도:
+          정상과 불량 이미지를 각각 추론해서 점수 분포를 파악하고,
+          F1-score를 최대화하는 임계값을 찾는다.
+
+        알고리즘:
+          1. normal/ 폴더의 정상 이미지들 점수 수집
+          2. abnormal/ 폴더의 불량 이미지들 점수 수집
+          3. 두 분포의 경계에서 여러 임계값 후보를 평가
+          4. F1-score(정밀도와 재현율의 조화평균)가 가장 높은 임계값 선택
+
+        매개변수:
+          model: 학습 완료된 PatchCore 모델
+          root_dir (Path): 데이터 루트 폴더 (normal/abnormal 상위)
+          normal_dir_name (str): 정상 이미지 폴더명
+          abnormal_dir_name (str): 불량 이미지 폴더명
+
+        반환값:
+          tuple[float, dict]:
+            - 최적 임계값 (float)
+            - 메타 정보 (dict) - threshold, f1_score, 점수 분포 등
+        """
+        import torch
+        import cv2
+        import numpy as np
+
+        # 모델을 추론 모드로 전환하고 디바이스 설정
+        model.eval()
+        device = next(model.parameters()).device
+
+        def _infer_folder(folder: Path) -> list[float]:
+            """폴더 내 모든 이미지에 대해 raw anomaly score를 계산한다."""
+            scores = []
+            # 지원 확장자
+            extensions = (".jpg", ".jpeg", ".png", ".bmp")
+            images = sorted([p for p in folder.iterdir()
+                             if p.suffix.lower() in extensions])
+
+            for img_path in images:
+                # 한글 경로 대응 이미지 로드
+                try:
+                    img = cv2.imdecode(
+                        np.fromfile(str(img_path), dtype=np.uint8),
+                        cv2.IMREAD_COLOR
+                    )
+                except Exception:
+                    img = cv2.imread(str(img_path))
+
+                if img is None:
+                    continue
+
+                # 전처리: 224x224 리사이즈 + RGB 변환 + ImageNet 정규화
+                img_resized = cv2.resize(img, (self._input_size, self._input_size))
+                img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                img_norm = img_rgb.astype(np.float32) / 255.0
+                mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+                std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+                img_norm = (img_norm - mean) / std
+                tensor = torch.from_numpy(img_norm).permute(2, 0, 1).unsqueeze(0).to(device)
+
+                # raw 모델 직접 호출 (PostProcessor 우회)
+                with torch.no_grad():
+                    if hasattr(model, "model") and callable(model.model):
+                        output = model.model(tensor)
+                    else:
+                        output = model(tensor)
+
+                # pred_score 추출
+                raw_score = None
+                if hasattr(output, "pred_score"):
+                    raw_score = output.pred_score
+                elif hasattr(output, "pred_scores"):
+                    raw_score = output.pred_scores
+                elif isinstance(output, dict):
+                    raw_score = output.get("pred_score") or output.get("pred_scores")
+
+                if raw_score is not None and torch.is_tensor(raw_score):
+                    scores.append(float(raw_score.max().cpu().item()))
+
+            return scores
+
+        # ── 정상/불량 점수 수집 ──
+        normal_dir = root_dir / normal_dir_name
+        abnormal_dir = root_dir / abnormal_dir_name
+
+        logger.info("Collecting scores from normal/abnormal folders...")
+        normal_scores = _infer_folder(normal_dir)
+        abnormal_scores = _infer_folder(abnormal_dir)
+
+        logger.info("Normal: %d samples, range [%.4f, %.4f]",
+                    len(normal_scores),
+                    min(normal_scores) if normal_scores else 0,
+                    max(normal_scores) if normal_scores else 0)
+        logger.info("Abnormal: %d samples, range [%.4f, %.4f]",
+                    len(abnormal_scores),
+                    min(abnormal_scores) if abnormal_scores else 0,
+                    max(abnormal_scores) if abnormal_scores else 0)
+
+        # ── F1-score 최대화 임계값 탐색 ──
+        # 후보 임계값: 모든 점수를 정렬하여 각 값 사이 중간값들을 시도
+        all_scores = sorted(set(normal_scores + abnormal_scores))
+        best_threshold = 50.0
+        best_f1 = 0.0
+
+        for candidate in all_scores:
+            # candidate를 임계값으로 사용했을 때의 혼동 행렬 계산
+            # True Positive: 불량을 불량으로 판정 (score > threshold)
+            tp = sum(1 for s in abnormal_scores if s > candidate)
+            # False Positive: 정상을 불량으로 오판 (score > threshold)
+            fp = sum(1 for s in normal_scores if s > candidate)
+            # False Negative: 불량을 정상으로 놓침 (score <= threshold)
+            fn = sum(1 for s in abnormal_scores if s <= candidate)
+
+            # Precision(정밀도): 불량 판정 중 실제 불량 비율
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            # Recall(재현율): 실제 불량 중 제대로 잡아낸 비율
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            # F1-score: 정밀도와 재현율의 조화평균
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+            if f1 > best_f1:
+                best_f1 = f1
+                best_threshold = candidate
+
+        # 결과를 dict로 정리
+        info = {
+            "threshold": round(float(best_threshold), 4),
+            "f1_score": round(float(best_f1), 4),
+            "auto_detected": True,
+            "normal_count": len(normal_scores),
+            "abnormal_count": len(abnormal_scores),
+            "normal_score_range": [
+                round(min(normal_scores), 4) if normal_scores else 0,
+                round(max(normal_scores), 4) if normal_scores else 0,
+            ],
+            "abnormal_score_range": [
+                round(min(abnormal_scores), 4) if abnormal_scores else 0,
+                round(max(abnormal_scores), 4) if abnormal_scores else 0,
+            ],
+        }
+
+        return best_threshold, info
 
     def _report_progress(self, progress: int, status: str) -> None:
         """학습 진행 상태를 로그에 기록하고 콜백으로 외부에 알린다.

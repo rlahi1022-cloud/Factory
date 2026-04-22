@@ -30,6 +30,7 @@ struct InspectionRecord {
 // ── 사용자 세션 정보 ─────────────────────────────────────────────────────
 struct UserSession {
     CString username;    // 사용자 이름
+    CString password;    // 비밀번호 (서버 재접속 시 인증용)
     CString role;        // 권한 등급 ("Admin", "Operator", "Viewer")
     CString employeeId;  // 사원 ID
 };

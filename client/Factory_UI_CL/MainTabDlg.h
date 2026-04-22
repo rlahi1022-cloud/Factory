@@ -53,6 +53,10 @@ protected:
     CNetworkClient m_net;   // 메인서버와의 TCP 통신 담당
     bool m_bConnected;      // 서버 연결 상태
 
+    // 접속 후 한 번만 스테이션별 최신 NG 이미지 자동 로드했는지 (라이브 이벤트 전 초기 화면용)
+    // 접속 끊기면 false로 리셋되어 재접속 시 다시 로드.
+    bool m_initialImagesLoaded = false;
+
     // ── 탭 컨트롤 ────────────────────────────────────────────────────────
     CTabCtrl m_tab;         // 탭 UI 컨트롤
     int m_activeTab;        // 현재 활성 탭 인덱스 (0~4)
@@ -66,6 +70,7 @@ protected:
 
     // ── 검사 데이터 ──────────────────────────────────────────────────────
     std::vector<InspectionRecord> m_recs;  // 검사 이력 (시뮬레이션 + 서버 데이터)
+    CRITICAL_SECTION m_csRecs;             // m_recs 스레드 동기화 보호
     int m_nextId;   // 다음 검사 레코드 ID
     int m_tick;     // 타이머 틱 카운터
 
@@ -144,6 +149,9 @@ protected:
     // OnNetLoginRes: 로그인 응답 수신 (WM_NET_LOGIN_RES, 프로토콜 101)
     // 이 핸들러가 없으면 서버가 응답 후 세션을 즉시 끊어버림
     afx_msg LRESULT OnNetLoginRes(WPARAM wParam, LPARAM lParam);
+    // OnNetNgImage: NG 이미지 3장 수신 (WM_NET_NG_IMAGE, 프로토콜 110 바이너리 블록)
+    // LPARAM = NgImagePacket* (힙), 핸들러 내에서 delete
+    afx_msg LRESULT OnNetNgImage(WPARAM wParam, LPARAM lParam);
 
     DECLARE_MESSAGE_MAP()
 };

@@ -125,29 +125,20 @@ void CPageHome::Update(const std::vector<InspectionRecord>& recs)
     }
 }
 
-void CPageHome::OnPaint() { Default(); }
-
-// ============================================================================
-// UpdateStationCount — 서버 OK/NG 카운트 푸시(프로토콜 112) 실시간 반영
-// ============================================================================
-// MainTabDlg::OnNetOkCountPush()에서 호출됩니다.
-// 서버가 5초마다 보내는 누적 카운트를 홈 페이지의 스테이션 박스에 즉시 표시합니다.
 void CPageHome::UpdateStationCount(int stationId, int okCount, int ngCount)
 {
+    auto set = [&](int id, CString v) {
+        CWnd* w = GetDlgItem(id);
+        if (w) w->SetWindowText(v);
+    };
     CString s;
     if (stationId == 1) {
-        s.Format(_T("%d"), okCount); 
-        CWnd* w = GetDlgItem(IDC_STATIC_S1_OK);
-        if (w) w->SetWindowText(s);
-        s.Format(_T("%d"), ngCount);
-        w = GetDlgItem(IDC_STATIC_S1_NG);
-        if (w) w->SetWindowText(s);
+        s.Format(_T("%d"), okCount);  set(IDC_STATIC_S1_OK, s);
+        s.Format(_T("%d"), ngCount);  set(IDC_STATIC_S1_NG, s);
     } else if (stationId == 2) {
-        s.Format(_T("%d"), okCount);
-        CWnd* w = GetDlgItem(IDC_STATIC_S2_OK);
-        if (w) w->SetWindowText(s);
-        s.Format(_T("%d"), ngCount);
-        w = GetDlgItem(IDC_STATIC_S2_NG);
-        if (w) w->SetWindowText(s);
+        s.Format(_T("%d"), okCount);  set(IDC_STATIC_S2_OK, s);
+        s.Format(_T("%d"), ngCount);  set(IDC_STATIC_S2_NG, s);
     }
 }
+
+void CPageHome::OnPaint() { Default(); }

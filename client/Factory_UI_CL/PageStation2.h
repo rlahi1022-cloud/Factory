@@ -12,6 +12,10 @@ public:
     enum { IDD = IDD_PAGE_STATION2 };
     void Update(const std::vector<InspectionRecord>& recs);
     void Tick();
+    // SetImages: 서버 NG_PUSH 바이너리 주입 (원본/히트맵만 사용, pred_mask는 Station2 미해당)
+    void SetImages(const std::vector<BYTE>& image,
+                   const std::vector<BYTE>& heatmap,
+                   const std::vector<BYTE>& pred_mask);
 protected:
     CCameraView  m_cam;
     CHeatmapView m_heat;

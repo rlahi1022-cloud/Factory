@@ -22,19 +22,28 @@ set(SRC_FILES
     src/core/main.cpp
     src/core/event_bus.cpp
     src/core/tcp_listener.cpp
+    src/core/config.cpp
 
     # handler
     src/handler/router.cpp
     src/handler/station_handler.cpp
     src/handler/ack_sender.cpp
+    src/handler/train_handler.cpp
+
+    # service
+    src/service/inspection_service.cpp
+    src/service/train_service.cpp
 
     # storage
-    src/storage/db_manager.cpp
-    src/storage/image_storage.cpp
+    src/storage/connection_pool.cpp
+    src/storage/dao.cpp
+    src/storage/password_hash.cpp
 
     # session
     src/session/gui_notifier.cpp
     src/session/gui_tcp_listener.cpp
+    src/session/gui_router.cpp
+    src/session/gui_service.cpp
     src/session/session_manager.cpp
 
     # monitor
@@ -47,5 +56,5 @@ add_executable(factory_main_server ${SRC_FILES})
 if(WIN32)
     target_link_libraries(factory_main_server PRIVATE ws2_32 libmariadb)
 else()
-    target_link_libraries(factory_main_server PRIVATE pthread mariadb)
+    target_link_libraries(factory_main_server PRIVATE pthread mariadb crypt)
 endif()

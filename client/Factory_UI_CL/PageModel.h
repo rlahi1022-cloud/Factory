@@ -4,10 +4,11 @@
 // ============================================================================
 #include "pch.h"
 #include "Resource.h"
+#include "NetworkClient.h"
+#include "PacketBuilder.h"
 #include <vector>
 #include <string>
 
-// 타이머 ID — 클래스 밖에 정의하여 enum 충돌 방지
 #define IDT_PAGEMODEL_TRAINING  101
 
 class CPageModel : public CDialogEx {
@@ -16,25 +17,21 @@ public:
     CPageModel(CWnd* p = nullptr);
     enum { IDD = IDD_PAGE_MODEL };
 
-    // 서버 응답 수신 핸들러 (MainTabDlg에서 호출)
-    void OnModelListRes(const std::string& json);   // 프로토콜 151
-    void OnRetrainRes(const std::string& json);     // 프로토콜 153
-    void OnRetrainProgress(int progress);           // 프로토콜 154
+    void OnModelListRes(const std::string& json);
+    void OnRetrainRes(const std::string& json);
+    void OnRetrainProgress(int progress);
+
+    void SetNetworkClient(CNetworkClient* net) { m_net = net; }
+    void RequestModelList();  // 서버에 모델 목록 요청 (MainTabDlg에서 호출)
 
 protected:
+    CNetworkClient* m_net = nullptr;
+
     struct ModelRow {
-        int     id;
-        int     station;
-        CString type;
-        CString ver;
-        double  acc;
-        CString deployed;
-        bool    active;
+        int id; int station; CString type; CString ver;
+        double acc; CString deployed; bool active;
     };
-    struct UpFile {
-        CString name;
-        CString size;
-    };
+    struct UpFile { CString name; CString size; };
 
     CListCtrl     m_listModels;
     CListCtrl     m_listFiles;

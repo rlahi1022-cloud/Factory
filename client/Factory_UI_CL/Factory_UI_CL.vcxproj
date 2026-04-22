@@ -197,6 +197,7 @@
     <ClCompile Include="Factory_UI_CL.cpp" />
     <ClCompile Include="Factory_UI_CLDlg.cpp" />
     <ClCompile Include="InspectionData.cpp" />
+    <ClCompile Include="ClientConfig.cpp" />
     <ClCompile Include="LoginDlg.cpp" />
     <ClCompile Include="MainTabDlg.cpp" />
     <ClCompile Include="NetworkClient.cpp" />
@@ -223,6 +224,7 @@
     <ClInclude Include="PageStation1.h" />
     <ClInclude Include="PageStation2.h" />
     <ClInclude Include="PageStats.h" />
+    <ClInclude Include="ClientConfig.h" />
     <ClInclude Include="ClientProtocol.h" />
     <ClInclude Include="NetworkClient.h" />
     <ClInclude Include="PacketBuilder.h" />

@@ -1,148 +1,162 @@
-"""TrainingConfig.py
-AI 학습 서버 전용 설정 파일.
+"""TrainingConfig.py — 학습 서버 설정 (config.json 기반)
 
-이 파일의 역할:
-  - AI 학습 서버가 사용하는 모든 설정값을 하나의 클래스에 모아 관리한다.
-  - TCP 서버 주소, GPU 설정, 데이터 경로, PatchCore/YOLO 하이퍼파라미터 등을 포함한다.
-  - dataclass를 사용해 기본값을 제공하므로, 별도 설정 없이도 바로 실행 가능하다.
+이 파일은 프로젝트 루트의 config/config.json에서 학습 관련 설정을 로드한다.
+AiServer/Common/ConfigLoader.py를 사용하여 중앙화된 설정 파일을 공유한다.
+
+왜 필요한가:
+  - AI 학습 서버는 GPU, 학습 하이퍼파라미터 등 복잡한 설정이 많다.
+  - 코드 수정 없이 설정만 바꿔서 재학습할 수 있도록 JSON 파일로 분리.
+  - 학습/추론 서버가 같은 설정을 참조할 수 있도록 중앙화.
 """
 
-# __future__.annotations: 타입 힌트를 문자열로 지연 평가하여 순환 참조를 방지한다.
-# Python 3.10 미만에서도 최신 타입 힌트 문법을 사용할 수 있게 해준다.
+# __future__.annotations: 타입 힌트를 문자열로 지연 평가 (Python 3.10 미만 호환)
 from __future__ import annotations
 
-# dataclass: 클래스에 __init__, __repr__ 등을 자동 생성해주는 데코레이터이다.
-# field: dataclass 필드의 기본값을 세밀하게 설정할 때 사용한다 (이 파일에서는 직접 사용하지 않지만 확장을 위해 임포트).
-from dataclasses import dataclass, field
-# Optional: 값이 None일 수도 있는 타입을 표현할 때 사용한다 (예: Optional[str] = str 또는 None).
+# sys: 파이썬 모듈 검색 경로를 동적으로 추가하기 위해 사용
+import sys
+
+# dataclass: 클래스의 __init__ 등을 자동 생성하는 데코레이터
+from dataclasses import dataclass
+
+# Path: 객체지향 경로 처리 라이브러리
+from pathlib import Path
+
+# Optional: 값이 None일 수 있음을 표현하는 타입 힌트
 from typing import Optional
 
+# ── 상위 패키지 접근을 위한 sys.path 조정 ──
+# Training/TrainingConfig.py에서 Common/ConfigLoader.py를 import 하려면
+# AiServer/ 폴더가 파이썬 모듈 검색 경로에 포함되어야 한다.
+# 이렇게 하지 않으면 "from Common.ConfigLoader import ..." 가 실패한다.
 
-# @dataclass 데코레이터: 이 클래스의 모든 클래스 변수를 자동으로 생성자(__init__) 매개변수로 만들어준다.
-# 즉, TrainingConfig(listen_host="0.0.0.0", listen_port=9100, ...) 처럼 객체를 생성할 수 있다.
-@dataclass
+# 현재 파일의 디렉토리 (AiServer/Training/)
+_THIS_DIR = Path(__file__).resolve().parent
+
+# 한 단계 위 디렉토리 (AiServer/)
+_AISERVER_DIR = _THIS_DIR.parent
+
+# sys.path에 아직 없으면 추가 (중복 추가 방지)
+if str(_AISERVER_DIR) not in sys.path:
+    # insert(0, ...): 맨 앞에 추가하여 우선순위를 높임
+    sys.path.insert(0, str(_AISERVER_DIR))
+
+# 경로 설정 후에 Common.ConfigLoader를 import 할 수 있다.
+from Common.ConfigLoader import ConfigLoader
+
+
+@dataclass  # 이 데코레이터가 __init__, __repr__ 등을 자동 생성
 class TrainingConfig:
     """학습 서버 설정 데이터 클래스.
 
-    용도:
-      - AI 학습 서버의 모든 설정값을 하나의 객체로 묶어서 관리한다.
-      - 각 필드에 기본값이 있으므로, 필요한 값만 변경해서 사용할 수 있다.
-
-    사용 예시:
-      config = TrainingConfig(device="cpu", yolo_epochs=50)
+    직접 생성보다 from_json() 클래스 메서드로 config.json에서 로드 권장.
+    각 필드에 기본값이 있어 일부만 변경해서 사용할 수도 있다.
     """
 
-    # ──────────────────────────────────────────────────────
-    # TCP 서버 설정 (운용서버가 이 주소로 접속해온다)
-    # ──────────────────────────────────────────────────────
-
-    # listen_host: 학습 서버가 수신(listen)할 IP 주소이다.
-    # "0.0.0.0"은 모든 네트워크 인터페이스에서 접속을 허용한다는 뜻이다.
-    # 만약 "127.0.0.1"로 바꾸면 같은 컴퓨터에서만 접속할 수 있다.
+    # ── TCP 통신 설정 ──
+    # listen_host: 이 학습서버가 명령을 받을 IP 주소
+    # "0.0.0.0"은 모든 네트워크 인터페이스에서 수신 (외부 접속 허용)
     listen_host: str = "0.0.0.0"
-
-    # listen_port: 학습 서버가 수신할 TCP 포트 번호이다.
-    # 운용서버는 이 포트(9100)로 접속하여 학습 명령을 보낸다.
+    # listen_port: 학습서버가 명령을 받는 TCP 포트 (9100)
     listen_port: int = 9100
-
-    # ──────────────────────────────────────────────────────
-    # 운용 서버 주소 (학습 완료/진행 알림을 보내기 위한 목적지)
-    # ──────────────────────────────────────────────────────
-
-    # main_server_host: 운용서버의 IP 주소이다.
-    # 학습 진행률이나 완료 알림을 이 주소로 전송한다.
-    # "10.10.10.130"은 운용서버 PC의 IP 주소이다.
+    # main_server_host: 운용서버 IP (학습 완료 통보 전송용)
     main_server_host: str = "10.10.10.130"
-
-    # main_server_port: 운용서버의 TCP 포트 번호이다.
-    # 학습 서버가 알림을 보낼 때 이 포트(9000)로 연결한다.
+    # main_server_port: 운용서버 TCP 포트
     main_server_port: int = 9000
 
-    # ──────────────────────────────────────────────────────
-    # GPU 설정
-    # ──────────────────────────────────────────────────────
-
-    # device: 딥러닝 연산에 사용할 장치를 지정한다.
-    # "cuda"는 NVIDIA GPU를 사용한다는 뜻이고, "cpu"는 CPU만 사용한다는 뜻이다.
-    # GPU가 없는 환경에서는 "cpu"로 변경해야 한다.
-    device: str = "cuda"             # "cuda" 또는 "cpu"
-
-    # gpu_id: 여러 GPU가 있을 때 몇 번째 GPU를 사용할지 지정한다.
-    # 0은 첫 번째 GPU를 의미한다. GPU가 2개라면 0 또는 1을 사용할 수 있다.
+    # ── GPU 설정 ──
+    # device: 학습에 사용할 디바이스
+    # "cuda": GPU 사용, "cpu": CPU 사용, "auto": 자동 선택
+    device: str = "cuda"
+    # gpu_id: 여러 GPU가 있을 때 사용할 번호 (0=첫 번째 GPU)
     gpu_id: int = 0
 
-    # ──────────────────────────────────────────────────────
-    # 데이터 경로
-    # ──────────────────────────────────────────────────────
+    # ── 데이터 경로 ──
+    # data_root: 학습 데이터 루트 폴더 (하위에 station1/, station2/ 구조)
+    data_root: str = "./data"
+    # model_output_dir: 학습 완료된 모델 저장 폴더
+    model_output_dir: str = "./models"
 
-    # data_root: 학습에 사용할 이미지 데이터가 저장된 최상위 폴더 경로이다.
-    # 이 폴더 아래에 station1/, station2/ 등의 하위 폴더가 있다.
-    data_root: str = "./data"        # 학습 데이터 루트
-
-    # model_output_dir: 학습이 완료된 모델 파일(.ckpt, .pt)을 저장할 폴더 경로이다.
-    # 학습 후 이 폴더에 모델이 저장되고, 나중에 추론 서버로 배포된다.
-    model_output_dir: str = "./models"  # 학습된 모델 저장 경로
-
-    # ──────────────────────────────────────────────────────
-    # PatchCore 학습 설정 (이상탐지 모델)
-    # ──────────────────────────────────────────────────────
-
-    # patchcore_backbone: PatchCore의 특징 추출에 사용할 사전학습 모델(백본) 이름이다.
-    # "wide_resnet50_2"는 ImageNet으로 사전학습된 ResNet 변형 모델로,
-    # 이미지에서 의미 있는 특징(feature)을 잘 뽑아낸다.
+    # ── PatchCore 학습 설정 ──
+    # patchcore_backbone: 특징 추출에 사용할 사전학습 모델
+    # wide_resnet50_2: 표준 ResNet50보다 채널이 2배 넓은 변형 (정확도 ↑, 속도 ↓)
     patchcore_backbone: str = "wide_resnet50_2"
-
-    # patchcore_input_size: PatchCore에 입력할 이미지의 크기(가로=세로)이다.
-    # 원본 이미지가 어떤 크기든 224x224 픽셀로 리사이즈되어 모델에 입력된다.
+    # patchcore_input_size: 모델 입력 이미지 크기 (224x224 픽셀)
     patchcore_input_size: int = 224
-
-    # patchcore_batch_size: 한 번에 GPU에 넣어서 처리할 이미지 개수이다.
-    # 크게 하면 빠르지만 GPU 메모리를 많이 사용한다. 메모리 부족 시 줄여야 한다.
+    # patchcore_batch_size: 한 번에 처리할 이미지 수 (GPU 메모리에 맞게 조정)
     patchcore_batch_size: int = 32
-
-    # patchcore_num_workers: 데이터를 로딩할 때 사용할 병렬 프로세스 수이다.
-    # CPU 코어 수에 맞게 설정하면 데이터 로딩 속도가 빨라진다.
+    # patchcore_num_workers: 데이터 로딩 병렬 프로세스 수
     patchcore_num_workers: int = 4
 
-    # ──────────────────────────────────────────────────────
-    # YOLO11 학습 설정 (객체탐지 모델)
-    # ──────────────────────────────────────────────────────
-
-    # yolo_base_model: YOLO11의 사전학습 가중치 파일 이름이다.
-    # "yolo11n.pt"는 가장 가벼운(nano) 모델로, 속도가 빠르지만 정확도는 상대적으로 낮다.
-    # 더 높은 정확도가 필요하면 yolo11s.pt(small), yolo11m.pt(medium) 등을 사용한다.
-    yolo_base_model: str = "yolo11n.pt"   # 사전학습 모델
-
-    # yolo_input_size: YOLO11에 입력할 이미지의 크기(가로=세로)이다.
-    # YOLO는 보통 640x640 픽셀을 사용한다. 크게 하면 작은 물체를 잘 감지하지만 느려진다.
+    # ── YOLO11 학습 설정 ──
+    # yolo_base_model: 사전학습된 YOLO 모델 파일 (전이학습 시작점)
+    # yolo11n.pt = YOLO11 nano (작고 빠름), yolo11s/m/l/x 순으로 커짐
+    yolo_base_model: str = "yolo11n.pt"
+    # yolo_input_size: YOLO 입력 이미지 크기 (보통 640x640)
     yolo_input_size: int = 640
-
-    # yolo_epochs: 전체 학습 데이터를 몇 번 반복해서 학습할지 정하는 값이다.
-    # 1 epoch = 전체 데이터를 한 번 다 본 것이다. 100이면 100번 반복 학습한다.
+    # yolo_epochs: 전체 데이터를 반복 학습할 횟수
     yolo_epochs: int = 100
-
-    # yolo_batch_size: 한 번에 GPU에 넣어서 처리할 이미지 개수이다.
-    # YOLO는 이미지 크기가 크므로(640x640) PatchCore보다 작은 배치 크기를 사용한다.
+    # yolo_batch_size: YOLO 학습 배치 크기
     yolo_batch_size: int = 16
+    # yolo_patience: 조기 종료(early stopping) patience
+    # N epoch 연속 성능 향상 없으면 학습 중단 (과적합 방지)
+    yolo_patience: int = 20
 
-    # yolo_patience: 조기 종료(Early Stopping) patience 값이다.
-    # 검증 성능이 20 epoch 연속으로 개선되지 않으면 학습을 자동 중단한다.
-    # 과적합(overfitting)을 방지하고 불필요한 학습 시간을 절약하는 기법이다.
-    yolo_patience: int = 20               # 조기 종료 patience
-
-    # ──────────────────────────────────────────────────────
-    # 데이터 증강 설정
-    # ──────────────────────────────────────────────────────
-
-    # augmentation_factor: 원본 이미지 1장당 몇 장의 증강 이미지를 생성할지 정하는 배수이다.
-    # 5이면 원본 100장 -> 증강 500장이 추가로 생성된다.
-    # 데이터가 적을 때 증강으로 학습 데이터를 늘려 모델 성능을 향상시킨다.
-    augmentation_factor: int = 5          # 수집량 대비 증강 배수
-
-    # ──────────────────────────────────────────────────────
-    # 모델 배포 경로
-    # ──────────────────────────────────────────────────────
-
-    # deploy_dir: 학습이 완료된 모델을 추론 서버로 전송할 때 사용하는 공유 폴더 경로이다.
-    # 학습 서버에서 모델을 이 폴더에 복사하면, 추론 서버가 읽어서 사용한다.
+    # ── 증강/배포 설정 ──
+    # augmentation_factor: 원본 대비 증강 배수 (5이면 원본 1장당 5장의 변형 생성)
+    augmentation_factor: int = 5
+    # deploy_dir: 학습된 모델을 추론서버로 배포할 때 사용할 폴더
     deploy_dir: str = "./deploy"
+
+    @classmethod
+    def from_json(cls) -> "TrainingConfig":
+        """config.json에서 학습 설정을 로드하는 클래스 메서드.
+
+        용도:
+          config/config.json의 "training" 섹션에서 값을 읽어와
+          TrainingConfig 객체를 생성한다.
+
+        매개변수: 없음 (클래스 메서드)
+
+        반환값:
+          TrainingConfig: config.json 값으로 채워진 설정 객체
+        """
+        # ConfigLoader가 아직 로드 안 됐으면 로드 (lazy loading)
+        if ConfigLoader._config is None:
+            ConfigLoader.load()
+
+        # cls(...)로 TrainingConfig 인스턴스 생성
+        # 각 필드 값을 ConfigLoader로 조회 (없으면 기본값 사용)
+        return cls(
+            # ── TCP ──
+            # training.listen_host가 없으면 "0.0.0.0" 기본값 사용
+            listen_host=ConfigLoader.get("training.listen_host", "0.0.0.0"),
+            # network.training_server_port가 없으면 9100 기본값
+            listen_port=ConfigLoader.get_int("network.training_server_port", 9100),
+            # 운용서버 정보 (네트워크 설정에서 공유)
+            main_server_host=ConfigLoader.get("network.main_server_host", "10.10.10.130"),
+            main_server_port=ConfigLoader.get_int("network.main_server_ai_port", 9000),
+
+            # ── GPU ──
+            device=ConfigLoader.get("training.device", "cuda"),
+            gpu_id=ConfigLoader.get_int("training.gpu_id", 0),
+
+            # ── 데이터 경로 ──
+            data_root=ConfigLoader.get("training.data_root", "./data"),
+            model_output_dir=ConfigLoader.get("training.model_output_dir", "./models"),
+
+            # ── PatchCore 설정 ──
+            patchcore_backbone=ConfigLoader.get("training.patchcore_backbone", "wide_resnet50_2"),
+            patchcore_input_size=ConfigLoader.get_int("training.patchcore_input_size", 224),
+            patchcore_batch_size=ConfigLoader.get_int("training.patchcore_batch_size", 32),
+
+            # ── YOLO11 설정 ──
+            yolo_base_model=ConfigLoader.get("training.yolo_base_model", "yolo11n.pt"),
+            yolo_input_size=ConfigLoader.get_int("training.yolo_input_size", 640),
+            yolo_epochs=ConfigLoader.get_int("training.yolo_epochs", 100),
+            yolo_batch_size=ConfigLoader.get_int("training.yolo_batch_size", 16),
+            yolo_patience=ConfigLoader.get_int("training.yolo_patience", 20),
+
+            # ── 증강/배포 ──
+            augmentation_factor=ConfigLoader.get_int("training.augmentation_factor", 5),
+            deploy_dir=ConfigLoader.get("training.deploy_dir", "./deploy"),
+        )
