@@ -519,8 +519,11 @@ class TrainingServer:
           PatchcoreTrainer.train()의 반환값 (success, model_path, version, accuracy, message)
         """
         # data_path가 비어있으면 기본 데이터 경로를 사용한다.
-        # 예: ./data/station1/normal
-        data_dir = data_path or str(Path(self._config.data_root) / f"station{station_id}" / "normal")
+        # Station1 PatchCore   : ./data/station1/normal      (빈 용기 정상 이미지)
+        # Station2 PatchCore   : ./data/station2/patchcore   (라벨 표면 정상 crop) — SETUP_GUIDE 참조
+        # (Station2 YOLO 는 _train_yolo 에서 별도 처리)
+        subfolder = "patchcore" if station_id == 2 else "normal"
+        data_dir = data_path or str(Path(self._config.data_root) / f"station{station_id}" / subfolder)
 
         # 데이터 증강을 실행한다 (학습 전에 이미지 수를 늘린다).
         try:

@@ -828,11 +828,14 @@ LRESULT CMainTabDlg::OnNetRetrainProgress(WPARAM, LPARAM lParam)
     if (!pJson) return 0;
 
     CStringA jsonA(pJson->c_str());
-    int progress = CPacketBuilder::ExtractInt(jsonA, "progress");
+    int     progress   = CPacketBuilder::ExtractInt(jsonA, "progress");
+    int     stationId  = CPacketBuilder::ExtractInt(jsonA, "station_id");
+    CString modelType  = CPacketBuilder::ExtractStringW(jsonA, "model_type");
 
-    // 모델 페이지에 진행률 전달
-    if (m_model) m_model->OnRetrainProgress(progress);
-    TRACE(_T("[MainTabDlg] 재학습 진행률: %d%%\n"), progress);
+    // 모델 페이지에 진행률 전달 — station/type 정보도 함께 넘겨 UI에 표시
+    if (m_model) m_model->OnRetrainProgress(progress, stationId, modelType);
+    TRACE(_T("[MainTabDlg] 재학습 진행률: station=%d type=%s %d%%\n"),
+          stationId, (LPCTSTR)modelType, progress);
 
     delete pJson;
     return 0;

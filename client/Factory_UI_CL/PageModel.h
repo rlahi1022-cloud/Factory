@@ -19,7 +19,8 @@ public:
 
     void OnModelListRes(const std::string& json);
     void OnRetrainRes(const std::string& json);
-    void OnRetrainProgress(int progress);
+    // progress: 0~100, station_id/model_type: 진행 중인 학습의 스테이션/모델 타입 식별자
+    void OnRetrainProgress(int progress, int station_id = 0, const CString& model_type = _T(""));
 
     void SetNetworkClient(CNetworkClient* net) { m_net = net; }
     void RequestModelList();  // 서버에 모델 목록 요청 (MainTabDlg에서 호출)

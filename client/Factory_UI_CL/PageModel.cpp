@@ -293,14 +293,21 @@ void CPageModel::OnRetrainRes(const std::string& json)
 
 // ============================================================================
 // OnRetrainProgress — 재학습 진행률 푸시 수신 (프로토콜 154)
+// station_id / model_type 도 함께 표시하여 Station2 이중모델(YOLO/PatchCore)
+// 중 어느 쪽이 학습 중인지 UI에서 명확히 보이도록 한다.
 // ============================================================================
-void CPageModel::OnRetrainProgress(int progress)
+void CPageModel::OnRetrainProgress(int progress, int station_id, const CString& model_type)
 {
     m_prog = progress;
     m_progress.SetPos(progress);
 
     CString s;
-    s.Format(_T("서버 학습 진행 중: %d%%"), progress);
+    if (station_id > 0 && !model_type.IsEmpty()) {
+        s.Format(_T("서버 학습 진행 중 [Station %d · %s]: %d%%"),
+                 station_id, (LPCTSTR)model_type, progress);
+    } else {
+        s.Format(_T("서버 학습 진행 중: %d%%"), progress);
+    }
     CWnd* w = GetDlgItem(IDC_STATIC_TRAIN_STATUS);
     if (w) w->SetWindowText(s);
 
@@ -310,7 +317,18 @@ void CPageModel::OnRetrainProgress(int progress)
         w = GetDlgItem(IDC_BTN_RETRAIN);
         if (w) { w->SetWindowText(_T("재학습 실행")); w->EnableWindow(TRUE); }
         w = GetDlgItem(IDC_STATIC_TRAIN_STATUS);
-        if (w) w->SetWindowText(_T("✔ 서버 학습 완료!"));
+        if (w) {
+            CString done;
+            if (station_id > 0 && !model_type.IsEmpty()) {
+                done.Format(_T("✔ 서버 학습 완료 [Station %d · %s]"),
+                            station_id, (LPCTSTR)model_type);
+            } else {
+                done = _T("✔ 서버 학습 완료!");
+            }
+            w->SetWindowText(done);
+        }
+        // 완료 시 모델 목록 갱신을 서버에 요청 — 방금 배포된 새 모델이 리스트에 나타남
+        RequestModelList();
         MessageBox(_T("모델 재학습이 완료되었습니다."), _T("완료"), MB_OK | MB_ICONINFORMATION);
     }
 }
