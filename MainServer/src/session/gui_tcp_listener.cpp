@@ -235,8 +235,13 @@ void GuiTcpListener::handle_client(int client_fd, const std::string& remote_addr
         router_.route(client_fd, remote_addr, json_request, binary);
     }
 
+    // v0.14.7: 세션 제거 → 소켓 close → 실제 fd 가 사라진 "정확한 시점" 에 로그.
+    //   과거엔 unregister_session 내부에서 로그를 찍었는데, 그 시점엔 아직 fd 가 살아있고
+    //   CLOSE_SOCK 이 나중에 실행돼 "실제로 닫히지도 않았는데 해제됐다"고 찍히는 문제.
     SessionManager::instance().unregister_session(client_fd);
     CLOSE_SOCK(client_fd);
+    log_clt("클라이언트 해제 | fd=%d ip=%s (소켓 close 완료)",
+            client_fd, remote_addr.c_str());
 }
 
 // ── 패킷 수신 ────────────────────────────────────────────────────────────

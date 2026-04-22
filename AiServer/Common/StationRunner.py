@@ -983,20 +983,43 @@ class StationRunner:
     #   grab_producer 루프가 _pause_event.wait() 에서 블록됨.
     # -----------------------------------------------------------------------
     def _handle_inference_control(self, cmd_dict: dict) -> bool:
+        """검사 pause/resume (v0.14.7 개선).
+
+        중요 순서:
+          resume: ① _pause_event.set() 을 **먼저** 호출 → grab_producer 가 wait() 에서
+                     즉시 깨어나 다음 iteration 에 진입. ② 그 다음 camera.start_grabbing().
+                     만약 start_grabbing 이 예외/지연되더라도 이벤트는 이미 set 돼있어
+                     grab_producer 가 "재개" 상태로 돌아감. camera.grab() 이 None 을
+                     반환하면 다음 주기에 재시도(동일 사이클 반복 로직).
+          pause:  ① _pause_event.clear() 먼저(루프가 더이상 새 grab 시도 못하도록).
+                     ② 그 다음 camera.stop_grabbing() (버퍼 방출).
+
+          전부 try/except 로 감싸 카메라 오류가 이벤트 제어를 막지 않도록 보호.
+        """
         action = str(cmd_dict.get("action", "")).lower()
+        logger.info("INFERENCE_CONTROL 수신: action=%s", action)
         if action == "pause":
-            # v0.14.5: grab 루프만 정지하면 카메라 HW 는 계속 프레임 생성 → 버퍼 누적.
-            #          실제 카메라 grabbing 자체를 정지해 리소스/버퍼를 해제한다.
-            self._pause_event.clear()   # wait() 가 블록되어 grab 루프 정지
-            if self._camera is not None and self._camera.is_open:
-                self._camera.stop_grabbing()
-            logger.info("INFERENCE_CONTROL: pause (카메라 grab 정지 + 루프 블록)")
+            self._pause_event.clear()   # grab_producer 가 다음 주기에 wait 진입
+            try:
+                if self._camera is not None and self._camera.is_open:
+                    self._camera.stop_grabbing()
+            except Exception as exc:
+                logger.error("pause 중 stop_grabbing 예외(무시): %s", exc)
+            logger.info("INFERENCE_CONTROL: pause 적용 (루프 블록 + 카메라 grab 정지)")
             return True
         elif action == "resume":
-            if self._camera is not None and self._camera.is_open:
-                self._camera.start_grabbing()
-            self._pause_event.set()     # wait() 풀림 → grab 재개
-            logger.info("INFERENCE_CONTROL: resume (카메라 grab 재개 + 루프 진행)")
+            # ① 이벤트 먼저 set — 이게 grab_producer 재개의 핵심 신호
+            self._pause_event.set()
+            # ② 카메라 재시작 (실패해도 이벤트는 이미 set)
+            try:
+                if self._camera is not None and self._camera.is_open:
+                    ok = self._camera.start_grabbing()
+                    logger.info("start_grabbing 결과: %s", ok)
+                else:
+                    logger.warning("resume: 카메라가 open 상태가 아님 — grab 이벤트만 set")
+            except Exception as exc:
+                logger.error("resume 중 start_grabbing 예외(무시, 이벤트는 set 됨): %s", exc)
+            logger.info("INFERENCE_CONTROL: resume 적용 (이벤트 set + 카메라 grab 재개 시도)")
             return False
         else:
             logger.warning("INFERENCE_CONTROL: unknown action=%s", action)

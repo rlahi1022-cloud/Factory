@@ -88,12 +88,13 @@ void SessionManager::unregister_session(int client_fd) {
     }
 
     // (3) 스레드 종료 확정 → 안전하게 세션 삭제
+    //     v0.14.7: "클라이언트 해제" 로그는 여기서 찍지 않는다. 이 시점엔 아직
+    //     소켓(fd) 가 살아있기 때문 — 호출자(handle_client)가 CLOSE_SOCK 을 마친 뒤
+    //     로그를 남긴다. "fd 가 실제로 사라진 순간"에만 기록하기 위해서.
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = sessions_.find(client_fd);
         if (it != sessions_.end()) {
-            log_clt("클라이언트 해제 | fd=%d ip=%s", client_fd,
-                    it->second.remote_addr.c_str());
             sessions_.erase(it);
         }
     }

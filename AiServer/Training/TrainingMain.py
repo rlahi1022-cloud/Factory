@@ -167,6 +167,12 @@ class TrainingServer:
           먼저 TCP 연결이 필요하다. 이 함수가 연결을 담당한다.
           연결에 실패하면 5초 후 재시도한다 (운용서버가 아직 시작되지 않았을 수 있으므로).
 
+        v0.14.7: 연결 성공 후 **수신 루프도 함께 시작**.
+          메인서버가 이 채널로 HEALTH_PING(1200) 을 보내면 HEALTH_PONG(1201)+
+          server_type="training" 으로 응답해야 ConnectionRegistry 가 태깅 →
+          HealthChecker 가 "ai_training" 으로 인식 → LED 초록색 전환.
+          이전엔 send-only 였어서 ping 을 무시 → LED 영원히 회색으로 남던 버그.
+
         매개변수:
           없음
 
@@ -185,11 +191,63 @@ class TrainingServer:
                 # 연결 성공 로그를 남긴다.
                 logger.info("Connected to main server %s:%d for notifications",
                             self._config.main_server_host, self._config.main_server_port)
+                # v0.14.7: 수신 루프 백그라운드 태스크로 시작 (HEALTH_PING 응답용)
+                asyncio.create_task(self._notify_recv_loop())
                 return  # 연결 성공 시 함수 종료 (재시도 루프 탈출)
             except OSError as exc:
                 # 연결 실패 시 (운용서버가 아직 안 떴거나 네트워크 오류)
                 logger.warning("Main server connection failed: %s — retry in 5s", exc)
                 await asyncio.sleep(5.0)  # 5초 대기 후 재시도
+
+    async def _notify_recv_loop(self) -> None:
+        """메인서버 → 학습서버(notify 채널) 수신 루프 (v0.14.7).
+
+        메인서버의 HealthChecker 가 주기적으로 HEALTH_PING(1200) 을 이 채널로
+        쏘는데, 이전엔 아무 처리도 안 해서 서버가 "ai_training" 태깅을 받지 못했다.
+        이제 패킷을 파싱해 HEALTH_PING 이면 HEALTH_PONG(server_type="training") 을
+        **같은 채널로** 즉시 회신 → Router 가 태깅 → HealthChecker 생존 판정 → LED 초록.
+
+        종료 조건:
+          - 서버 자체가 종료 (_is_running=False)
+          - reader EOF (main 연결 끊김) → 연결 끊김 처리 후 루프 탈출
+            (_send_to_main 이 다음 패킷 전송 시 재접속 함)
+        """
+        if self._notify_reader is None:
+            return
+        try:
+            while self._is_running:
+                # 4바이트 헤더 읽기
+                header = await self._notify_reader.readexactly(4)
+                body_size = int.from_bytes(header, "big")
+                if body_size <= 0 or body_size > 1024 * 1024:
+                    logger.warning("notify 수신 비정상 크기: %d — 루프 종료", body_size)
+                    return
+                body = await self._notify_reader.readexactly(body_size)
+                try:
+                    msg = json.loads(body.decode("utf-8"))
+                except Exception as exc:
+                    logger.warning("notify 수신 JSON 파싱 실패: %s", exc)
+                    continue
+
+                protocol_no = msg.get("protocol_no")
+                if protocol_no == int(ProtocolNo.HEALTH_PING):
+                    # HEALTH_PONG 조립 후 동일 채널(_notify_writer) 로 회신
+                    pong_body = {
+                        "server_type": "training",
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                    }
+                    pong_pkt = PacketBuilder.build_packet(
+                        protocol_no=int(ProtocolNo.HEALTH_PONG),
+                        body_dict=pong_body,
+                    )
+                    if self._notify_writer is not None and not self._notify_writer.is_closing():
+                        self._notify_writer.write(pong_pkt)
+                        await self._notify_writer.drain()
+                # 그 외 패킷은 무시 (TRAIN_START_REQ 등은 listen_port 채널에서 처리)
+        except asyncio.IncompleteReadError:
+            logger.info("notify 수신 EOF — main 연결 끊김, _send_to_main 이 재연결 시도")
+        except Exception as exc:
+            logger.warning("notify 수신 루프 예외: %s — 루프 종료", exc)
 
     async def _send_to_main(self, packet: bytes) -> bool:
         """운용서버로 패킷(바이트 데이터)을 전송한다.
