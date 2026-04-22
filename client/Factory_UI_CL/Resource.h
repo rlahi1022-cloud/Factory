@@ -64,6 +64,8 @@
 #define IDC_BTN_S1_NG                   2205
 #define IDC_BTN_S1_ARDUINO              2206
 #define IDC_STATIC_S1_LED               2207
+#define IDC_BTN_S1_START                2208    // 1공정 검사 시작
+#define IDC_BTN_S1_STOP                 2209    // 1공정 검사 중지
 
 // ── 스테이션 2 ────────────────────────────────────────────────────────────
 #define IDC_CAM2_VIEW                   2300
@@ -74,6 +76,8 @@
 #define IDC_BTN_S2_DEFECT               2305
 #define IDC_BTN_S2_REWORK               2306
 #define IDC_STATIC_S2_LED               2307
+#define IDC_BTN_S2_START                2308    // 2공정 검사 시작
+#define IDC_BTN_S2_STOP                 2309    // 2공정 검사 중지
 
 // ── 통계 페이지 ───────────────────────────────────────────────────────────
 #define IDC_DATE_FROM                   2400

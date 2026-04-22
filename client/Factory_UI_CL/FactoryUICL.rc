@@ -176,6 +176,10 @@ BEGIN
     PUSHBUTTON "Manual: NG",          IDC_BTN_S1_NG,      653, 180,  66, 14
     PUSHBUTTON "Arduino Test",        IDC_BTN_S1_ARDUINO, 723, 180,  66, 14
 
+    // ── 1공정 검사 시작/중지 버튼 ────────────────────────────────────────
+    PUSHBUTTON "▶ 시작",              IDC_BTN_S1_START,   583, 200, 100, 16
+    PUSHBUTTON "■ 중지",              IDC_BTN_S1_STOP,    687, 200, 100, 16
+
     // ── 아두이노 상태바 ───────────────────────────────────────────────────
     GROUPBOX "Arduino - Station1",    IDC_STATIC,           4, 282, 890, 36
     LTEXT    "Serial OK (COM3)",      IDC_STATIC,          12, 294, 110, 10
@@ -210,6 +214,10 @@ BEGIN
     LTEXT    "OK",                  IDC_STATIC_S2_RESULT, 284,142,190, 36, SS_CENTER
     PUSHBUTTON "Select Defect",     IDC_BTN_S2_DEFECT,  274,192, 80, 14
     PUSHBUTTON "Rework",            IDC_BTN_S2_REWORK,  358,192, 60, 14
+
+    // ── 2공정 검사 시작/중지 버튼 ────────────────────────────────────────
+    PUSHBUTTON "▶ 시작",            IDC_BTN_S2_START,   274,212, 80, 16
+    PUSHBUTTON "■ 중지",            IDC_BTN_S2_STOP,    358,212, 80, 16
     GROUPBOX "Arduino - Station2",  IDC_STATIC,           4,318,890, 36
     LTEXT    "Serial OK (COM5)",    IDC_STATIC,          12,330,110, 10
     LTEXT    "Standby",             IDC_STATIC_S2_LED,  130,330,220, 10
