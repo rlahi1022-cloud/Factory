@@ -7,13 +7,15 @@ __pycache__/
 *.out
 venv/
 .venv/
-AiServer/data/
 AiServer/models/
 AiServer/deploy/
 runs/
 *.jpg
 *.png
 !AiServer/tests/generate_dummy_data.py
+# 공유용 학습/테스트 데이터는 예외 — AiServer/data/ 하위는 추적한다
+!AiServer/data/
+!AiServer/data/**
 yolo11n.pt
 .claude/
 

@@ -1,0 +1,10 @@
+path: /mnt/c/Users/LMS/Desktop/Project/factory/code/AiServer/data/station2/yolo
+train: images/train
+val: images/val
+
+names:
+  0: cap
+  1: label
+  2: liquid_level
+
+nc: 3
