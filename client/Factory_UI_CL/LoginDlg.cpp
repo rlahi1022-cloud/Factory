@@ -172,9 +172,21 @@ void CLoginDlg::OnBtnOK()
         if (pass.IsEmpty()) { SetError(_T("암호를 입력하세요.")); return; }
 
         // 서버에 연결하여 LOGIN_REQ 전송
+        // v0.14.2: 서버가 대용량 브로드캐스트 중일 때 일시적으로 accept 가 지연되어
+        // 첫 Connect 가 실패할 수 있다. 500ms 간격으로 최대 3회 재시도.
         m_loginNet.Disconnect();
-        if (!m_loginNet.Connect(factory_client::ClientConfig::GetServerIp(),
-                                factory_client::ClientConfig::GetServerPort(), m_hWnd)) {
+        bool connected = false;
+        for (int attempt = 1; attempt <= 3; ++attempt) {
+            if (m_loginNet.Connect(factory_client::ClientConfig::GetServerIp(),
+                                   factory_client::ClientConfig::GetServerPort(),
+                                   m_hWnd)) {
+                connected = true;
+                break;
+            }
+            TRACE(_T("[LoginDlg] 연결 시도 %d 실패 — 재시도\n"), attempt);
+            ::Sleep(500);
+        }
+        if (!connected) {
             SetError(_T("서버에 연결할 수 없습니다. 네트워크를 확인하세요."));
             return;
         }
