@@ -94,6 +94,7 @@ Camera → AI Server → Main Server → DB → MFC Client
 * NG 중심 전송 구조 (트래픽 최적화)
 * inspection_id 기반 end-to-end 추적
 * ACK / 재전송 기반 데이터 신뢰성 확보
+* **v0.12.0: 검증 즉시 ACK → 백그라운드 영속화** (INSPECTION_VALIDATED 이벤트)
 * 모델 바이너리 TCP 전송 (학습서버 → 메인서버 → 추론서버)
 * asyncio.Queue 기반 비동기 처리 (Backpressure 대응)
 
@@ -169,6 +170,95 @@ Camera → AI Server → Main Server → DB → MFC Client
 * **Station2 PatchCore 학습 데이터 경로 버그 수정**: `_train_patchcore` 가
   Station2 의 경우 `./data/station2/patchcore/` 를 사용하도록 조건 분기 추가
   (기존엔 `./data/station{N}/normal` 고정으로 Station2 PatchCore 학습이 실제로 불가).
+
+### v0.12.0 — NG 파이프라인 비동기 분리 (ACK 지연 근본 해결)
+
+* **문제**: v0.11.x 까지 `StationHandler` 가 `InspectionService::process()` 를
+  동기 호출 → 이미지 3장 저장(수 MB 디스크 I/O) + DB INSERT 가 끝나야 ACK 발행.
+  실측 500ms~1s+ 소요 → AI 서버 `ACK_TIMEOUT_SEC=1.0` 이 반복 타임아웃 →
+  재전송 루프 → 연결 끊김 악순환.
+
+* **해결 구조**:
+  ```
+  StationHandler
+    ├─ validate_only(ev)          (<1ms)
+    ├─ publish ACK_SEND_REQUESTED  ← 즉시 ACK
+    └─ publish INSPECTION_VALIDATED ← 백그라운드 위임
+                                     ↓
+                 InspectionService::on_validated  (EventBus 워커 스레드)
+                   ├─ save_blob × 3 (원본/히트맵/마스크)
+                   ├─ INSERT inspections
+                   ├─ INSERT assemblies (Station2)
+                   └─ publish GUI_PUSH_REQUESTED
+  ```
+
+* **신규 이벤트**: `EventType::INSPECTION_VALIDATED` — 검증 통과 후 영속화
+  위임용. EventBus 의 N개 워커가 병렬 처리.
+
+* **Sliced failure 정책**: ACK 가 이미 송신된 뒤 persist 가 실패하면 재전송 불가.
+  `[ERR] [DB] [SLICED-FAILURE] 저장 실패 (ACK 는 이미 송신됨) | id=... err=...`
+  ERROR 레벨로 강하게 남겨 운영자 추적 가능.
+
+* **효과**:
+  - AI 서버 체감 ACK 지연: 500ms+ → **수 ms** (validate_only 만)
+  - `ACK_TIMEOUT_SEC`: 1초 → **3초** (여유)
+  - 고부하(초당 수십건 NG) 에서도 ACK 타임아웃 사라짐
+
+### v0.12.0 기타 안정화
+
+* **검증기 정합성 수정** (`InspectionService::validate`):
+  - `result` 필드: `"OK"/"NG"` 대문자 수용 + 소문자 정규화 (AI서버 송신 형식)
+  - `score` 필드: 0~1 강제 제거 (PatchCore anomaly_score 는 무한대 범위) →
+    `std::isfinite()` 로 NaN/Inf 만 차단
+  - 기존엔 이 두 버그로 모든 NG 가 `invalid_result` / `invalid_score` 로 거부됨
+
+* **INSPECT_NG_ACK_EXT(111) 처리**: 클라이언트가 NG 수신 후 자동 ACK(111) 를
+  보내는데 서버가 "미처리 프로토콜" 로 로깅하던 노이즈 제거. EXT_ACK(190) 와
+  동일하게 silent pass.
+
+### v0.13.0 — 클라이언트 학습 이미지 업로드 End-to-End
+
+**배경**: v0.12.x 까지 클라 "폴더 선택" 은 파일명 수집만 했고, 실제 학습은
+학습서버에 미리 준비된 `./data/station*/...` 폴더로만 이뤄짐 → UI 와 실제
+동작 불일치. 제품 전환 시 학습 데이터 교체가 번거로웠음.
+
+**해결**: 3 컴포넌트(클라/메인/학습) 동시 확장으로 엔드투엔드 업로드 파이프라인
+구현. 신규 프로토콜 4 개 추가:
+
+| 번호 | 이름 | 방향 | 역할 |
+|------|------|------|------|
+| 158 | `RETRAIN_UPLOAD` | 클라→메인 | 학습용 이미지 1장 업로드 (JSON + binary) |
+| 159 | `RETRAIN_UPLOAD_ACK` | 메인→클라 | 파일별 업로드 ACK + 진행률 |
+| 1108 | `TRAIN_DATA_UPLOAD` | 메인→학습 | 이미지 중계 (JSON + binary) |
+| 1109 | `TRAIN_DATA_UPLOAD_ACK` | 학습→메인 | 저장 결과 ACK |
+
+**동작 흐름**:
+```
+① 클라: 폴더 선택 → 파일 개수 + 폴더 경로 보관
+② 클라: "재학습 실행" 클릭 → session_id 생성 (sess-YYYYMMDD-HHMMSS-NNNNN)
+   → 파일별로 RETRAIN_UPLOAD(158) 순차 송신
+③ 메인: 파일 수신 → ./storage/training_upload/{session_id}/{file} 로컬 저장
+   → 학습서버 TCP 로 TRAIN_DATA_UPLOAD(1108) 중계
+④ 학습서버: ./data/station{N}/uploads/{session_id}/{file} 저장 → ACK(1109)
+⑤ 메인: ACK(159) 를 클라에 회신 → 진행률 표시 (0~50%)
+⑥ 클라: 모든 ACK 수신 완료 → RETRAIN_REQ(152) 에 session_id 동봉하여 송신
+⑦ 메인: TRAIN_START_REQ(1100) 에 data_path="./data/station{N}/uploads/{session_id}" 주입
+⑧ 학습서버: data_path 로 학습 실행 (기본 경로 대신 업로드 폴더 사용)
+```
+
+**주요 안전장치**:
+- 파일명 path traversal 차단 (basename 화 + ".." / "/" / "\\" 검사)
+- 파일당 50MB 상한
+- `image_size` > 0 이면 GUI 리스너가 JSON 뒤 바이너리를 추가 수신 (`recv_one_request` 확장)
+- 메인 로컬 저장 실패해도 학습서버 중계는 계속 시도 → 이중 저장으로 복구력 강화
+
+**신규 클래스/함수**:
+- C++  `GuiService::receive_retrain_upload()` — 수신 + 중계 + ACK 파싱
+- C++  `GuiRouter::handle_retrain_upload()` — 요청 분기
+- C++  `GuiTcpListener::recv_one_request(json, binary)` — 바이너리 동반 수신
+- Py   `TrainingServer._handle_train_data_upload()` — 디스크 저장 + ACK
+- MFC  `CPacketBuilder::BuildRetrainUploadFrame()` / `GenerateSessionId()`
+- MFC  `CPageModel::OnRetrainUploadAck()` — ACK 수신 → 진행률 + RETRAIN_REQ 자동 발행
 
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고

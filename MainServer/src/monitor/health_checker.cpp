@@ -23,8 +23,11 @@
 #include "monitor/health_checker.h"
 #include "monitor/connection_registry.h"
 #include "core/logger.h"
+#include "core/tcp_utils.h"
+#include "Protocol.h"
 
 #include <algorithm>
+#include <sstream>
 
 namespace factory {
 
@@ -75,6 +78,22 @@ void HealthChecker::run_loop() {
     while (is_running_.load()) {
         auto connections = ConnectionRegistry::instance().get_all_connections_detailed();
         int connected_count = static_cast<int>(connections.size());
+
+        // v0.13.1: 미태깅 연결들에 능동 HEALTH_PING 송신 → 즉각 server_type 획득
+        //   AI 서버가 막 접속했지만 아직 INSPECT_META/OK_COUNT 를 안 보낸 상태에서는
+        //   ConnectionRegistry 에 server_type 이 비어있다. 5초 주기 HealthChecker 가
+        //   이 연결을 "미연결" 로 잘못 보고하지 않도록 PING 을 먼저 날려
+        //   HEALTH_PONG(1201) 으로 server_type 을 즉시 알아낸다.
+        for (const auto& [addr, info] : connections) {
+            if (info.server_type.empty() && info.fd >= 0) {
+                std::ostringstream ping;
+                ping << "{\"protocol_no\":" << static_cast<int>(ProtocolNo::HEALTH_PING)
+                     << ",\"protocol_version\":\"1.0\""
+                     << ",\"image_size\":0"
+                     << "}";
+                (void)send_json_frame(info.fd, ping.str());   // 실패해도 조용히
+            }
+        }
 
         for (const auto& target : targets_) {
             // ── 1순위: server_type 매칭 (동적) ──────────────────────────

@@ -36,6 +36,7 @@
 #else
   #include <arpa/inet.h>
   #include <netinet/in.h>
+  #include <netinet/tcp.h>   // TCP_KEEPIDLE/INTVL/CNT (Linux)
   #include <sys/socket.h>
   #include <unistd.h>
   #define CLOSE_SOCK ::close
@@ -183,17 +184,33 @@ void GuiTcpListener::run_accept_loop() {
 //   - SessionManager::force_close 등 외부 신호로 소켓이 닫힘 (중복 로그인 교체 시)
 // ---------------------------------------------------------------------------
 void GuiTcpListener::handle_client(int client_fd, const std::string& remote_addr) {
-    // recv 타임아웃 30초 — heartbeat 미수신/좀비 연결 정리
-    struct timeval client_tv{30, 0};
-    ::setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO,
-                 reinterpret_cast<const char*>(&client_tv), sizeof(client_tv));
+    // v0.13.1 정책:
+    //   app-level recv 타임아웃을 제거한다. 서버는 클라가 침묵한다고
+    //   먼저 끊지 않는다 (푸시 많은 구간에서 heartbeat 가 suppressed 돼서
+    //   서버 recv 가 억울하게 타임아웃되는 문제 방지).
+    //   대신 TCP Keepalive 로 "진짜 죽은 연결" 만 커널이 감지해서 recv 에 에러
+    //   리턴 → handle_client 루프 탈출 → 정리. 클라가 크래시/전원 off 되어도
+    //   90초 내 자동 감지.
+    int keepalive = 1;
+    ::setsockopt(client_fd, SOL_SOCKET, SO_KEEPALIVE,
+                 reinterpret_cast<const char*>(&keepalive), sizeof(keepalive));
+#ifdef __linux__
+    // idle 60s 후 probe 시작 → 10s 간격 → 3회 실패 시 dead 판정 (총 ~90초)
+    int keepidle  = 60;
+    int keepintvl = 10;
+    int keepcnt   = 3;
+    ::setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPIDLE,  &keepidle,  sizeof(keepidle));
+    ::setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+    ::setsockopt(client_fd, IPPROTO_TCP, TCP_KEEPCNT,   &keepcnt,   sizeof(keepcnt));
+#endif
 
     SessionManager::instance().register_session(client_fd, remote_addr);
 
     while (is_running_.load()) {
-        std::string json_request;
-        if (!recv_one_request(client_fd, json_request)) break;  // 수신 실패 → 종료
-        router_.route(client_fd, remote_addr, json_request);
+        std::string          json_request;
+        std::vector<uint8_t> binary;   // v0.13.0: RETRAIN_UPLOAD(158) 등 동반 바이너리
+        if (!recv_one_request(client_fd, json_request, binary)) break;  // 수신 실패 → 종료
+        router_.route(client_fd, remote_addr, json_request, binary);
     }
 
     SessionManager::instance().unregister_session(client_fd);
@@ -217,28 +234,54 @@ static bool recv_n(int fd, void* buf, std::size_t n) {
 }
 
 // ---------------------------------------------------------------------------
-// recv_one_request — 한 JSON 프레임 완전 수신
-// 프레임: [4바이트 BE length][length 바이트의 JSON 본문]
+// recv_one_request — 한 프레임 완전 수신 (JSON + 선택적 바이너리)
+// 프레임:
+//   [4바이트 BE length][JSON 본문][image_size 바이트의 바이너리 (옵션)]
+//
+// v0.13.0: JSON 에 "image_size":N 이 있으면 N 바이트를 추가로 읽어 out_binary 에 담는다.
+//          없거나 0 이면 out_binary 는 비어있다.
+//          크기 상한 50MB (RETRAIN_UPLOAD 같은 이미지 업로드).
 //
 // 크기 검증:
-//   0     : 프로토콜 위반 (빈 프레임)
-//   >64KB : config.limits.json_max_bytes 와 동일 — 비정상 대용량 차단
+//   JSON    : 0 또는 >64KB 차단
+//   바이너리: >50MB 차단
 // ---------------------------------------------------------------------------
-bool GuiTcpListener::recv_one_request(int client_fd, std::string& out_json) {
+static std::size_t extract_size_field_gui(const std::string& json, const char* key) {
+    auto pos = json.find(key);
+    if (pos == std::string::npos) return 0;
+    auto colon = json.find(':', pos);
+    if (colon == std::string::npos) return 0;
+    return static_cast<std::size_t>(std::strtoul(json.c_str() + colon + 1, nullptr, 10));
+}
+
+bool GuiTcpListener::recv_one_request(int client_fd,
+                                      std::string& out_json,
+                                      std::vector<uint8_t>& out_binary) {
     uint8_t header[HEADER_SIZE];
     if (!recv_n(client_fd, header, HEADER_SIZE)) return false;
 
-    // Big-Endian 4바이트 → uint32_t (htonl 의 수동 구현)
     uint32_t json_size = (uint32_t)header[0] << 24 |
                          (uint32_t)header[1] << 16 |
                          (uint32_t)header[2] << 8  |
                          (uint32_t)header[3];
 
-    // 크기 검증 — 외부 입력이므로 반드시 상한/하한 체크
     if (json_size == 0 || json_size > 64 * 1024) return false;
 
     out_json.assign(json_size, '\0');
     if (!recv_n(client_fd, out_json.data(), json_size)) return false;
+
+    // JSON 안의 image_size 확인 → 있으면 바이너리까지 수신
+    const std::size_t img_size = extract_size_field_gui(out_json, "\"image_size\"");
+    if (img_size > 0) {
+        if (img_size > 50ULL * 1024 * 1024) {
+            // 비정상 대용량 차단 (업로드 상한)
+            return false;
+        }
+        out_binary.resize(img_size);
+        if (!recv_n(client_fd, out_binary.data(), img_size)) return false;
+    } else {
+        out_binary.clear();
+    }
     return true;
 }
 

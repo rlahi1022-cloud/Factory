@@ -18,6 +18,7 @@
 
 #include "pch.h"
 #include "PageHome.h"
+#include "PacketBuilder.h"   // ExtractInt/String/Double/Bool
 
 IMPLEMENT_DYNAMIC(CPageHome, CDialogEx)
 BEGIN_MESSAGE_MAP(CPageHome, CDialogEx)
@@ -104,33 +105,8 @@ void CPageHome::Update(const std::vector<InspectionRecord>& recs)
     set(IDC_STATIC_S1_MODEL_INFO, _T("모델: PatchCore v1.2.0 | Latency: ~52ms"));
     set(IDC_STATIC_S2_MODEL_INFO, _T("모델: YOLO11 v1.0.0 + PatchCore v1.1.0"));
 
-    // ── 3) NG 이력 리스트 갱신 ──
-    m_listNG.DeleteAllItems();
-    int row = 0;
-    // 역순(최신순)으로 NG만 표시
-    for (int i = (int)recs.size() - 1; i >= 0; --i) {
-        const auto& r = recs[i];
-        if (!r.isNG) continue;  // OK는 건너뜀
-
-        s.Format(_T("%d"), r.id);
-        m_listNG.InsertItem(row, s);
-
-        s.Format(_T("#%d"), r.station);
-        m_listNG.SetItemText(row, 1, s);
-
-        m_listNG.SetItemText(row, 2, r.time);
-        m_listNG.SetItemText(row, 3, _T("NG"));
-
-        s.Format(_T("%.2f"), r.score);
-        m_listNG.SetItemText(row, 4, s);
-
-        m_listNG.SetItemText(row, 5, QCUtil::DefectName(r.defect));
-
-        s.Format(_T("%dms"), r.latencyMs);
-        m_listNG.SetItemText(row, 6, s);
-
-        ++row;
-    }
+    // v0.13.2: NG 이력 리스트는 OnInspectHistoryRes(DB 로드) + AddNgRow(실시간)
+    // 가 직접 관리하므로 여기서는 건드리지 않는다 (중복 방지).
 }
 
 void CPageHome::UpdateStationCount(int stationId, int okCount, int ngCount)
@@ -150,3 +126,112 @@ void CPageHome::UpdateStationCount(int stationId, int okCount, int ngCount)
 }
 
 void CPageHome::OnPaint() { Default(); }
+
+// ============================================================================
+// InsertNgItem — NG 레코드 1건을 리스트 지정 row 에 삽입 (v0.13.2)
+// ============================================================================
+void CPageHome::InsertNgItem(int row, const InspectionRecord& r)
+{
+    CString s;
+    s.Format(_T("%d"), r.id);
+    m_listNG.InsertItem(row, s);
+
+    s.Format(_T("#%d"), r.station);
+    m_listNG.SetItemText(row, 1, s);
+
+    m_listNG.SetItemText(row, 2, r.time);
+    m_listNG.SetItemText(row, 3, r.isNG ? _T("NG") : _T("OK"));
+
+    s.Format(_T("%.2f"), r.score);
+    m_listNG.SetItemText(row, 4, s);
+
+    m_listNG.SetItemText(row, 5, QCUtil::DefectName(r.defect));
+
+    s.Format(_T("%dms"), r.latencyMs);
+    m_listNG.SetItemText(row, 6, s);
+}
+
+// ============================================================================
+// OnInspectHistoryRes — DB 이력 응답(115) 수신 → NG 리스트 초기화 (v0.13.2)
+// ============================================================================
+// 접속 직후 MainTabDlg 가 INSPECT_HISTORY_REQ 를 보내면 서버가 응답으로 items
+// 배열을 돌려준다. 여기서는 items 중 result=="ng" 만 뽑아 최신순으로 리스트에
+// 채운다 (최대 MAX_NG_ROWS 건). 스크롤은 MFC CListCtrl 이 자동 처리.
+void CPageHome::OnInspectHistoryRes(const std::string& json)
+{
+    CStringA jsonA(json.c_str());
+
+    // JSON 안의 items 배열만 추출 (1-depth 플랫 파서라 배열 통째로 자름).
+    int arrStart = jsonA.Find("\"items\"");
+    if (arrStart < 0) return;
+    int arrS = jsonA.Find('[', arrStart);
+    int arrE = jsonA.Find(']', arrS);
+    if (arrS < 0 || arrE < 0) return;
+
+    CStringA arr = jsonA.Mid(arrS + 1, arrE - arrS - 1);
+
+    m_listNG.DeleteAllItems();
+    int row = 0;
+    int pos = 0;
+    while (pos < arr.GetLength() && row < MAX_NG_ROWS) {
+        int os = arr.Find('{', pos);
+        int oe = arr.Find('}', os);
+        if (os < 0 || oe < 0) break;
+
+        CStringA obj = arr.Mid(os, oe - os + 1);
+
+        // 결과 필터 — NG(=ng) 만 표시. OK 는 건너뜀.
+        CString resultStr = CPacketBuilder::ExtractStringW(obj, "result");
+        resultStr.MakeLower();
+        if (resultStr != _T("ng")) {
+            pos = oe + 1;
+            continue;
+        }
+
+        InspectionRecord r;
+        r.id        = CPacketBuilder::ExtractInt(obj, "id");
+        r.station   = CPacketBuilder::ExtractInt(obj, "station_id");
+        r.isNG      = true;
+        r.score     = CPacketBuilder::ExtractDouble(obj, "confidence");
+        r.latencyMs = CPacketBuilder::ExtractInt(obj, "latency_ms");
+
+        // timestamp 는 "YYYY-MM-DD HH:MM:SS" 형식 — 시:분:초 부분만 뽑아 표시
+        CString ts = CPacketBuilder::ExtractStringW(obj, "timestamp");
+        int sp = ts.Find(_T(' '));
+        r.time = (sp >= 0 && ts.GetLength() - sp >= 9)
+                 ? ts.Mid(sp + 1, 8)
+                 : ts;
+
+        // defect_type 문자열 → EDefect 매핑 (UI 표시용)
+        CString defectStr = CPacketBuilder::ExtractStringW(obj, "defect_type");
+        defectStr.MakeLower();
+        if      (defectStr.Find(_T("cap"))    >= 0) r.defect = EDefect::CapLoose;
+        else if (defectStr.Find(_T("label"))  >= 0) r.defect = EDefect::LabelTilt;
+        else if (defectStr.Find(_T("fill"))   >= 0) r.defect = EDefect::FillLow;
+        else if (defectStr.IsEmpty())               r.defect = EDefect::None;
+        else                                        r.defect = EDefect::Anomaly;
+
+        InsertNgItem(row, r);
+        ++row;
+        pos = oe + 1;
+    }
+
+    TRACE(_T("[PageHome] DB NG 이력 로드: %d건\n"), row);
+}
+
+// ============================================================================
+// AddNgRow — 실시간 NG_PUSH 수신 → 리스트 맨 위에 1건 prepend (v0.13.2)
+// ============================================================================
+// 상한 MAX_NG_ROWS 초과 시 가장 오래된 행(맨 아래) 자동 제거.
+void CPageHome::AddNgRow(const InspectionRecord& r)
+{
+    if (!r.isNG) return;  // OK 는 이 리스트에 표시하지 않음
+    InsertNgItem(0, r);   // 맨 위에 삽입
+
+    // 상한 초과 시 꼬리 제거 (오래된 NG)
+    int total = m_listNG.GetItemCount();
+    while (total > MAX_NG_ROWS) {
+        m_listNG.DeleteItem(total - 1);
+        --total;
+    }
+}

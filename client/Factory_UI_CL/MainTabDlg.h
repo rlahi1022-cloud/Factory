@@ -32,6 +32,7 @@
 #define IDT_LIVE_UPDATE  1   // 3초: 시뮬레이션 데이터 생성
 #define IDT_STATUSBAR    2   // 1초: 상태바 시각 갱신
 #define IDT_RECONNECT    3   // 10초: 서버 재접속 시도
+#define IDT_HEARTBEAT    4   // v0.13.1: 10초마다 능동 heartbeat 송신 (서버 recv 타임아웃 방지)
 
 class CMainTabDlg : public CDialogEx {
     DECLARE_DYNAMIC(CMainTabDlg)

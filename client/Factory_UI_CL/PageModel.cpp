@@ -33,6 +33,9 @@ CPageModel::CPageModel(CWnd* p)
     : CDialogEx(IDD_PAGE_MODEL, p)
     , m_training(false)
     , m_prog(0)
+    , m_uploadedCount(0)
+    , m_uploadTotal(0)
+    , m_currentStation(1)
 {}
 
 void CPageModel::DoDataExchange(CDataExchange* pDX)
@@ -125,28 +128,31 @@ void CPageModel::OnBtnSelectFolder()
     CFolderPickerDialog dlg(nullptr, OFN_FILEMUSTEXIST, this);
     if (dlg.DoModal() != IDOK) return;
 
-    CString folderPath = dlg.GetPathName();
+    // v0.13.0: 폴더 경로도 저장 — 재학습 실행 시 파일 바이너리를 읽기 위해 필요.
+    m_folderPath = dlg.GetPathName();
     m_files.clear();
 
-    // 선택한 폴더의 이미지 파일 목록 수집
-    CFileFind finder;
-    BOOL found = finder.FindFile(folderPath + _T("\\*.jpg"));
-    if (!found) found = finder.FindFile(folderPath + _T("\\*.png"));
+    // 선택한 폴더의 이미지 파일 목록 수집 (.jpg + .png 모두 수집)
+    auto collect = [&](LPCTSTR pattern) {
+        CFileFind finder;
+        BOOL found = finder.FindFile(m_folderPath + pattern);
+        while (found) {
+            found = finder.FindNextFile();
+            if (finder.IsDots() || finder.IsDirectory()) continue;
 
-    while (found) {
-        found = finder.FindNextFile();
-        if (finder.IsDots() || finder.IsDirectory()) continue;
-
-        UpFile f;
-        f.name = finder.GetFileName();
-        ULONGLONG size = finder.GetLength();
-        if (size >= 1024 * 1024)
-            f.size.Format(_T("%.1f MB"), size / (1024.0 * 1024.0));
-        else
-            f.size.Format(_T("%llu KB"), size / 1024);
-        m_files.push_back(f);
-    }
-    finder.Close();
+            UpFile f;
+            f.name = finder.GetFileName();
+            ULONGLONG size = finder.GetLength();
+            if (size >= 1024 * 1024)
+                f.size.Format(_T("%.1f MB"), size / (1024.0 * 1024.0));
+            else
+                f.size.Format(_T("%llu KB"), size / 1024);
+            m_files.push_back(f);
+        }
+        finder.Close();
+    };
+    collect(_T("\\*.jpg"));
+    collect(_T("\\*.png"));
 
     if (m_files.empty()) {
         MessageBox(_T("선택한 폴더에 이미지 파일이 없습니다."),
@@ -159,11 +165,16 @@ void CPageModel::OnBtnSelectFolder()
 void CPageModel::OnBtnRetrain()
 {
     if (m_files.empty() || m_training) return;
+    if (m_folderPath.IsEmpty()) {
+        MessageBox(_T("먼저 학습 이미지 폴더를 선택하세요."),
+                   _T("알림"), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
 
-    // 학습 대상 정보 추출 (콤보 인덱스 순서: OnInitDialog 의 AddString 순서와 일치)
+    // ── 학습 대상 결정 (콤보 인덱스 순서 = OnInitDialog 의 AddString) ──
     //   0: Station #1 — PatchCore
     //   1: Station #2 — YOLO11
-    //   2: Station #2 — PatchCore (라벨 표면)
+    //   2: Station #2 — PatchCore
     int station_id = 1;
     CString model_type = _T("PatchCore");
     CComboBox* cb = (CComboBox*)GetDlgItem(IDC_COMBO_TARGET);
@@ -177,25 +188,75 @@ void CPageModel::OnBtnRetrain()
     CEdit* ed = (CEdit*)GetDlgItem(IDC_EDIT_PRODUCT_NAME);
     if (ed) ed->GetWindowText(product_name);
 
-    // 서버에 RETRAIN_REQ(152) 전송
-    if (m_net && m_net->IsConnected()) {
-        CString req = CPacketBuilder::BuildRetrainReq(
-            station_id, model_type, product_name, (int)m_files.size());
-        m_net->SendJson(req);
-
-        // UI 전환 — 서버 응답(153) 대기 상태
-        m_training = true;
-        m_prog = 0;
-        m_progress.SetPos(0);
-        m_progress.ShowWindow(SW_SHOW);
-        CWnd* w = GetDlgItem(IDC_BTN_RETRAIN);
-        if (w) { w->SetWindowText(_T("서버 요청 중...")); w->EnableWindow(FALSE); }
-        w = GetDlgItem(IDC_STATIC_TRAIN_STATUS);
-        if (w) w->SetWindowText(_T("서버에 재학습 요청 전송 중..."));
-    } else {
+    if (!m_net || !m_net->IsConnected()) {
         MessageBox(_T("서버에 연결되어 있지 않습니다."),
                    _T("오류"), MB_OK | MB_ICONWARNING);
+        return;
     }
+
+    // ── v0.13.0: 파일 업로드 → RETRAIN_REQ 순서로 진행 ──
+    m_sessionId       = CPacketBuilder::GenerateSessionId();
+    m_uploadedCount   = 0;
+    m_uploadTotal     = (int)m_files.size();
+    m_currentStation  = station_id;
+    m_currentModelType= model_type;
+    m_currentProduct  = product_name;
+
+    m_training = true;
+    m_prog = 0;
+    m_progress.SetRange(0, 100);
+    m_progress.SetPos(0);
+    m_progress.ShowWindow(SW_SHOW);
+
+    CWnd* w = GetDlgItem(IDC_BTN_RETRAIN);
+    if (w) { w->SetWindowText(_T("업로드 중...")); w->EnableWindow(FALSE); }
+    w = GetDlgItem(IDC_STATIC_TRAIN_STATUS);
+    if (w) {
+        CString msg;
+        msg.Format(_T("학습 이미지 업로드 중... (0/%d) session=%s"),
+                   m_uploadTotal, (LPCTSTR)m_sessionId);
+        w->SetWindowText(msg);
+    }
+
+    // 파일 순차 업로드 — 각 파일을 읽어 RETRAIN_UPLOAD(158) 로 전송.
+    // 서버 ACK(159) 는 OnRetrainUploadAck() 로 수신되어 진행률 업데이트.
+    // 전체 전송 완료 체크는 ACK 누적 카운트 기반이지만, 여기서는 한 번에 순차 송신
+    // 후 UI 가 ACK 를 받으며 진행률만 갱신하는 구조 (클라-서버 QoS 는 TCP 보장).
+    for (int i = 0; i < m_uploadTotal; ++i) {
+        const CString& filename = m_files[i].name;
+        CString fullPath = m_folderPath + _T("\\") + filename;
+
+        // 파일 바이너리 읽기
+        CFile file;
+        CFileException ex;
+        if (!file.Open(fullPath, CFile::modeRead | CFile::shareDenyNone, &ex)) {
+            CString e; e.Format(_T("파일 열기 실패: %s"), (LPCTSTR)filename);
+            MessageBox(e, _T("업로드 오류"), MB_OK | MB_ICONERROR);
+            continue;
+        }
+        ULONGLONG sz = file.GetLength();
+        if (sz == 0 || sz > 50ULL * 1024 * 1024) {
+            file.Close();
+            continue;   // 빈 파일/50MB 초과는 skip
+        }
+        std::vector<char> bytes((size_t)sz);
+        file.Read(bytes.data(), (UINT)sz);
+        file.Close();
+
+        // 프레임 조립 + 송신
+        std::vector<char> frame = CPacketBuilder::BuildRetrainUploadFrame(
+            m_sessionId, station_id, model_type, filename, i, m_uploadTotal, bytes);
+        if (!m_net->Send(frame)) {
+            MessageBox(_T("업로드 중 네트워크 오류 — 다시 시도해주세요."),
+                       _T("오류"), MB_OK | MB_ICONERROR);
+            m_training = false;
+            CWnd* btn = GetDlgItem(IDC_BTN_RETRAIN);
+            if (btn) { btn->SetWindowText(_T("재학습 실행")); btn->EnableWindow(TRUE); }
+            return;
+        }
+    }
+    // 송신은 끝났고, ACK 159 를 OnRetrainUploadAck 에서 수신하여 전부 받으면
+    // RETRAIN_REQ(152) 를 최종 송신한다 (그 로직은 OnRetrainUploadAck 내부).
 }
 
 void CPageModel::RequestModelList()
@@ -304,6 +365,56 @@ void CPageModel::OnRetrainRes(const std::string& json)
         CString msg = CPacketBuilder::ExtractStringW(jsonA, "message");  // UTF-8 → Unicode
         if (msg.IsEmpty()) msg = _T("서버에서 재학습 요청을 거부했습니다.");
         MessageBox(msg, _T("재학습 실패"), MB_OK | MB_ICONWARNING);
+    }
+}
+
+// ============================================================================
+// OnRetrainUploadAck — 업로드 ACK 수신 (v0.13.0, 프로토콜 159)
+// ============================================================================
+// 각 파일 업로드 결과를 받아 진행률을 갱신하고, 전체 파일이 끝나면 자동으로
+// RETRAIN_REQ(152) 를 송신하여 학습을 트리거.
+void CPageModel::OnRetrainUploadAck(const std::string& json)
+{
+    CStringA jsonA(json.c_str());
+    bool success  = CPacketBuilder::ExtractBool(jsonA, "success");
+    CString msg   = CPacketBuilder::ExtractStringW(jsonA, "message");
+    CString sess  = CPacketBuilder::ExtractStringW(jsonA, "session_id");
+
+    // 세션 불일치 ACK 는 무시 (다른 요청에 대한 응답)
+    if (sess != m_sessionId) return;
+
+    if (!success) {
+        // 한 파일이라도 실패하면 경고만 남기고 계속 진행 (운영자 판단)
+        TRACE(_T("[PageModel] 업로드 실패: %s\n"), (LPCTSTR)msg);
+    }
+    m_uploadedCount++;
+
+    // UI 진행률: 업로드 구간은 0~50% 로 표시 (이후 학습 50~100%)
+    int pct = m_uploadTotal > 0
+              ? (m_uploadedCount * 50 / m_uploadTotal)
+              : 0;
+    m_progress.SetPos(pct);
+    CWnd* w = GetDlgItem(IDC_STATIC_TRAIN_STATUS);
+    if (w) {
+        CString label;
+        label.Format(_T("이미지 업로드 중... (%d/%d) session=%s"),
+                     m_uploadedCount, m_uploadTotal, (LPCTSTR)m_sessionId);
+        w->SetWindowText(label);
+    }
+
+    // 모든 파일 업로드 완료 → RETRAIN_REQ(152) 송신 (session_id 포함)
+    if (m_uploadedCount >= m_uploadTotal) {
+        if (m_net && m_net->IsConnected()) {
+            CString req = CPacketBuilder::BuildRetrainReq(
+                m_currentStation, m_currentModelType, m_currentProduct,
+                m_uploadTotal, m_sessionId);
+            m_net->SendJson(req);
+            TRACE(_T("[PageModel] 업로드 완료 → RETRAIN_REQ 송신 session=%s\n"),
+                  (LPCTSTR)m_sessionId);
+
+            w = GetDlgItem(IDC_STATIC_TRAIN_STATUS);
+            if (w) w->SetWindowText(_T("업로드 완료 — 서버 학습 시작 대기 중..."));
+        }
     }
 }
 

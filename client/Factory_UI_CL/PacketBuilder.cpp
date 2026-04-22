@@ -536,14 +536,17 @@ CString CPacketBuilder::BuildModelListReq()
 }
 
 // BuildRetrainReq: 재학습 요청 JSON (프로토콜 152)
+// v0.13.0: sessionId 가 비어있지 않으면 JSON 에 포함 (업로드 세션 → data_path 트리거)
 CString CPacketBuilder::BuildRetrainReq(
     int stationId, const CString& modelType,
-    const CString& productName, int imageCount)
+    const CString& productName, int imageCount,
+    const CString& sessionId)
 {
     CStringA ts = GetTimestamp();
     CStringA reqId = GenerateRequestId();
     CStringA typeA(modelType);
     CStringA prodA(productName);
+    CStringA sessA(sessionId);
 
     CStringA json;
     json.Format(
@@ -555,6 +558,7 @@ CString CPacketBuilder::BuildRetrainReq(
         "\"model_type\":\"%s\","          // "PatchCore" 또는 "YOLO11"
         "\"product_name\":\"%s\","        // 제품명
         "\"image_count\":%d,"             // 업로드된 이미지 수
+        "\"session_id\":\"%s\","          // v0.13.0: 업로드 세션 (빈 문자열=기본 데이터)
         "\"timestamp\":\"%s\""
         "}",
         factory_client::RETRAIN_REQ,
@@ -564,9 +568,97 @@ CString CPacketBuilder::BuildRetrainReq(
         (LPCSTR)typeA,
         (LPCSTR)prodA,
         imageCount,
+        (LPCSTR)sessA,
         (LPCSTR)ts);
 
     return CString(json);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// BuildRetrainUploadFrame (v0.13.0)
+//   RETRAIN_UPLOAD(158) 한 프레임 전체 (헤더 + JSON + 파일 바이너리) 조립.
+//   BuildPacket 은 JSON 만 감싸주므로 여기서는 JSON 을 직접 조립하고
+//   [4B BE length][JSON][binary] 를 하나의 vector<char> 로 반환.
+// ──────────────────────────────────────────────────────────────────────────
+std::vector<char> CPacketBuilder::BuildRetrainUploadFrame(
+    const CString& sessionId,
+    int stationId,
+    const CString& modelType,
+    const CString& filename,
+    int fileIndex,
+    int totalFiles,
+    const std::vector<char>& fileBytes)
+{
+    CStringA ts = GetTimestamp();
+    CStringA reqId = GenerateRequestId();
+    CStringA sessA(sessionId);
+    CStringA typeA(modelType);
+    CStringA nameA(filename);
+
+    CStringA jsonA;
+    jsonA.Format(
+        "{"
+        "\"protocol_no\":%d,"
+        "\"protocol_version\":\"%s\","
+        "\"request_id\":\"%s\","
+        "\"session_id\":\"%s\","
+        "\"station_id\":%d,"
+        "\"model_type\":\"%s\","
+        "\"filename\":\"%s\","
+        "\"file_index\":%d,"
+        "\"total_files\":%d,"
+        "\"image_size\":%d,"
+        "\"timestamp\":\"%s\""
+        "}",
+        factory_client::RETRAIN_UPLOAD,
+        factory_client::PROTOCOL_VERSION,
+        (LPCSTR)reqId,
+        (LPCSTR)sessA,
+        stationId,
+        (LPCSTR)typeA,
+        (LPCSTR)nameA,
+        fileIndex,
+        totalFiles,
+        (int)fileBytes.size(),
+        (LPCSTR)ts);
+
+    // JSON 바이트 수
+    const int jsonLen = jsonA.GetLength();
+
+    // [4B BE length][JSON][binary] 조립
+    std::vector<char> frame;
+    frame.reserve(4 + jsonLen + fileBytes.size());
+
+    // 4B big-endian length
+    frame.push_back(static_cast<char>((jsonLen >> 24) & 0xFF));
+    frame.push_back(static_cast<char>((jsonLen >> 16) & 0xFF));
+    frame.push_back(static_cast<char>((jsonLen >>  8) & 0xFF));
+    frame.push_back(static_cast<char>( jsonLen        & 0xFF));
+
+    // JSON 본문
+    frame.insert(frame.end(), (LPCSTR)jsonA, (LPCSTR)jsonA + jsonLen);
+
+    // 파일 바이너리
+    if (!fileBytes.empty()) {
+        frame.insert(frame.end(), fileBytes.begin(), fileBytes.end());
+    }
+
+    return frame;
+}
+
+// GenerateSessionId (v0.13.0): "sess-YYYYMMDD-HHMMSS-NNNNN"
+CString CPacketBuilder::GenerateSessionId()
+{
+    SYSTEMTIME st;
+    ::GetLocalTime(&st);
+    CString sid;
+    // 뒤 5자리 랜덤 — 같은 초에 두 번 눌러도 충돌 방지
+    int rnd = (int)(::GetTickCount() & 0xFFFF);
+    sid.Format(_T("sess-%04d%02d%02d-%02d%02d%02d-%05d"),
+               st.wYear, st.wMonth, st.wDay,
+               st.wHour, st.wMinute, st.wSecond,
+               rnd);
+    return sid;
 }
 
 // BuildAck: ACK 응답 JSON 생성

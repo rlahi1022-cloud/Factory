@@ -140,7 +140,8 @@ client/
 | 114 | INSPECT_HISTORY_REQ | station_filter, date_from, date_to, limit, request_id | ✅ 완성 |
 | 130 | STATS_REQ | station_filter, date_from, date_to, request_id | ✅ 완성 |
 | 150 | MODEL_LIST_REQ | request_id, timestamp | ✅ 완성 |
-| 152 | RETRAIN_REQ | station_id, model_type, product_name, image_count, request_id | ✅ 완성 (v0.11.0: Station2 PatchCore 선택 가능) |
+| 152 | RETRAIN_REQ | station_id, model_type, product_name, image_count, session_id, request_id | ✅ 완성 (v0.11.0: Station2 PatchCore, v0.13.0: session_id 추가) |
+| 158 | RETRAIN_UPLOAD | session_id, station_id, model_type, filename, file_index, total_files, image_size + [binary] | ✅ v0.13.0 (파일 업로드) |
 
 ### 서버 → 클라이언트 (응답/push)
 
@@ -156,6 +157,7 @@ client/
 | 151 | MODEL_LIST_RES | OnNetResponse() | ✅ 완성 |
 | 153 | RETRAIN_RES | OnNetResponse() | ✅ 완성 |
 | 154 | RETRAIN_PROGRESS_PUSH | OnNetRetrainProgress() | ✅ 완성 |
+| 159 | RETRAIN_UPLOAD_ACK | OnNetResponse() → CPageModel::OnRetrainUploadAck | ✅ v0.13.0 |
 | 170 | SERVER_HEALTH_PUSH | OnNetHealthPush() | ✅ 완성 |
 
 ## NetworkClient 설계

@@ -51,6 +51,37 @@
 - **Pending ACK 정리**: 연결 끊김 시 `_pending_acks` 전체 `cancel()` (orphan Future 방지)
 - **`send_with_ack` finally 보장**: 모든 코드 경로에서 `_pending_acks.pop()` 실행
 
+## 학습 데이터 업로드 (v0.13.0)
+
+클라이언트에서 "폴더 선택 → 재학습 실행" 하면 이미지가 실제로 학습서버까지 전달되어
+학습에 사용된다. 경로는 `./data/station{N}/uploads/{session_id}/` 아래.
+
+흐름:
+```
+MFC 클라 ─(RETRAIN_UPLOAD 158, 파일1장)→ 메인서버
+메인     ─(TRAIN_DATA_UPLOAD 1108)    → 학습서버
+학습     ─(TRAIN_DATA_UPLOAD_ACK 1109)→ 메인 → 클라(159)
+...반복...
+클라     ─(RETRAIN_REQ 152, session_id 동봉)→ 메인
+메인     ─(TRAIN_START_REQ 1100, data_path=uploads/{session_id})→ 학습
+학습     — data_path 가 있으면 기본 폴더 대신 이 경로로 학습 실행
+```
+
+`TrainingMain._handle_train_data_upload()` 가 디스크 저장 담당.
+path traversal 방어(basename 화), 50MB 상한, session_id 유효성 검사 포함.
+
+## ACK 타임아웃 (v0.12.0)
+
+`Common/TcpClient.py` 상수:
+- `ACK_TIMEOUT_SEC = 3.0` — NG 패킷 ACK 대기 시간
+- `MAX_SEND_ATTEMPTS = 3` — 실패 시 최대 재전송 횟수
+
+**변경 내역**:
+- v0.11.x: 1.0초 (MainServer 가 이미지 저장 + DB INSERT 를 동기 처리해서
+  정상 부하에서도 자주 타임아웃 발생)
+- v0.12.0: 3.0초 (MainServer 가 validate 후 즉시 ACK 를 발행하므로 실측 수 ms
+  내에 도착. 3초는 네트워크 지연/GC 대비 여유값)
+
 ## inspection_id 발급 규칙
 
 `stationN-YYYYMMDDHHMMSSmmm-seq` 형식으로 추론서버에서 발급.

@@ -42,10 +42,48 @@
 | 131 | STATS_RES | 운용 → MFC | ✅ 완성 |
 | 150 | MODEL_LIST_REQ | MFC → 운용 | ✅ 완성 (DB 조회) |
 | 151 | MODEL_LIST_RES | 운용 → MFC | ✅ 완성 |
-| 152 | RETRAIN_REQ | MFC → 운용 | ✅ 완성 (학습서버 TCP 중계) |
+| 152 | RETRAIN_REQ | MFC → 운용 | ✅ 완성 (v0.13.0: session_id 필드 추가) |
 | 153 | RETRAIN_RES | 운용 → MFC | ✅ 완성 |
 | 154 | RETRAIN_PROGRESS_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
+| 158 | RETRAIN_UPLOAD | MFC → 운용 | ✅ v0.13.0 (JSON+binary) |
+| 159 | RETRAIN_UPLOAD_ACK | 운용 → MFC | ✅ v0.13.0 (업로드 진행률) |
 | 170 | SERVER_HEALTH_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
+
+#### RETRAIN_UPLOAD (158) / RETRAIN_UPLOAD_ACK (159) — v0.13.0
+
+클라이언트 "폴더 선택" 후 "재학습 실행" 시, 파일 1장마다 이 프로토콜로 바이너리를 메인에 올리고,
+메인은 다시 학습서버(1108) 로 중계. 모든 ACK 수신 후 RETRAIN_REQ(152) + session_id 로 학습 트리거.
+
+**RETRAIN_UPLOAD(158) 본문**:
+```json
+{
+  "protocol_no": 158,
+  "request_id": "req-00000123",
+  "session_id": "sess-20260422-143057-08712",
+  "station_id": 2,
+  "model_type": "PatchCore",
+  "filename": "sample_042.jpg",
+  "file_index": 41,
+  "total_files": 100,
+  "image_size": 123456,
+  "timestamp": "..."
+}
+[파일 바이너리 123456 바이트]
+```
+
+**RETRAIN_UPLOAD_ACK(159) 본문**:
+```json
+{
+  "protocol_no": 159,
+  "request_id": "same",
+  "session_id": "same",
+  "file_index": 41,
+  "success": true,
+  "saved_path": "./data/station2/uploads/sess-.../sample_042.jpg",
+  "message": "",
+  "timestamp": "..."
+}
+```
 
 ### 내부 채널 (운용 ↔ 추론) — 1000~1099, 완성
 
@@ -71,6 +109,8 @@
 | 1105 | TRAIN_COMPLETE_ACK | 운용 → 학습 | ✅ 메인서버 완성 |
 | 1106 | TRAIN_FAIL | 학습 → 운용 | ✅ 양쪽 완성 (Router + GuiNotifier 푸시) |
 | 1107 | TRAIN_FAIL_ACK | 운용 → 학습 | ✅ 메인서버 완성 |
+| 1108 | TRAIN_DATA_UPLOAD | 운용 → 학습 | ✅ v0.13.0 (JSON+binary, 학습 데이터 중계) |
+| 1109 | TRAIN_DATA_UPLOAD_ACK | 학습 → 운용 | ✅ v0.13.0 |
 
 ### 헬스체크 — 1200~
 
@@ -101,10 +141,17 @@ HealthChecker 는 `target.name == server_type` 으로 매칭한다.
 
 ### 일반 메시지 (AI ↔ MainServer)
 - **ACK 필수 메시지**: STATION1/2_NG, TRAIN_COMPLETE/FAIL, INSPECT_NG_PUSH, MODEL_DEPLOY_NOTIFY
-- **타임아웃**: 1초
+- **타임아웃**: 3초 (v0.12.0 기준. 기존 1초 → 비동기 분리 후 여유값 3초)
 - **최대 재전송**: 3회
 - **NACK 수신 시**: 재전송하지 않고 drop + 에러 로그
-- **메인서버 동작**: NG 패킷 수신 → DB INSERT 성공 시 같은 connection으로 ACK 회신, 실패 시 NACK
+- **메인서버 동작 (v0.12.0 비동기 분리)**:
+  NG 패킷 수신 → `validate_only` (~1ms) → **즉시 ACK 회신** →
+  `INSPECTION_VALIDATED` 이벤트로 백그라운드 워커에 위임 →
+  워커가 이미지 3장 저장 + DB INSERT + GUI 푸시 수행.
+  검증 실패 시 NACK(error_message 포함).
+- **Sliced failure 주의**: ACK 가 이미 송신된 뒤 백그라운드 persist 가 실패하면
+  AI 서버는 성공으로 간주 → 재전송 없음. 서버 로그에 `[SLICED-FAILURE]` ERROR
+  로 기록되며 운영자 확인 필요.
 
 ### MODEL_RELOAD_CMD (1010) — 지수 백오프 적용 (v0.8.0)
 

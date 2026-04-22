@@ -60,7 +60,8 @@ GuiRouter::GuiRouter(GuiService& service)
 //   json_request [4바이트 길이 헤더 제거 후] 순수 JSON 본문
 // ---------------------------------------------------------------------------
 void GuiRouter::route(int client_fd, const std::string& remote_addr,
-                      const std::string& json_request) {
+                      const std::string& json_request,
+                      const std::vector<uint8_t>& binary) {
     int protocol_no = extract_int(json_request, "protocol_no");
 
     switch (protocol_no) {
@@ -80,6 +81,9 @@ void GuiRouter::route(int client_fd, const std::string& remote_addr,
             handle_model_list(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::RETRAIN_REQ):
             handle_retrain(client_fd, json_request); break;
+        case static_cast<int>(ProtocolNo::RETRAIN_UPLOAD):
+            // v0.13.0: 학습용 이미지 1장 업로드 (바이너리 동반)
+            handle_retrain_upload(client_fd, json_request, binary); break;
         case static_cast<int>(ProtocolNo::EXT_ACK):
         case static_cast<int>(ProtocolNo::INSPECT_NG_ACK_EXT):
             // 클라이언트 → 서버 ACK (keepalive, NG 수신 확인 등) — 별도 응답 불필요
@@ -407,12 +411,14 @@ void GuiRouter::handle_retrain(int fd, const std::string& json) {
     std::string model_type   = extract_str(json, "model_type");
     std::string product_name = extract_str(json, "product_name");
     int image_count          = extract_int(json, "image_count");
+    std::string session_id   = extract_str(json, "session_id");   // v0.13.0
 
-    log_clt("재학습 요청 수신 | fd=%d station=%d type=%s product=%s 이미지=%d건",
-            fd, station_id, model_type.c_str(), product_name.c_str(), image_count);
+    log_clt("재학습 요청 수신 | fd=%d station=%d type=%s product=%s 이미지=%d건 session=%s",
+            fd, station_id, model_type.c_str(), product_name.c_str(), image_count,
+            session_id.c_str());
 
     auto result = service_.request_retrain(station_id, model_type, product_name,
-                                            image_count, request_id);
+                                            image_count, request_id, session_id);
 
     std::ostringstream os;
     os << "{\"protocol_no\":153"
@@ -420,6 +426,41 @@ void GuiRouter::handle_retrain(int fd, const std::string& json) {
        << ",\"success\":" << (result.success ? "true" : "false")
        << ",\"station_id\":" << station_id
        << ",\"model_type\":\"" << model_type << "\""
+       << ",\"message\":\"" << escape_json(result.message) << "\""
+       << ",\"timestamp\":\"" << get_timestamp() << "\"}";
+
+    send_json(fd, os.str());
+}
+
+// ── RETRAIN_UPLOAD (v0.13.0) ─────────────────────────────────────────
+// 클라가 학습용 이미지 1장을 업로드 → MainServer 로컬 저장 + 학습서버로 중계.
+// GuiService 가 1) 로컬 저장 2) 학습서버 TCP 중계 3) 결과 수집 까지 수행,
+// 여기서는 요청 파싱과 ACK(159) 응답만 담당.
+// ---------------------------------------------------------------------------
+void GuiRouter::handle_retrain_upload(int fd, const std::string& json,
+                                       const std::vector<uint8_t>& binary) {
+    std::string request_id = extract_str(json, "request_id");
+    std::string session_id = extract_str(json, "session_id");
+    int         station_id = extract_int(json, "station_id");
+    std::string model_type = extract_str(json, "model_type");
+    std::string filename   = extract_str(json, "filename");
+    int         file_index = extract_int(json, "file_index");
+    int         total_files= extract_int(json, "total_files");
+
+    log_clt("학습 업로드 | fd=%d session=%s station=%d type=%s [%d/%d] %s (%zu bytes)",
+            fd, session_id.c_str(), station_id, model_type.c_str(),
+            file_index + 1, total_files, filename.c_str(), binary.size());
+
+    auto result = service_.receive_retrain_upload(
+        session_id, station_id, model_type, filename, binary);
+
+    std::ostringstream os;
+    os << "{\"protocol_no\":" << static_cast<int>(ProtocolNo::RETRAIN_UPLOAD_ACK)
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
+       << ",\"session_id\":\"" << escape_json(session_id) << "\""
+       << ",\"file_index\":" << file_index
+       << ",\"success\":" << (result.success ? "true" : "false")
+       << ",\"saved_path\":\"" << escape_json(result.saved_path) << "\""
        << ",\"message\":\"" << escape_json(result.message) << "\""
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 

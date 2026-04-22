@@ -55,6 +55,8 @@ class ProtocolNo(IntEnum):
     RETRAIN_PROGRESS_PUSH  = 154   # 운용 → MFC: 학습 진행 상태 주기 푸시
     MODEL_DEPLOY_NOTIFY    = 156   # 운용 → MFC: 신규 모델 배포 완료 알림
     MODEL_DEPLOY_ACK_EXT   = 157   # MFC → 운용: 배포 알림 수신 확인
+    RETRAIN_UPLOAD         = 158   # v0.13.0: MFC → 운용 학습용 이미지 1장 업로드 (JSON+binary)
+    RETRAIN_UPLOAD_ACK     = 159   # v0.13.0: 운용 → MFC 업로드 결과 ACK
 
     SERVER_HEALTH_PUSH     = 170   # 운용 → MFC: 각 서버 헬스 상태 푸시 (5초 주기)
 
@@ -90,6 +92,8 @@ class ProtocolNo(IntEnum):
     TRAIN_COMPLETE_ACK     = 1105  # 운용 → 학습: 학습 완료 수신 확인
     TRAIN_FAIL             = 1106  # 학습 → 운용: 학습 실패 알림
     TRAIN_FAIL_ACK         = 1107  # 운용 → 학습: 학습 실패 수신 확인
+    TRAIN_DATA_UPLOAD      = 1108  # v0.13.0: 운용 → 학습 학습용 이미지 1장 (JSON+binary)
+    TRAIN_DATA_UPLOAD_ACK  = 1109  # v0.13.0: 학습 → 운용 이미지 저장 결과 ACK
 
     # ===== 내부 1200~1299: 헬스체크 =====
 
