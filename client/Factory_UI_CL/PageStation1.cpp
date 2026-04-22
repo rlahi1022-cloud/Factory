@@ -22,9 +22,7 @@
 
 IMPLEMENT_DYNAMIC(CPageStation1, CDialogEx)
 BEGIN_MESSAGE_MAP(CPageStation1, CDialogEx)
-    ON_BN_CLICKED(IDC_BTN_S1_OK,      OnBtnOK)
-    ON_BN_CLICKED(IDC_BTN_S1_NG,      OnBtnNG)
-    ON_BN_CLICKED(IDC_BTN_S1_ARDUINO, OnBtnArduino)
+    // v0.14.7: Manual OK/NG/Arduino 테스트 버튼 제거 — 리소스에서도 삭제됨.
     ON_BN_CLICKED(IDC_BTN_S1_START,   OnBtnS1Start)   // v0.14.3 1공정 시작
     ON_BN_CLICKED(IDC_BTN_S1_STOP,    OnBtnS1Stop)    // v0.14.3 1공정 중지
 END_MESSAGE_MAP()
@@ -93,18 +91,13 @@ void CPageStation1::Refresh() {
         if ((w = GetDlgItem(IDC_STATIC_S1_LED)))
             w->SetWindowText(_T("⚠ NG 경고 LED 점등!"));
     } else {
+        // v0.14.7: 초기/대기 상태에서 임계값도 0 으로 표시 (하드코딩 0.50 제거).
         if ((w = GetDlgItem(IDC_STATIC_S1_RESULT))) w->SetWindowText(_T("--"));
-        if ((w = GetDlgItem(IDC_STATIC_S1_SCORE)))  w->SetWindowText(_T("임계값: 0.50"));
+        if ((w = GetDlgItem(IDC_STATIC_S1_SCORE)))  w->SetWindowText(_T("이상 점수: 0.00  / 임계값: 0.00"));
         if ((w = GetDlgItem(IDC_STATIC_S1_LED)))    w->SetWindowText(_T("대기중"));
     }
 }
-// v0.14.6: 수동 테스트 버튼(OnBtnOK/NG/Arduino) no-op 처리.
-//   이전엔 클릭 시 가짜 score 를 주입했는데 — 실서버 연동 이후엔 불필요.
-//   리소스에 남아있는 버튼은 클릭해도 아무 동작 안 함. RC 에서 버튼 자체를 지우면
-//   더 깔끔하지만 레이아웃 영향 최소화를 위해 핸들러만 비워둠.
-void CPageStation1::OnBtnOK()      { /* no-op — 실서버 OK 만 반영 */ }
-void CPageStation1::OnBtnNG()      { /* no-op — 실서버 NG 푸시만 반영 */ }
-void CPageStation1::OnBtnArduino() { /* no-op — 실제 아두이노 연동은 서버에서 처리 */ }
+// v0.14.7: Manual OK/NG/Arduino 테스트 버튼 완전 제거 (RC + 핸들러 + 선언).
 
 // SetImages: MainTabDlg::OnNetNgImage 에서 수신한 3장 바이너리를 각 뷰에 주입.
 // 비어있는 벡터는 SetImage 내부에서 "이미지 해제"로 처리되어 플레이스홀더로 복귀.

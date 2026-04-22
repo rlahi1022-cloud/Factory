@@ -149,14 +149,24 @@ void GuiRouter::handle_login(int fd, const std::string& json) {
     //       현재 상태(alive/down)를 HEALTH_PUSH(170)로 즉시 전송한다.
     if (result.success) {
         auto& cfg = Config::instance();
-        auto connections = ConnectionRegistry::instance().get_all_connections();
+        // v0.14.7: 초기 동기화 매칭을 IP prefix → server_type 으로 교체.
+        //   config 에 ip="" (dynamic) 로 설정되어 있으면 prefix ":" 로 어떤 주소도 매칭 안 되어
+        //   모든 LED 가 down 으로 찍혀 있었음. 이제 ConnectionRegistry 가 태깅한 server_type
+        //   (ai_inference_1/2/ai_training) 으로 직접 매칭.
+        auto connections = ConnectionRegistry::instance().get_all_connections_detailed();
 
         for (const auto& target : cfg.get_health_targets()) {
-            // target.ip로 시작하는 연결이 있는지 확인 (HealthChecker와 동일 규칙)
-            std::string ip_prefix = target.ip + ":";
             bool alive = false;
-            for (const auto& [addr, conn_fd] : connections) {
-                if (addr.rfind(ip_prefix, 0) == 0) { alive = true; break; }
+            // 우선 server_type 이 일치하는 연결 탐색
+            for (const auto& [addr, info] : connections) {
+                if (info.server_type == target.name) { alive = true; break; }
+            }
+            // 하위호환: ip 가 설정되어 있으면 prefix 매칭도 병행
+            if (!alive && !target.ip.empty()) {
+                std::string ip_prefix = target.ip + ":";
+                for (const auto& [addr, info] : connections) {
+                    if (addr.rfind(ip_prefix, 0) == 0) { alive = true; break; }
+                }
             }
 
             // HEALTH_PUSH(170) 전송 — 방금 로그인한 이 클라이언트에게만

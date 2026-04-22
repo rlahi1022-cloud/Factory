@@ -44,9 +44,7 @@ protected:
     void Refresh();
     virtual BOOL OnInitDialog() override;
     virtual void DoDataExchange(CDataExchange* pDX) override;
-    afx_msg void OnBtnOK();
-    afx_msg void OnBtnNG();
-    afx_msg void OnBtnArduino();
+    // v0.14.7: Manual OK/NG/Arduino 버튼 제거.
     // v0.14.3: 1공정 검사 시작/중지 (station_filter=1)
     afx_msg void OnBtnS1Start();
     afx_msg void OnBtnS1Stop();

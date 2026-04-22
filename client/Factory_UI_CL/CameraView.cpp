@@ -98,7 +98,9 @@ void CCameraView::OnPaint() {
     ::EnterCriticalSection(&m_cs);
     DrawBg(mem, rc);
     ::LeaveCriticalSection(&m_cs);
-    DrawBadge(mem, rc);
+    // v0.14.7: 하단 NG/OK 큰 배지(빨간/초록 띠) 제거 — 사용자 요청.
+    //   결과는 상단 "Result" 영역 텍스트 + 상단 3뷰에서 충분히 표현됨.
+    // DrawBadge(mem, rc);
     dc.BitBlt(0, 0, rc.Width(), rc.Height(), &mem, 0, 0, SRCCOPY);
     mem.SelectObject(pOld);
 }

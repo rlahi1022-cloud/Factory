@@ -653,9 +653,12 @@ class TrainingServer:
         # YOLO 학습에 필요한 data.yaml 파일의 경로이다.
         data_yaml = str(Path(data_dir) / "data.yaml")
 
-        # data.yaml이 없으면 자동 생성한다.
-        if not Path(data_yaml).exists():
-            data_yaml = create_data_yaml(data_dir, data_yaml)
+        # v0.14.7: 기존 data.yaml 이 있어도 **항상 재생성**.
+        #   이전엔 user/Roboflow 의 data.yaml 을 그대로 썼는데, 상대경로(images/val 등)가
+        #   실제 디스크 레이아웃과 안 맞으면 Ultralytics 가 "images not found" 로 실패.
+        #   create_data_yaml 은 실제 폴더 구조(표준/Roboflow/Flat)를 자동 감지해 올바른
+        #   yaml 을 덮어씀 → 데이터 재배치 없이 그대로 학습 돌아감.
+        data_yaml = create_data_yaml(data_dir, data_yaml)
 
         # YoloTrainer 객체를 생성하고 학습을 실행한다.
         trainer = YoloTrainer(

@@ -218,9 +218,7 @@ BEGIN
     LTEXT    "Backbone:",             IDC_STATIC,         591, 146,  40,  10
     LTEXT    "",                      IDC_STATIC_S1_CFG_BACKBONE,633,146, 154, 10
 
-    PUSHBUTTON "Manual: OK",          IDC_BTN_S1_OK,      583, 180,  66, 14
-    PUSHBUTTON "Manual: NG",          IDC_BTN_S1_NG,      653, 180,  66, 14
-    PUSHBUTTON "Arduino Test",        IDC_BTN_S1_ARDUINO, 723, 180,  66, 14
+    // v0.14.7: Manual OK/NG/Arduino 테스트 버튼 제거 — 실서버 데이터만 사용.
 
     // ── 아두이노 상태바 ───────────────────────────────────────────────────
     GROUPBOX "Arduino - Station1",    IDC_STATIC,           4, 282, 890, 36
