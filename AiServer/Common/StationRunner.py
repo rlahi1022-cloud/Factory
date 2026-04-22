@@ -983,56 +983,33 @@ class StationRunner:
     #   grab_producer 루프가 _pause_event.wait() 에서 블록됨.
     # -----------------------------------------------------------------------
     def _handle_inference_control(self, cmd_dict: dict) -> bool:
-        """검사 pause/resume (v0.14.7 개선).
+        """검사 pause/resume (v0.14.7 re-simplified).
 
-        중요 순서:
-          resume: ① _pause_event.set() 을 **먼저** 호출 → grab_producer 가 wait() 에서
-                     즉시 깨어나 다음 iteration 에 진입. ② 그 다음 camera.start_grabbing().
-                     만약 start_grabbing 이 예외/지연되더라도 이벤트는 이미 set 돼있어
-                     grab_producer 가 "재개" 상태로 돌아감. camera.grab() 이 None 을
-                     반환하면 다음 주기에 재시도(동일 사이클 반복 로직).
-          pause:  ① _pause_event.clear() 먼저(루프가 더이상 새 grab 시도 못하도록).
-                     ② 그 다음 camera.stop_grabbing() (버퍼 방출).
+        정책 변경:
+          기존엔 pause 시 camera.stop_grabbing(), resume 시 camera.start_grabbing()
+          으로 실제 카메라 HW 를 정지/재개했다. 하지만 Basler Pylon 의 Stop/Start
+          사이클을 짧게 반복하면 드라이버 내부 상태가 꼬여서 **두 번째 이후 Start 에서
+          프레임이 안 나오는 현상** 이 발생 → "첫번째는 되는데 두번누르면 안됨".
 
-          전부 try/except 로 감싸 카메라 오류가 이벤트 제어를 막지 않도록 보호.
+        개선:
+          pause/resume 은 **asyncio.Event 토글로만** 제어하고, 카메라는 계속 grab
+          상태를 유지한다. Pylon 의 GrabStrategy_LatestImageOnly 는 버퍼에 "최신 1프레임"
+          만 남기므로 pause 동안 stale 프레임이 누적되지 않음. resume 순간의 "최신 1장"
+          을 먼저 1번 retrieve 한 뒤 이후부터 정상 실시간 grab.
+
+          grab_producer 가 pause_event.wait() 에서 블록되는 동안 Pylon 내부는 계속
+          프레임을 찍지만 우리가 RetrieveResult 를 호출 안 하므로 CPU/메모리 부담 없음.
+          전력 소모는 약간 있지만 (always-on grab), 안정성이 훨씬 중요.
         """
         action = str(cmd_dict.get("action", "")).lower()
         logger.info("INFERENCE_CONTROL 수신: action=%s", action)
         if action == "pause":
-            self._pause_event.clear()   # grab_producer 가 다음 주기에 wait 진입
-            try:
-                if self._camera is not None and self._camera.is_open:
-                    self._camera.stop_grabbing()
-            except Exception as exc:
-                logger.error("pause 중 stop_grabbing 예외(무시): %s", exc)
-            logger.info("INFERENCE_CONTROL: pause 적용 (루프 블록 + 카메라 grab 정지)")
+            self._pause_event.clear()
+            logger.info("INFERENCE_CONTROL: pause 적용 (grab 루프만 블록, 카메라 HW 는 유지)")
             return True
         elif action == "resume":
-            # ① 이벤트 먼저 set — grab_producer 가 wait 에서 즉시 깨어남
             self._pause_event.set()
-            # ② 카메라 재시작 — start_grabbing 실패하면 close → open 으로 완전 재초기화 폴백
-            try:
-                if self._camera is not None:
-                    if not self._camera.is_open:
-                        logger.warning("resume: 카메라 open 상태 아님 — open 재시도")
-                        self._camera.open()
-                    else:
-                        ok = self._camera.start_grabbing()
-                        logger.info("start_grabbing 결과: %s", ok)
-                        if not ok:
-                            # Pylon 상태 꼬임 가능성 → 완전 재초기화
-                            logger.warning("start_grabbing 실패 — close/open 완전 재초기화 시도")
-                            try:
-                                self._camera.close()
-                            except Exception as exc_cl:
-                                logger.warning("재초기화용 close 예외(무시): %s", exc_cl)
-                            if self._camera.open():
-                                logger.info("카메라 완전 재초기화 성공")
-                            else:
-                                logger.error("카메라 완전 재초기화 실패 — placeholder 모드로 진행")
-            except Exception as exc:
-                logger.error("resume 중 카메라 복구 예외(무시, 이벤트는 set 됨): %s", exc)
-            logger.info("INFERENCE_CONTROL: resume 적용 (이벤트 set + 카메라 재개/재초기화)")
+            logger.info("INFERENCE_CONTROL: resume 적용 (grab 루프 재개)")
             return False
         else:
             logger.warning("INFERENCE_CONTROL: unknown action=%s", action)

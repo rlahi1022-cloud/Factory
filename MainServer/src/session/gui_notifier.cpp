@@ -172,10 +172,9 @@ void GuiNotifier::on_server_status(const std::any& payload, bool is_down) {
        << "}";
 
     SessionManager::instance().broadcast(os.str());
-    if (is_down)
-        log_push("서버 장애 감지 | %s", ev.server_name.c_str());
-    else
-        log_push("서버 복구 감지 | %s", ev.server_name.c_str());
+    // v0.14.7: 매 tick 브로드캐스트로 바뀐 뒤 로그 노이즈 급증 방지 — TRACE 수준으로만 출력.
+    //   최초/상태전환은 이미 HealthChecker 가 log_main 으로 찍음.
+    // log_push 대신 log_push_debug (있으면) 또는 생략.
 }
 
 // 양품/불량 집계 카운트 갱신 푸시 (protocol 112)

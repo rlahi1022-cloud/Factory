@@ -178,6 +178,10 @@ void GuiRouter::handle_login(int fd, const std::string& json) {
                << ",\"status\":\""      << (alive ? "recovered" : "down") << "\""
                << "}";
             send_json(fd, hp.str());
+            // v0.14.7: 진단용 — 각 target 의 초기 동기화 결과를 명확히 로그로 남김.
+            //   학습서버 LED 가 회색 유지되는 문제 추적용.
+            log_clt("초기 HEALTH_PUSH 송신 | target=%s status=%s (fd=%d)",
+                    target.name.c_str(), (alive ? "recovered" : "down"), fd);
         }
         log_clt("초기 서버 상태 동기화 완료 | fd=%d", fd);
     }
