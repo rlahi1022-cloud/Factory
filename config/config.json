@@ -55,7 +55,10 @@
       "sender_workers": 1,
       "camera_enabled": true,
       "camera_serial": "",
-      "camera_fps": 2.0
+      "camera_fps": 2.0,
+      "_comment_arduino": "arduino_port: Windows=\"COM3\" / Linux=\"/dev/ttyUSB0\" / null=미사용",
+      "arduino_port": "COM3",
+      "arduino_baud": 9600
     },
     "station2": {
       "model_path": "./models/station2_yolo.pt",
@@ -70,7 +73,10 @@
       "sender_workers": 1,
       "camera_enabled": true,
       "camera_serial": "",
-      "camera_fps": 2.0
+      "camera_fps": 2.0,
+      "_comment_arduino": "arduino_port: 미사용이면 null. Station2 가 Station1 과 동일 Arduino 공유 시 같은 포트 지정.",
+      "arduino_port": null,
+      "arduino_baud": 9600
     }
   },
 

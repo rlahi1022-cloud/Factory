@@ -131,4 +131,13 @@ class StationConfig:
             camera_serial=ConfigLoader.get(f"{prefix}.camera_serial", ""),
             camera_enabled=ConfigLoader.get_bool(f"{prefix}.camera_enabled", True),
             camera_fps=ConfigLoader.get_float(f"{prefix}.camera_fps", 2.0),
+
+            # Arduino 시리얼 통신 설정 (v0.14.8: config.json 에서 로드 누락되던 버그 수정)
+            # NG 판정 시 REJECT/ALERT 명령을 시리얼로 Arduino 에 전송한다.
+            # arduino_port 값:
+            #   Windows → "COM3", "COM4" 등
+            #   Linux   → "/dev/ttyUSB0", "/dev/ttyACM0" 등
+            #   null/미설정 → Arduino 미사용 (no-op, 예외 없음)
+            arduino_port=ConfigLoader.get(f"{prefix}.arduino_port", None),
+            arduino_baud=ConfigLoader.get_int(f"{prefix}.arduino_baud", 9600),
         )
