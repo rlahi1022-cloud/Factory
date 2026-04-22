@@ -67,6 +67,8 @@ enum class ProtocolNo : int {
     MODEL_DEPLOY_ACK_EXT   = 157,
     RETRAIN_UPLOAD         = 158,   // v0.13.0: 클라→메인 학습용 이미지 1장 업로드 (JSON+binary)
     RETRAIN_UPLOAD_ACK     = 159,   // v0.13.0: 메인→클라 업로드 결과 ACK
+    INSPECT_CONTROL_REQ    = 160,   // v0.14.0: 클라→메인 검사 일시정지/재개 요청 ("pause"|"resume")
+    INSPECT_CONTROL_RES    = 161,   // v0.14.0: 메인→클라 결과 ACK
     SERVER_HEALTH_PUSH     = 170,
     EXT_ACK                = 190,
     EXT_NACK               = 191,
@@ -82,6 +84,8 @@ enum class ProtocolNo : int {
 
     MODEL_RELOAD_CMD       = 1010,
     MODEL_RELOAD_RES       = 1011,
+    INFERENCE_CONTROL_CMD  = 1020,  // v0.14.0: 운용 → 추론 검사 일시정지/재개 명령
+    INFERENCE_CONTROL_RES  = 1021,  // v0.14.0: 추론 → 운용 상태 ACK
 
     // 학습서버 채널 1100~1199 — 번호만 예약
     TRAIN_START_REQ        = 1100,

@@ -84,6 +84,9 @@ void GuiRouter::route(int client_fd, const std::string& remote_addr,
         case static_cast<int>(ProtocolNo::RETRAIN_UPLOAD):
             // v0.13.0: 학습용 이미지 1장 업로드 (바이너리 동반)
             handle_retrain_upload(client_fd, json_request, binary); break;
+        case static_cast<int>(ProtocolNo::INSPECT_CONTROL_REQ):
+            // v0.14.0: 검사 pause/resume 요청 → 추론서버에 중계
+            handle_inspect_control(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::EXT_ACK):
         case static_cast<int>(ProtocolNo::INSPECT_NG_ACK_EXT):
             // 클라이언트 → 서버 ACK (keepalive, NG 수신 확인 등) — 별도 응답 불필요
@@ -461,6 +464,31 @@ void GuiRouter::handle_retrain_upload(int fd, const std::string& json,
        << ",\"file_index\":" << file_index
        << ",\"success\":" << (result.success ? "true" : "false")
        << ",\"saved_path\":\"" << escape_json(result.saved_path) << "\""
+       << ",\"message\":\"" << escape_json(result.message) << "\""
+       << ",\"timestamp\":\"" << get_timestamp() << "\"}";
+
+    send_json(fd, os.str());
+}
+
+// ── INSPECT_CONTROL (v0.14.0) ────────────────────────────────────────
+// 클라 메뉴 [검사 시작/중지] → 모든(또는 지정) 추론서버에 pause/resume 중계.
+// ---------------------------------------------------------------------------
+void GuiRouter::handle_inspect_control(int fd, const std::string& json) {
+    std::string request_id     = extract_str(json, "request_id");
+    int         station_filter = extract_int(json, "station_filter");
+    std::string action         = extract_str(json, "action");
+
+    log_clt("검사 제어 요청 | fd=%d station=%d action=%s",
+            fd, station_filter, action.c_str());
+
+    auto result = service_.inspect_control(station_filter, action, request_id);
+
+    std::ostringstream os;
+    os << "{\"protocol_no\":" << static_cast<int>(ProtocolNo::INSPECT_CONTROL_RES)
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
+       << ",\"action\":\"" << escape_json(action) << "\""
+       << ",\"success\":" << (result.success ? "true" : "false")
+       << ",\"applied_count\":" << result.applied_count
        << ",\"message\":\"" << escape_json(result.message) << "\""
        << ",\"timestamp\":\"" << get_timestamp() << "\"}";
 

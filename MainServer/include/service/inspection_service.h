@@ -71,10 +71,12 @@ private:
     bool validate(InspectionEvent& ev, std::string& out_error);
 
     /// 이미지 저장 공통 헬퍼 — 임의의 바이너리를 지정 확장자로 저장한다.
+    ///   inspection_id: 검사 유일 ID (파일명에 포함해 병렬 저장 경합 원천 차단).
     ///   suffix: "original", "heatmap", "mask" 등 파일명 구분자
     ///   ext:    ".jpg", ".png" 등 확장자
     std::string save_blob(int station_id,
                           const std::string& timestamp,
+                          const std::string& inspection_id,
                           const std::vector<uint8_t>& bytes,
                           const std::string& suffix,
                           const std::string& ext);

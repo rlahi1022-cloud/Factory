@@ -47,6 +47,8 @@
 | 154 | RETRAIN_PROGRESS_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
 | 158 | RETRAIN_UPLOAD | MFC → 운용 | ✅ v0.13.0 (JSON+binary) |
 | 159 | RETRAIN_UPLOAD_ACK | 운용 → MFC | ✅ v0.13.0 (업로드 진행률) |
+| 160 | INSPECT_CONTROL_REQ | MFC → 운용 | ✅ v0.14.0 (pause/resume 요청) |
+| 161 | INSPECT_CONTROL_RES | 운용 → MFC | ✅ v0.14.0 (pause/resume 결과) |
 | 170 | SERVER_HEALTH_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
 
 #### RETRAIN_UPLOAD (158) / RETRAIN_UPLOAD_ACK (159) — v0.13.0
@@ -111,6 +113,8 @@
 | 1107 | TRAIN_FAIL_ACK | 운용 → 학습 | ✅ 메인서버 완성 |
 | 1108 | TRAIN_DATA_UPLOAD | 운용 → 학습 | ✅ v0.13.0 (JSON+binary, 학습 데이터 중계) |
 | 1109 | TRAIN_DATA_UPLOAD_ACK | 학습 → 운용 | ✅ v0.13.0 |
+| 1020 | INFERENCE_CONTROL_CMD | 운용 → 추론 | ✅ v0.14.0 (pause/resume) |
+| 1021 | INFERENCE_CONTROL_RES | 추론 → 운용 | ✅ v0.14.0 |
 
 ### 헬스체크 — 1200~
 

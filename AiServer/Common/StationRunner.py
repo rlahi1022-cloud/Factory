@@ -229,6 +229,10 @@ class StationRunner:
         # 콜백(callback): 어떤 이벤트가 발생했을 때 자동으로 호출되는 함수를 말합니다.
         self._tcp_client.set_on_model_reload(self._handle_model_reload)
 
+        # v0.14.0: 검사 pause/resume 명령(INFERENCE_CONTROL_CMD 1020) 콜백 등록.
+        # 메인서버가 클라이언트 요청을 중계해 오면 grab 이벤트를 on/off 한다.
+        self._tcp_client.set_on_inference_control(self._handle_inference_control)
+
         # 아두이노와 시리얼 통신할 컨트롤러를 생성합니다.
         # NG 판정 시 아두이노에 명령을 보내 물리적 동작(서보모터 리젝트, LED, 부저)을 수행합니다.
         self._serial_ctrl = SerialCtrl(config.arduino_port, config.arduino_baud)
@@ -256,6 +260,13 @@ class StationRunner:
         # 파이프라인이 현재 실행 중인지를 나타내는 플래그입니다.
         # False로 바뀌면 각 코루틴의 while 루프가 종료됩니다.
         self._is_running = False
+
+        # v0.14.0: 검사 일시정지 플래그. INFERENCE_CONTROL_CMD(1020) 수신 시 토글됨.
+        #   True: grab_producer 가 grab 을 건너뛰고 대기 → 추론/송신 자연스럽게 중단
+        #   False (기본): 정상 grab
+        # 이벤트 기반으로 즉시 반응 (pause 중 sleep → resume 시 즉시 깨어남).
+        self._pause_event: asyncio.Event = asyncio.Event()
+        self._pause_event.set()   # 시작 상태 = 실행 (set=진행, clear=일시정지)
 
         # 프레임 일련번호 카운터입니다. 카메라에서 프레임을 촬영할 때마다 1씩 증가합니다.
         self._frame_seq = 0
@@ -409,6 +420,13 @@ class StationRunner:
 
         try:
             while self._is_running:
+                # v0.14.0: pause 상태면 wait — resume 시 즉시 깨어남.
+                # _pause_event.is_set() == True 일 때만 진행.
+                if not self._pause_event.is_set():
+                    logger.info("검사 일시정지 상태 — grab 대기")
+                    await self._pause_event.wait()
+                    logger.info("검사 재개 — grab 루프 복귀")
+
                 frame: Optional[_np.ndarray] = None
 
                 if self._camera.is_open:
@@ -879,6 +897,32 @@ class StationRunner:
         # 4) 추론기가 양쪽 슬롯(model_path + patchcore_model_path)을 모두 재로드한다.
         #    반대쪽 슬롯은 config 값이 그대로라 동일 파일이 다시 로드될 뿐 영향 없음.
         self._inferencer.load_model()
+
+    # -----------------------------------------------------------------------
+    # _handle_inference_control() 메서드 (v0.14.0)
+    # -----------------------------------------------------------------------
+    # 목적: 메인서버로부터 INFERENCE_CONTROL_CMD(1020) 를 받아 검사 pause/resume.
+    # 매개변수:
+    #   cmd_dict (dict): {"action": "pause"|"resume", "request_id": ...}
+    # 반환값 (bool): 현재 paused 상태 (True=일시정지, False=실행)
+    #
+    # 동작:
+    #   asyncio.Event 기반 — set() 이면 실행, clear() 면 일시정지.
+    #   grab_producer 루프가 _pause_event.wait() 에서 블록됨.
+    # -----------------------------------------------------------------------
+    def _handle_inference_control(self, cmd_dict: dict) -> bool:
+        action = str(cmd_dict.get("action", "")).lower()
+        if action == "pause":
+            self._pause_event.clear()   # wait() 가 블록되어 grab 루프 정지
+            logger.info("INFERENCE_CONTROL: pause (grab 루프 정지)")
+            return True
+        elif action == "resume":
+            self._pause_event.set()     # wait() 풀림 → grab 재개
+            logger.info("INFERENCE_CONTROL: resume (grab 루프 재개)")
+            return False
+        else:
+            logger.warning("INFERENCE_CONTROL: unknown action=%s", action)
+            return not self._pause_event.is_set()
 
     # -----------------------------------------------------------------------
     # _handle_arduino_action() 메서드

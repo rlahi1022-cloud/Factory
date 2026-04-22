@@ -41,6 +41,13 @@ struct RetrainUploadResult {
     std::string message;
 };
 
+// v0.14.0: 검사 pause/resume 중계 결과
+struct InspectControlResult {
+    bool        success = false;    // 모든 대상 추론서버에 성공적으로 중계됨
+    int         applied_count = 0;  // 실제 명령이 전달된 연결 수
+    std::string message;            // 오류 시 메시지
+};
+
 class GuiService {
 public:
     /// @param pool        DB 커넥션 풀
@@ -79,6 +86,15 @@ public:
                                    const std::string& product_name, int image_count,
                                    const std::string& request_id,
                                    const std::string& session_id = "");
+
+    /// v0.14.0: 검사 pause/resume 명령을 추론서버 연결들에 브로드캐스트.
+    ///   station_filter: 0 = 모든 추론서버, 1 = Station1 만, 2 = Station2 만
+    ///   action: "pause" | "resume"
+    ///   ConnectionRegistry 에 등록된 ai_inference_* 연결의 fd 로 직접 송신
+    ///   (request_retrain 처럼 별도 TCP 연결을 맺지 않음 — 이미 연결되어 있음).
+    InspectControlResult inspect_control(int station_filter,
+                                          const std::string& action,
+                                          const std::string& request_id);
 
     /// v0.13.0: 클라가 올린 학습용 이미지 1장을 로컬에 저장 + 학습서버로 중계.
     /// 저장 경로: ./storage/training_upload/{session_id}/{filename}

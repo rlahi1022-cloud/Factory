@@ -523,8 +523,32 @@ void CMainTabDlg::OnCancel()
 
 void CMainTabDlg::OnFileExit()     { OnCancel(); }
 void CMainTabDlg::OnViewRefresh()  { PushUpdate(); }
-void CMainTabDlg::OnInspectStart() { SetTimer(IDT_LIVE_UPDATE, 3000, nullptr); }
-void CMainTabDlg::OnInspectStop()  { KillTimer(IDT_LIVE_UPDATE); }
+
+// v0.14.0: 검사 시작/중지 — 실제 AI 추론서버에 pause/resume 명령 전송.
+// station_filter=0 (전체) 로 모든 추론서버에 적용. 응답(161)은 OnNetResponse 에서 처리.
+// 로컬 시뮬레이션 타이머(IDT_LIVE_UPDATE)는 서버 미연결 시 보조용으로 유지.
+void CMainTabDlg::OnInspectStart()
+{
+    if (m_net.IsConnected()) {
+        CString req = CPacketBuilder::BuildInspectControlReq(0, _T("resume"));
+        m_net.SendJson(req);
+        TRACE(_T("[MainTabDlg] 검사 재개 요청 송신 (action=resume)\n"));
+    } else {
+        // 서버 미연결 → 시뮬레이션 모드 타이머만 재가동
+        SetTimer(IDT_LIVE_UPDATE, 3000, nullptr);
+    }
+}
+
+void CMainTabDlg::OnInspectStop()
+{
+    if (m_net.IsConnected()) {
+        CString req = CPacketBuilder::BuildInspectControlReq(0, _T("pause"));
+        m_net.SendJson(req);
+        TRACE(_T("[MainTabDlg] 검사 일시정지 요청 송신 (action=pause)\n"));
+    } else {
+        KillTimer(IDT_LIVE_UPDATE);
+    }
+}
 
 void CMainTabDlg::OnHelpAbout()
 {
@@ -857,6 +881,26 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
         // v0.13.0: 학습 이미지 업로드 개별 ACK — 진행률 업데이트 + 전부 끝나면 RETRAIN_REQ 발행
         if (m_model) m_model->OnRetrainUploadAck(*pJson);
         break;
+
+    case factory_client::INSPECT_CONTROL_RES: {
+        // v0.14.0: 검사 pause/resume 결과 — 상태바에 간단히 표시
+        CStringA jsonA(pJson->c_str());
+        bool ok = CPacketBuilder::ExtractBool(jsonA, "success");
+        CString action = CPacketBuilder::ExtractStringW(jsonA, "action");
+        int applied = CPacketBuilder::ExtractInt(jsonA, "applied_count");
+        CString msg;
+        if (ok) {
+            msg.Format(_T("검사 %s 명령 적용됨 (%d대 추론서버)"),
+                       (LPCTSTR)action, applied);
+        } else {
+            CString err = CPacketBuilder::ExtractStringW(jsonA, "message");
+            msg.Format(_T("검사 %s 실패: %s"), (LPCTSTR)action, (LPCTSTR)err);
+        }
+        TRACE(_T("[MainTabDlg] %s\n"), (LPCTSTR)msg);
+        // 사용자에게 팝업으로도 간단히 알림 (선택적으로 상태바만 해도 됨)
+        MessageBox(msg, _T("검사 제어"), MB_OK | MB_ICONINFORMATION);
+        break;
+    }
 
     default:
         TRACE(_T("[MainTabDlg] 미처리 응답: %d\n"), protocolNo);

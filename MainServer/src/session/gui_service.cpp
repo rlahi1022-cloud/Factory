@@ -17,6 +17,7 @@
 // ============================================================================
 #include "session/gui_service.h"
 #include "session/session_manager.h"
+#include "monitor/connection_registry.h"
 #include "core/logger.h"
 #include "core/tcp_utils.h"
 #include "Protocol.h"
@@ -245,6 +246,72 @@ RetrainResult GuiService::request_retrain(int station_id, const std::string& mod
 
     ::close(train_fd);
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// inspect_control (v0.14.0) — 검사 pause/resume 중계
+//
+// 각 추론서버에 이미 상시 연결된 TCP 소켓을 통해 INFERENCE_CONTROL_CMD(1020) 송신.
+// station_filter:
+//   0 → server_type == "ai_inference_1" 또는 "ai_inference_2" 모두
+//   1 → "ai_inference_1" 만
+//   2 → "ai_inference_2" 만
+//
+// 응답(1021) 은 ConnectionRegistry 의 수신 경로로 돌아와 Router::handle
+// 가 로그로만 처리 (클라이언트에는 중계 성공 여부만 INSPECT_CONTROL_RES 로 전달).
+// ---------------------------------------------------------------------------
+InspectControlResult GuiService::inspect_control(int station_filter,
+                                                  const std::string& action,
+                                                  const std::string& request_id)
+{
+    InspectControlResult out;
+
+    // 액션 유효성
+    if (action != "pause" && action != "resume") {
+        out.message = "invalid_action";
+        return out;
+    }
+
+    // JSON 조립 — 동일 JSON 을 대상 station 들에 반복 송신
+    std::ostringstream os;
+    os << "{\"protocol_no\":" << static_cast<int>(ProtocolNo::INFERENCE_CONTROL_CMD)
+       << ",\"protocol_version\":\"1.0\""
+       << ",\"request_id\":\"" << factory::security::escape_json(request_id) << "\""
+       << ",\"action\":\"" << action << "\""
+       << ",\"image_size\":0"   // 바이너리 없음 명시
+       << "}";
+    const std::string json_body = os.str();
+
+    // 대상 연결 결정 (ConnectionRegistry 의 server_type 기준)
+    auto connections = ConnectionRegistry::instance().get_all_connections_detailed();
+    int sent = 0;
+    for (const auto& [addr, info] : connections) {
+        const std::string& st = info.server_type;
+        bool match = false;
+        if (station_filter == 0) {
+            match = (st == "ai_inference_1" || st == "ai_inference_2");
+        } else if (station_filter == 1) {
+            match = (st == "ai_inference_1");
+        } else if (station_filter == 2) {
+            match = (st == "ai_inference_2");
+        }
+        if (!match) continue;
+
+        if (send_json_frame(info.fd, json_body)) {
+            ++sent;
+            log_train("검사 제어 송신 | fd=%d %s action=%s",
+                      info.fd, addr.c_str(), action.c_str());
+        } else {
+            log_err_train("검사 제어 송신 실패 | fd=%d %s", info.fd, addr.c_str());
+        }
+    }
+
+    out.applied_count = sent;
+    out.success = (sent > 0);
+    if (!out.success) {
+        out.message = "no_inference_server_connected";
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
