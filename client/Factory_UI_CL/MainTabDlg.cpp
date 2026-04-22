@@ -185,6 +185,9 @@ BOOL CMainTabDlg::OnInitDialog()
     // ── 각 페이지에 NetworkClient 주입 (생성 성공한 페이지만) ──
     if (m_stats) m_stats->SetNetworkClient(&m_net);
     if (m_model) m_model->SetNetworkClient(&m_net);
+    // v0.14.3: Station1/2 Start/Stop 버튼도 서버에 명령을 보내야 하므로 주입
+    if (m_st1)   m_st1  ->SetNetworkClient(&m_net);
+    if (m_st2)   m_st2  ->SetNetworkClient(&m_net);
 
     // ── 최대화 표시 ──
     ShowWindow(SW_SHOWMAXIMIZED);

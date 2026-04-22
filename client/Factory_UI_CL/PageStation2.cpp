@@ -15,11 +15,15 @@
 // ============================================================================
 #include "pch.h"
 #include "PageStation2.h"
+#include "NetworkClient.h"
+#include "PacketBuilder.h"
 
 IMPLEMENT_DYNAMIC(CPageStation2, CDialogEx)
 BEGIN_MESSAGE_MAP(CPageStation2, CDialogEx)
     ON_BN_CLICKED(IDC_BTN_S2_DEFECT, OnBtnDefect)
     ON_BN_CLICKED(IDC_BTN_S2_REWORK, OnBtnRework)
+    ON_BN_CLICKED(IDC_BTN_S2_START,  OnBtnS2Start)   // v0.14.3 2공정 시작
+    ON_BN_CLICKED(IDC_BTN_S2_STOP,   OnBtnS2Stop)    // v0.14.3 2공정 중지
 END_MESSAGE_MAP()
 
 CPageStation2::CPageStation2(CWnd* p) : CDialogEx(IDD_PAGE_STATION2,p), m_last{} {
@@ -39,6 +43,11 @@ BOOL CPageStation2::OnInitDialog() {
     m_listYolo.InsertColumn(0,_T("클래스"), LVCFMT_LEFT,80);
     m_listYolo.InsertColumn(1,_T("신뢰도"), LVCFMT_LEFT,60);
     m_listYolo.InsertColumn(2,_T("판정"),   LVCFMT_LEFT,50);
+
+    // v0.14.3: Start/Stop 버튼 초기 상태 — 기본 검사중 가정
+    if (CWnd* w = GetDlgItem(IDC_BTN_S2_START)) w->EnableWindow(FALSE);
+    if (CWnd* w = GetDlgItem(IDC_BTN_S2_STOP))  w->EnableWindow(TRUE);
+
     Refresh(); return TRUE;
 }
 void CPageStation2::Update(const std::vector<InspectionRecord>& recs) {
@@ -76,4 +85,35 @@ void CPageStation2::SetImages(const std::vector<BYTE>& image,
                               const std::vector<BYTE>& /*pred_mask*/) {
     m_cam.SetImage(image);
     m_heat.SetImage(heatmap);
+}
+
+// ============================================================================
+// v0.14.3 — 2공정 검사 Start/Stop (INSPECT_CONTROL_REQ station_filter=2)
+// ============================================================================
+void CPageStation2::OnBtnS2Start()
+{
+    if (!m_net || !m_net->IsConnected()) {
+        MessageBox(_T("서버에 연결되어 있지 않습니다."),
+                   _T("검사 시작"), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    CString req = CPacketBuilder::BuildInspectControlReq(2 /*station2*/, _T("resume"));
+    m_net->SendJson(req);
+    TRACE(_T("[PageStation2] 검사 시작 요청 (station=2, resume)\n"));
+    if (CWnd* w = GetDlgItem(IDC_BTN_S2_START)) w->EnableWindow(FALSE);
+    if (CWnd* w = GetDlgItem(IDC_BTN_S2_STOP))  w->EnableWindow(TRUE);
+}
+
+void CPageStation2::OnBtnS2Stop()
+{
+    if (!m_net || !m_net->IsConnected()) {
+        MessageBox(_T("서버에 연결되어 있지 않습니다."),
+                   _T("검사 중지"), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    CString req = CPacketBuilder::BuildInspectControlReq(2 /*station2*/, _T("pause"));
+    m_net->SendJson(req);
+    TRACE(_T("[PageStation2] 검사 중지 요청 (station=2, pause)\n"));
+    if (CWnd* w = GetDlgItem(IDC_BTN_S2_START)) w->EnableWindow(TRUE);
+    if (CWnd* w = GetDlgItem(IDC_BTN_S2_STOP))  w->EnableWindow(FALSE);
 }
