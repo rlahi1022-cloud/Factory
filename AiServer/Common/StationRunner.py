@@ -86,6 +86,48 @@ OK_COUNT_REPORT_INTERVAL_SEC = 5.0
 
 
 # ===========================================================================
+# _downscale_for_transport — NG 3장 이미지 전송용 다운스케일 헬퍼 (v0.14.6)
+# ===========================================================================
+# 문제:
+#   카메라 원본 1920x1200 으로 만든 히트맵/마스크 PNG 가 각 2~3 MB 에 달해
+#   TCP 전송 중 부분 유실이 발생하면 MFC 에서 하단이 검정으로 잘려 보임.
+#   (PNG 는 스트림 디코딩 특성상 앞부분부터 복원되기 때문)
+#
+# 해결:
+#   긴 변이 max_side 보다 크면 비율 유지로 축소. 이미지 면적이 크게 줄어
+#   PNG 크기도 ~1/3 이하로 떨어지고 전송 안정성이 크게 향상된다.
+#   AI 추론용 이미지는 건드리지 않고, "전송용 인코딩 직전" 에만 적용한다.
+# ===========================================================================
+def _downscale_for_transport(image, max_side: int = 1280):
+    """이미지의 긴 변이 max_side 이하가 되도록 비율 유지 다운스케일.
+
+    Args:
+        image: BGR ndarray (H, W, 3). None 이면 None 반환.
+        max_side: 긴 변의 최대 픽셀 수 (기본 1280).
+
+    Returns:
+        ndarray: 축소된 이미지. 원본이 이미 작으면 원본 그대로.
+    """
+    if image is None:
+        return None
+    try:
+        import cv2 as _cv2
+    except ImportError:
+        return image  # cv2 없으면 다운스케일 없이 원본 반환 (fail-safe)
+
+    h, w = image.shape[:2]
+    long_side = max(h, w)
+    if long_side <= max_side:
+        return image  # 이미 작음 — 리사이즈 불필요
+
+    scale = max_side / float(long_side)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    # INTER_AREA: 축소 시 가장 품질 좋은 필터 (cv2 권장)
+    return _cv2.resize(image, (new_w, new_h), interpolation=_cv2.INTER_AREA)
+
+
+# ===========================================================================
 # GrabItem 클래스
 # ---------------------------------------------------------------------------
 # 목적: 카메라에서 촬영한 이미지 한 프레임의 정보를 담는 데이터 컨테이너(그릇)입니다.
@@ -586,28 +628,42 @@ class StationRunner:
                     raw_anomaly_map = result_dict.get("raw_anomaly_map")
                     pred_mask_arr   = result_dict.get("pred_mask")
 
-                    image_bytes = self._encode_image(item.image)
+                    # v0.14.6: NG 3장 이미지를 동일한 작은 해상도로 다운스케일해서 전송.
+                    # 카메라 원본(1920x1200) 해상도를 그대로 쓰면 히트맵/마스크 PNG가
+                    # 2~3MB 로 커져 TCP 스트림에서 부분 유실이 발생하고 클라이언트에서
+                    # 이미지가 하단부터 잘려 보이는 현상 발생(MFC 디코드 실패).
+                    # 긴 변을 최대 1280px 로 제한하여 PNG 를 작게 유지 + 세 이미지
+                    # 모두 동일 해상도로 통일 → MFC 3분할 뷰의 Aspect 도 자동 일치.
+                    MAX_SIDE = 1280
+
+                    # 원본을 먼저 다운스케일한 뒤 그 축소본을 모든 시각화 입력으로 사용.
+                    # (원본을 줄이면 히트맵/마스크 오버레이도 자동으로 줄어든 크기로 합성됨)
+                    img_small = _downscale_for_transport(item.image, MAX_SIDE) \
+                                if item.image is not None else None
+
+                    image_bytes = self._encode_image(img_small) \
+                                  if img_small is not None else None
                     heatmap_bytes = None
                     pred_mask_bytes = None
 
                     # 시각화는 원본 이미지가 있을 때만 의미 있음
-                    if item.image is not None:
+                    if img_small is not None:
                         try:
                             from Common.Visualizer import (
                                 make_heatmap_overlay,
                                 make_pred_mask_overlay,
                                 encode_image,
                             )
-                            # 히트맵 합성: 원본 + anomaly_map 오버레이
+                            # 히트맵 합성: 축소된 원본 + anomaly_map 오버레이
                             if raw_anomaly_map is not None:
                                 heatmap_img = make_heatmap_overlay(
-                                    item.image, raw_anomaly_map, alpha=0.5
+                                    img_small, raw_anomaly_map, alpha=0.5
                                 )
                                 heatmap_bytes = encode_image(heatmap_img, ".png")
-                            # 마스크 합성: 원본 + pred_mask 빨간 윤곽선
+                            # 마스크 합성: 축소된 원본 + pred_mask 빨간 윤곽선
                             if pred_mask_arr is not None:
                                 mask_img = make_pred_mask_overlay(
-                                    item.image, pred_mask_arr
+                                    img_small, pred_mask_arr
                                 )
                                 pred_mask_bytes = encode_image(mask_img, ".png")
                         except Exception as exc:

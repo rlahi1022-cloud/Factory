@@ -985,10 +985,22 @@ LRESULT CMainTabDlg::OnNetNgImage(WPARAM, LPARAM lParam)
           pkt->station_id, pkt->inspection_id,
           pkt->image.size(), pkt->heatmap.size(), pkt->pred_mask.size());
 
-    // 메타데이터(timestamp/score)는 PageStats의 히스토리 캐시에서 조회 — 미발견 시 기본값.
+    // 메타데이터(timestamp/score)는 PageStats 히스토리 캐시에서 조회.
+    // v0.14.7: 캐시 미발견(방금 발생한 새 NG) 시 패킷 자체에 담겨 온
+    //   timestamp_iso / score 를 폴백으로 사용 → 리스트의 "--:--:--" 와 0.00 해소.
     CString timeLabel = _T("--:--:--");
     double  score     = 0.0;
-    if (m_stats) m_stats->LookupInspectionMeta(pkt->inspection_id, timeLabel, score);
+    const bool found  = (m_stats && m_stats->LookupInspectionMeta(pkt->inspection_id, timeLabel, score));
+    if (!found) {
+        // ISO8601("2026-04-22T09:12:34.567+00:00") 에서 "HH:MM:SS" 구간만 추출.
+        // 길이 부족하면 기본 "--:--:--" 유지.
+        if (pkt->timestamp_iso.GetLength() >= 19) {
+            timeLabel = pkt->timestamp_iso.Mid(11, 8);
+        }
+        if (pkt->score > 0.0) {
+            score = pkt->score;
+        }
+    }
 
     if (pkt->station_id == 1 && m_st1) {
         // 상단 대형 3뷰 — 최신 1건만 유지 (덮어쓰기)

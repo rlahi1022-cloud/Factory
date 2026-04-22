@@ -95,8 +95,13 @@ void InspectionService::on_validated(const std::any& payload) {
         return;
     }
 
-    // 성공: 클라이언트 실시간 푸시
-    event_bus_.publish(EventType::GUI_PUSH_REQUESTED, ev);
+    // 성공: 클라이언트 실시간 푸시 (v0.14.7: DB id 함께 전달)
+    // MFC 의 NG 이력 리스트는 id 로 중복 방지하므로 모든 푸시가 동일 id=0 이면
+    // 리스트가 한 행만 갱신되고 10건이 안 채워진다. DB row id 를 주입해서
+    // 각 NG 가 고유 id 를 가지도록 한다.
+    InspectionEvent ev_with_id = ev;
+    ev_with_id.db_id = result.inspection_id;
+    event_bus_.publish(EventType::GUI_PUSH_REQUESTED, ev_with_id);
 }
 
 // ---------------------------------------------------------------------------

@@ -122,6 +122,7 @@ struct InspectionEvent {
     std::vector<uint8_t> pred_mask_bytes;  // NG Pred Mask 오버레이 PNG (v0.9.0+)
     std::string  raw_json;                 // 원본 JSON (조립 검사 시 부가정보 추출용)
     std::string  sender_addr;              // ACK 회신 대상 주소 ("IP:PORT")
+    long long    db_id            = -1;    // v0.14.7: DB inspections row id (INSERT 후 채움 → GUI 푸시에 포함)
 };
 
 // ACK_SEND_REQUESTED 페이로드 — DB 기록 완료 후 AckSender가 소비

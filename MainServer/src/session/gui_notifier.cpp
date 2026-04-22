@@ -128,6 +128,7 @@ void GuiNotifier::on_gui_push(const std::any& payload) {
 
     std::ostringstream os;
     os << "{\"protocol_no\":110"
+       << ",\"id\":" << ev.db_id                      // v0.14.7: DB row id (MFC 리스트 중복방지 키)
        << ",\"inspection_id\":\"" << escape_json(ev.inspection_id) << "\""
        << ",\"station_id\":" << ev.station_id
        << ",\"result\":\"" << escape_json(ev.result) << "\""

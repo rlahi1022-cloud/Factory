@@ -70,6 +70,11 @@
 struct NgImagePacket {
     int                station_id    = 0;  // 1=입고검사, 2=조립검사
     int                inspection_id = 0;  // DB 레코드 id — NG_PUSH(110)/INSPECT_IMAGE_RES(117) 모두 포함
+    // v0.14.7: JSON 에 포함된 실시간 메타 — PageStats 이력 캐시에 아직 없는 새 NG 를
+    // 위해 NG_PUSH(110) 는 timestamp/score 를 직접 담아 보낸다. 캐시 조회 실패 시
+    // MainTabDlg 가 이 값을 폴백으로 사용 → 이력 리스트의 "--:--:--" / 0.00 제거.
+    CString            timestamp_iso;      // "2026-04-22T09:12:34.567+00:00" 형식 (비었으면 미제공)
+    double             score         = 0.0;
     std::vector<BYTE>  image;              // 원본 JPEG
     std::vector<BYTE>  heatmap;            // Anomaly Map PNG
     std::vector<BYTE>  pred_mask;          // Pred Mask PNG

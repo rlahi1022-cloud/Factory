@@ -434,7 +434,18 @@ void CNetworkClient::RecvLoop()
             auto* pkt = new (std::nothrow) NgImagePacket{};
             if (pkt) {
                 pkt->station_id    = CPacketBuilder::ExtractInt(jsonA, "station_id");
-                pkt->inspection_id = CPacketBuilder::ExtractInt(jsonA, "inspection_id");
+                // v0.14.7: MainServer 가 DB row id 를 "id" 필드로 보내면 그걸 우선 사용.
+                // 구버전(또는 id 누락) 대비 fallback 으로 "inspection_id" 를 정수 추출 시도.
+                // inspection_id 는 AI 서버 발급 문자열이라 숫자가 아니면 0 이 됨 — 그 경우
+                // 모든 NG 가 id=0 으로 덮어써져 리스트가 채워지지 않는 문제가 있었다.
+                int dbId = CPacketBuilder::ExtractInt(jsonA, "id");
+                pkt->inspection_id = (dbId > 0)
+                    ? dbId
+                    : CPacketBuilder::ExtractInt(jsonA, "inspection_id");
+                // v0.14.7: 새 NG 는 PageStats 캐시에 없으므로 timestamp/score 를 패킷에 담아 전달.
+                pkt->score         = CPacketBuilder::ExtractDouble(jsonA, "score");
+                CStringA tsA       = CPacketBuilder::ExtractString(jsonA, "timestamp");
+                pkt->timestamp_iso = CString(tsA);
                 pkt->image      = std::move(imgBytes);
                 pkt->heatmap    = std::move(heatBytes);
                 pkt->pred_mask  = std::move(maskBytes);
