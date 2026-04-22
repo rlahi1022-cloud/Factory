@@ -1,31 +1,26 @@
 /*
- * arduino_led_control.ino — Factory QC 신호등 (v2 — Python 프로토콜 대응)
+ * arduino_led_control.ino — Factory QC 신호등 (v3 — 이상/정상 단순 모드)
  * =======================================================================
  *
  * 목적:
  *   AI 추론서버(Station1/Station2)가 시리얼(USB)로 보내는 검사 결과 명령을 받아
  *   WS2812B 네오픽셀 LED 바(8개)를 색상으로 제어한다.
  *
+ * 단순 동작 규칙 (v3):
+ *   - 기본(대기) 상태       → 초록색 LED 상시 점등 (정상)
+ *   - 이상(NG) 명령 수신 시 → 빨간색 LED 로 전환 (경고)
+ *   - 이상 3초 유지 후 자동으로 초록색으로 복귀
+ *
  * 지원 명령 (v0.14.x Python 프로토콜 — SerialCtrl.py):
- *   "REJECT:<defect>\n"        Station1 입고검사 NG
- *                              예: "REJECT:anomaly\n", "REJECT:crack\n"
- *                              → 빨간색 LED 3초 점등 (리젝트 경고)
- *
- *   "ALERT:<d1,d2,..>\n"       Station2 조립검사 NG (복수 결함 가능)
- *                              예: "ALERT:cap_missing,label_tilt\n"
- *                              → 주황색 LED 3초 점등 (조립 불량 경고)
- *
- *   "OK\n"                     (선택) 정상 판정 직접 통지
- *                              → 초록색 LED 3초 점등
+ *   "REJECT:<defect>\n"        Station1 입고검사 NG   → 빨간색 3초
+ *                              예: "REJECT:anomaly\n"
+ *   "ALERT:<d1,d2,..>\n"       Station2 조립검사 NG  → 빨간색 3초
+ *                              예: "ALERT:cap_missing\n"
+ *   "OK\n"                     명시적 정상 통지        → 즉시 초록색 복귀
  *
  * 하위호환 (구 프로토콜 — led_test.py 기타):
- *   '1'  → 초록색 LED (정상)
- *   '0'  → 빨간색 LED (불량)
- *
- * 동작 규칙:
- *   - 새 명령 수신 시 3초 동안 색상 유지 후 자동 소멸
- *   - 3초 유지 중 새 명령이 와도 즉시 갱신 (타이머 리셋)
- *   - Python 으로 응답 메시지 송신 (로그용)
+ *   '1'  → 초록색 (즉시 복귀)
+ *   '0'  → 빨간색 (3초 후 복귀)
  *
  * 하드웨어 연결 (WS2812B LED 바 ↔ Arduino):
  *   빨강 선 (VCC)  → 5V
@@ -40,9 +35,8 @@
  *
  * 향후 확장 (TODO):
  *   - Station1 서보모터 리젝트 (NG 제품 컨베이어 밀어내기)
- *   - 부저(passive buzzer) 연동
- *   - Station2 LCD (I2C 16x2) 에 결함 유형 한글/영문 표시
- *   - 결함 유형별 다른 색상/점멸 패턴 매핑
+ *   - 부저(passive buzzer) — NG 시 경고음
+ *   - Station2 LCD (I2C 16x2) — 결함 유형 표시
  */
 
 #include <Adafruit_NeoPixel.h>
@@ -54,7 +48,9 @@
 const int  LED_PIN       = 6;        // WS2812B 데이터 선 핀
 const int  LED_COUNT     = 8;        // LED 개수
 const int  BRIGHTNESS    = 50;       // 밝기 (0~255) — 실공장에선 더 높게
-const unsigned long LED_DURATION = 3000;  // 점등 유지 시간 (3초)
+
+// NG 판정 시 빨간색 LED 유지 시간 (이 시간 후 자동으로 초록색 복귀)
+const unsigned long NG_DURATION = 3000;  // 3초
 
 // 수신 버퍼 크기 — "ALERT:cap_missing,label_tilt,fill_low\n" 정도 여유 있게
 const int  RX_BUF_SIZE   = 128;
@@ -64,17 +60,18 @@ const int  RX_BUF_SIZE   = 128;
 // ============================================================================
 
 struct RGB { uint8_t r, g, b; };
-const RGB COLOR_OK     = {  0, 255,   0};   // 초록 — 정상
-const RGB COLOR_REJECT = {255,   0,   0};   // 빨강 — Station1 리젝트
-const RGB COLOR_ALERT  = {255, 120,   0};   // 주황 — Station2 조립 불량
-const RGB COLOR_OFF    = {  0,   0,   0};   // 꺼짐
+const RGB COLOR_OK = {  0, 255,   0};   // 초록 — 정상 (기본 상태)
+const RGB COLOR_NG = {255,   0,   0};   // 빨강 — 이상 (NG)
 
 // ============================================================================
 // 상태 변수
 // ============================================================================
 
-bool led_on = false;
-unsigned long led_on_time = 0;
+// 현재 상태 — true 면 "이상(NG) 표시 중", false 면 "정상(초록)"
+bool ng_active = false;
+
+// NG 상태로 전환된 시각 (millis 기준). NG_DURATION 지나면 자동 초록 복귀.
+unsigned long ng_start_time = 0;
 
 // 시리얼 수신 버퍼 — '\n' 까지 누적해 한 줄 단위로 처리
 char rx_buf[RX_BUF_SIZE];
@@ -92,10 +89,11 @@ void setup() {
 
   strip.begin();
   strip.setBrightness(BRIGHTNESS);
-  strip.clear();
-  strip.show();
 
-  Serial.println("Arduino Ready (Factory QC v2)");
+  // 부팅 즉시 초록색(정상) 점등 — 대기 상태
+  setAllLeds(COLOR_OK);
+
+  Serial.println("Arduino Ready (Factory QC v3 — always green, red on NG)");
 }
 
 
@@ -111,13 +109,22 @@ void setAllLeds(const RGB& c) {
 
 
 // ============================================================================
-// setLedWithTimer — 색상 점등 + 자동 소멸 타이머 시작
-//   이미 켜진 상태여도 새 명령이 오면 색상 교체 + 타이머 리셋
+// enterNgState — NG 상태로 전환 (빨간색 + 타이머 시작)
+//   이미 NG 상태여도 재호출하면 타이머를 리셋해서 새로 3초를 카운트.
 // ============================================================================
-void setLedWithTimer(const RGB& c) {
-  setAllLeds(c);
-  led_on      = true;
-  led_on_time = millis();
+void enterNgState() {
+  setAllLeds(COLOR_NG);
+  ng_active     = true;
+  ng_start_time = millis();
+}
+
+
+// ============================================================================
+// returnToOkState — 정상 상태로 즉시 복귀 (초록색)
+// ============================================================================
+void returnToOkState() {
+  setAllLeds(COLOR_OK);
+  ng_active = false;
 }
 
 
@@ -125,14 +132,13 @@ void setLedWithTimer(const RGB& c) {
 // handleCommand — 누적된 한 줄(rx_buf) 을 파싱해서 LED 동작
 // ============================================================================
 void handleCommand(const char* cmd, int len) {
-  // 빈 줄 / 제어문자 단독 → 무시
+  // 빈 줄 / 제어문자 단독 → 무시 (초록 유지)
   if (len <= 0) return;
 
   // ── REJECT:<defect> ───────────────────────────────────────────
   // Station1 입고검사 NG — 빨간 LED 3초
   if (len >= 6 && strncmp(cmd, "REJECT", 6) == 0) {
-    setLedWithTimer(COLOR_REJECT);
-    // 결함 유형 반환 (디버그 편의 — Python 로그에 echo)
+    enterNgState();
     Serial.print("NG_REJECT");
     if (len > 7 && cmd[6] == ':') {
       Serial.print(' ');
@@ -143,9 +149,9 @@ void handleCommand(const char* cmd, int len) {
   }
 
   // ── ALERT:<defects,list> ──────────────────────────────────────
-  // Station2 조립검사 NG — 주황 LED 3초
+  // Station2 조립검사 NG — 빨간 LED 3초
   if (len >= 5 && strncmp(cmd, "ALERT", 5) == 0) {
-    setLedWithTimer(COLOR_ALERT);
+    enterNgState();
     Serial.print("NG_ALERT");
     if (len > 6 && cmd[5] == ':') {
       Serial.print(' ');
@@ -155,24 +161,23 @@ void handleCommand(const char* cmd, int len) {
     return;
   }
 
-  // ── "OK" 문자열 (선택) ────────────────────────────────────────
-  // 명시적 정상 통지 — 초록 LED 3초
+  // ── "OK" 문자열 ──────────────────────────────────────────────
+  // 명시적 정상 통지 — 즉시 초록으로 복귀 (NG 타이머 중이었어도 강제 해제)
   if (len >= 2 && cmd[0] == 'O' && cmd[1] == 'K') {
-    setLedWithTimer(COLOR_OK);
+    returnToOkState();
     Serial.println("OK");
     return;
   }
 
   // ── 하위호환: 단일 문자 '0'/'1' ─────────────────────────────
-  // 예전 스케치와 동일 (led_test.py 등 구 도구)
   if (len == 1) {
     if (cmd[0] == '1') {
-      setLedWithTimer(COLOR_OK);
+      returnToOkState();
       Serial.println("OK");
       return;
     }
     if (cmd[0] == '0') {
-      setLedWithTimer(COLOR_REJECT);
+      enterNgState();
       Serial.println("NG_ON");
       return;
     }
@@ -207,16 +212,17 @@ void loop() {
     if (rx_len < RX_BUF_SIZE - 1) {
       rx_buf[rx_len++] = ch;
     } else {
-      // 버퍼 꽉 참 → 비정상 입력 → 리셋해서 다음 줄 대기
       rx_len = 0;
       Serial.println("ERR: rx buffer overflow");
     }
   }
 
-  // ── LED 자동 소멸 (3초 후) ──────────────────────────────────
-  if (led_on && (millis() - led_on_time >= LED_DURATION)) {
-    setAllLeds(COLOR_OFF);
-    led_on = false;
-    Serial.println("LED_OFF");
+  // ── NG 상태 자동 해제 (3초 후 초록으로 복귀) ────────────────
+  // NG 판정 직후의 연속 REJECT 스트림 (카메라 없을 때 초당 2건 등) 이 이어지면
+  // enterNgState 가 호출될 때마다 타이머가 리셋되므로 "이상이 계속되는 동안엔
+  // 계속 빨강" 이고, 이상 명령이 멈추면 3초 후 초록으로 자연스럽게 돌아간다.
+  if (ng_active && (millis() - ng_start_time >= NG_DURATION)) {
+    returnToOkState();
+    Serial.println("LED_OK_RESTORED");
   }
 }
