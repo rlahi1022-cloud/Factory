@@ -1,6 +1,52 @@
 ﻿// Microsoft Visual C++에서 생성한 리소스 스크립트입니다.
 #include "resource.h"
 
+#include "resource.h"
+
+// ── resource.h 로드 실패 대비 fallback 정의 ──────────────────
+#ifndef IDC_STATIC_S2_SCORE
+#define IDC_STATIC_S2_SCORE          2304
+#endif
+#ifndef IDC_STATIC_S2_RESULT
+#define IDC_STATIC_S2_RESULT         2303
+#endif
+#ifndef IDC_STATIC_S2_RESULT_PANEL
+#define IDC_STATIC_S2_RESULT_PANEL   2313
+#endif
+#ifndef IDC_PREDMASK2_VIEW
+#define IDC_PREDMASK2_VIEW           2310
+#endif
+#ifndef IDC_BTN_S2_CAT_ALL
+#define IDC_BTN_S2_CAT_ALL           2314
+#endif
+#ifndef IDC_BTN_S2_CAT_YOLO
+#define IDC_BTN_S2_CAT_YOLO          2315
+#endif
+#ifndef IDC_BTN_S2_CAT_PC
+#define IDC_BTN_S2_CAT_PC            2316
+#endif
+#ifndef IDC_STATIC_S2_CAT_DESC
+#define IDC_STATIC_S2_CAT_DESC       2317
+#endif
+#ifndef IDC_NG_LIST2
+#define IDC_NG_LIST2                 2318
+#endif
+#ifndef IDC_STATIC_S2_NG_COUNT
+#define IDC_STATIC_S2_NG_COUNT       2319
+#endif
+#ifndef IDC_STATIC_S2_SERIAL
+#define IDC_STATIC_S2_SERIAL         2324
+#endif
+#ifndef IDC_STATIC_S2_LAST
+#define IDC_STATIC_S2_LAST           2325
+#endif
+#ifndef IDC_STATIC_S2_SOL
+#define IDC_STATIC_S2_SOL            2326
+#endif
+#ifndef IDC_STATIC_S2_SENS
+#define IDC_STATIC_S2_SENS           2327
+#endif
+
 #define APSTUDIO_READONLY_SYMBOLS
 #ifndef APSTUDIO_INVOKED
 #include "targetver.h"
@@ -191,28 +237,120 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 // 스테이션 2
+// 레이아웃 변경 이력:
+//   v0.14 — 좌측 이미지 3분할 확대(각 w=176, h=390), 우측 패널 x=542 시작
+//           2번 이미지 레이아웃 기준으로 재설계
+// ─────────────────────────────────────────────────────────────────────────
+// 전체 다이얼로그 크기: 900 × 490
+//
+// [A] 좌측 이미지 3분할
+//     GroupBox : x=4,   y=4,  w=534, h=430
+//     뷰 3개   : 각 w=172, h=390, y=28
+//       cam      x=8
+//       heatmap  x=184
+//       predmask x=360
+//     결과 바  : y=422, h=14
+//
+// [B] 우측 정보 패널
+//     x=542, w=354 (542+354=896 ≈ 900)
+//     YOLO Detections  : y=4,   h=80
+//     PatchCore Label  : y=88,  h=26
+//     Final Result     : y=118, h=50
+//     버튼             : y=172
+//     구분선           : y=190
+//     카테고리 버튼    : y=194
+//     설명 레이블      : y=212
+//     NG 이력 헤더     : y=224
+//     NG 리스트        : y=236, h=190  (충분히 크게)
+//
+// [C] 아두이노 상태바  : y=438, h=24  (전체 하단)
+// ─────────────────────────────────────────────────────────────────────────
 IDD_PAGE_STATION2 DIALOGEX 0, 0, 900, 490
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Tahoma", 0, 0, 0x1
 BEGIN
-    GROUPBOX "Station 2 - Assembly (YOLO11 + PatchCore)", IDC_STATIC, 4, 4, 890, 310
-    LTEXT    "Pylon Camera #2",     IDC_STATIC,          10, 18,150,  9
-    CONTROL  "", IDC_CAM2_VIEW,    "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE, 10, 28,155,215
-    LTEXT    "Label Heatmap",       IDC_STATIC,          172, 18, 90,  9
-    CONTROL  "", IDC_HEATMAP2_VIEW,"STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,172, 28, 95,215
-    GROUPBOX "YOLO11 Detections",   IDC_STATIC,         274, 18,210, 80
+    // ══════════════════════════════════════════════════════════════════
+    // [A] 좌측: Station 그룹박스 + 이미지 3분할
+    // ══════════════════════════════════════════════════════════════════
+    GROUPBOX "Station 2 - Assembly (YOLO11 + PatchCore)", IDC_STATIC,
+             4, 4, 534, 430
+
+    // 레이블 (y=18)
+    LTEXT    "이미지",          IDC_STATIC,  8,  18, 172,  9
+    LTEXT    "Anomaly Heatmap", IDC_STATIC, 184, 18, 172,  9
+    LTEXT    "Pred Mask",       IDC_STATIC, 360, 18, 172,  9
+
+    // 이미지 뷰 3개 (y=28, h=390)
+    CONTROL  "", IDC_CAM2_VIEW,      "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,
+               8, 28, 172, 390
+    CONTROL  "", IDC_HEATMAP2_VIEW,  "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,
+             184, 28, 172, 390
+    CONTROL  "", IDC_PREDMASK2_VIEW, "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,
+             360, 28, 172, 390
+
+    // OK/NG 결과 바 (y=422, h=14) — PageStation2.cpp 에서 배경색 변경
+    LTEXT    "OK", IDC_STATIC_S2_RESULT,  8, 422, 524, 14, SS_CENTER
+
+    // ══════════════════════════════════════════════════════════════════
+    // [B] 우측: 정보 패널 (x=542, w=354)
+    // ══════════════════════════════════════════════════════════════════
+
+    // [B-1] YOLO11 Detections (y=4, h=80)
+    GROUPBOX "YOLO11 Detections",  IDC_STATIC,       542,  4, 354,  80
     CONTROL  "", IDC_LIST_YOLO,  "SysListView32",
              LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_CHILD | WS_VISIBLE,
-             278, 28,202, 64
-    GROUPBOX "PatchCore Label",     IDC_STATIC,         274,102,210, 26
-    LTEXT    "Score: 0.00",         IDC_STATIC_S2_SCORE, 282,112,196, 10
-    GROUPBOX "Final Result",        IDC_STATIC,         274,132,210, 52
-    LTEXT    "OK",                  IDC_STATIC_S2_RESULT, 284,142,190, 36, SS_CENTER
-    PUSHBUTTON "Select Defect",     IDC_BTN_S2_DEFECT,  274,192, 80, 14
-    PUSHBUTTON "Rework",            IDC_BTN_S2_REWORK,  358,192, 60, 14
-    GROUPBOX "Arduino - Station2",  IDC_STATIC,           4,318,890, 36
-    LTEXT    "Serial OK (COM5)",    IDC_STATIC,          12,330,110, 10
-    LTEXT    "Standby",             IDC_STATIC_S2_LED,  130,330,220, 10
+             546, 16, 346,  62
+
+    // [B-2] PatchCore Label (y=88, h=26)
+    GROUPBOX "PatchCore Label",    IDC_STATIC,       542, 88, 354,  26
+    LTEXT    "PatchCore 이상 점수: 0.00", IDC_STATIC_S2_SCORE,
+             548, 98, 342,  10
+
+    // [B-3] Final Result (y=118, h=50)
+    GROUPBOX "Final Result",       IDC_STATIC,       542,118, 354,  50
+    LTEXT    "OK",                 IDC_STATIC_S2_RESULT_PANEL,
+             548,130, 342,  32, SS_CENTER
+
+    // [B-4] 액션 버튼 (y=172)
+    PUSHBUTTON "Select Defect",    IDC_BTN_S2_DEFECT, 542,172, 100,  14
+    PUSHBUTTON "Rework",           IDC_BTN_S2_REWORK, 646,172,  80,  14
+
+    // [B-5] 구분선 (y=190)
+    LTEXT    "", IDC_STATIC,                           542,190, 354,   1, SS_SUNKEN
+
+    // [B-6] 카테고리 버튼 (y=194)
+    LTEXT    "이미지 뷰:",         IDC_STATIC,        542,197,  48,  12
+    PUSHBUTTON "전체",             IDC_BTN_S2_CAT_ALL, 592,194,  46,  14
+    PUSHBUTTON "YOLO",             IDC_BTN_S2_CAT_YOLO,642,194,  46,  14
+    PUSHBUTTON "PatchCore",        IDC_BTN_S2_CAT_PC,  692,194,  72,  14
+
+    LTEXT    "현재 검사 결과 이미지 표시 중", IDC_STATIC_S2_CAT_DESC,
+             542,212, 354,   9
+
+    // [B-7] NG 이벤트 이력 리스트 (y=224~430)
+    //  컬럼: 시각(54) | 분류(44) | 불량 유형(160) | 점수(44)
+    LTEXT    "× NG 이벤트 이력",  IDC_STATIC,        542,224, 200,   9
+    LTEXT    "금일 0건",           IDC_STATIC_S2_NG_COUNT,
+             770,224, 126,   9
+    CONTROL  "", IDC_NG_LIST2,  "SysListView32",
+             LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS |
+             WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+             542,236, 354, 198
+
+    // ══════════════════════════════════════════════════════════════════
+    // [C] 아두이노 상태바 (y=438, h=24, 전체 폭)
+    // ══════════════════════════════════════════════════════════════════
+    GROUPBOX "Arduino - Station2", IDC_STATIC,          4,438, 892,  26
+    LTEXT    "Serial",             IDC_STATIC,           10,450,  28,   9
+    LTEXT    "● OK (COM5)",       IDC_STATIC_S2_SERIAL,  40,450,  70,   9
+    LTEXT    "상태",               IDC_STATIC,           118,450,  24,   9
+    LTEXT    "대기중",             IDC_STATIC_S2_LED,    144,450,  50,   9
+    LTEXT    "마지막 신호",        IDC_STATIC,           202,450,  52,   9
+    LTEXT    "--:--:--",           IDC_STATIC_S2_LAST,   256,450,  52,   9
+    LTEXT    "Solenoid",           IDC_STATIC,           316,450,  40,   9
+    LTEXT    "OFF",                IDC_STATIC_S2_SOL,    358,450,  30,   9
+    LTEXT    "Sensor",             IDC_STATIC,           396,450,  32,   9
+    LTEXT    "● Ready",           IDC_STATIC_S2_SENS,   430,450,  60,   9
 END
 
 /////////////////////////////////////////////////////////////////////////////
