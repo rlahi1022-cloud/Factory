@@ -390,7 +390,17 @@ BEGIN_MESSAGE_MAP(CNgHistoryList, CStatic)
     ON_WM_MOUSEWHEEL()
 END_MESSAGE_MAP()
 
-CNgHistoryList::CNgHistoryList() {}
+CNgHistoryList::CNgHistoryList() {
+    // v0.14.2: CImage 를 값으로 보유하는 Entry 벡터의 재할당을 원천 차단.
+    // CImage 는 복사 시 HBITMAP 을 얕은 복사하므로(같은 핸들 공유), vector 성장 시
+    // 기존 Entry 가 복사/이동된 뒤 원본의 소멸자가 HBITMAP 을 Destroy 하면
+    // 새 위치의 CImage 가 dangling HBITMAP 을 갖게 되어 OnPaint 에서
+    // ATLASSERT(hBitmap == m_hBitmap) 실패(atlimage.h:1629)가 발생한다.
+    // m_maxEntries 만큼 미리 확보하여 re-allocation 을 제거.
+    // (insert(begin) 시 shift 이동이 여전히 발생하지만, 기존 슬롯 안에서만
+    //  이동하므로 소유권 혼란은 없음 — Entry 소멸은 pop_back 에서만 발생.)
+    m_entries.reserve(m_maxEntries);
+}
 
 void CNgHistoryList::PreSubclassWindow() {
     CStatic::PreSubclassWindow();
@@ -409,9 +419,20 @@ void CNgHistoryList::AddEntry(int id, int stationId, double score,
     e.stationId = stationId;
     e.score     = score;
     e.time      = timeLabel;
-    CameraViewUtil::LoadImageFromBytes(img,  e.img);
-    CameraViewUtil::LoadImageFromBytes(heat, e.heat);
-    CameraViewUtil::LoadImageFromBytes(mask, e.mask);
+
+    // v0.14.2: CImage 를 heap 에 할당해 unique_ptr 로 소유. 빈 bytes 는 로드 실패 시
+    // unique_ptr 가 null 상태가 되어 drawThumb 에서 자동으로 플레이스홀더 처리됨.
+    auto load_one = [](const std::vector<BYTE>& src) -> std::unique_ptr<CImage> {
+        if (src.empty()) return nullptr;
+        auto p = std::make_unique<CImage>();
+        if (!CameraViewUtil::LoadImageFromBytes(src, *p)) {
+            return nullptr;  // 손상/빈 데이터 → null 반환 (CImage 내부는 Destroy 됨)
+        }
+        return p;
+    };
+    e.img  = load_one(img);
+    e.heat = load_one(heat);
+    e.mask = load_one(mask);
 
     // 동일 id가 이미 있으면 교체(중복 요청 대비). 없으면 맨 앞에 prepend.
     for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
@@ -553,20 +574,20 @@ void CNgHistoryList::DrawRow(CDC& dc, const Entry& e, const CRect& rowRc) {
     dc.DrawText(line3, &tr, DT_LEFT | DT_SINGLELINE);
     dc.SelectObject(p_f1);
 
-    // 썸네일 3장
-    auto drawThumb = [&](const CImage& img, int colIndex, LPCTSTR caption) {
+    // 썸네일 3장 — v0.14.2: CImage* 로 받아 nullptr 허용 (unique_ptr 소유권 유지)
+    auto drawThumb = [&](const CImage* img, int colIndex, LPCTSTR caption) {
         int x = rowRc.left + pad + labelW + pad + (thumbW + pad) * colIndex;
         int y = rowRc.top + pad;
         CRect tc(x, y, x + thumbW, y + thumbH);
         // 배경
         dc.FillSolidRect(&tc, RGB(10, 10, 14));
-        if (!img.IsNull() && thumbW > 4 && thumbH > 4) {
+        if (img && !img->IsNull() && thumbW > 4 && thumbH > 4) {
             int oldMode = ::SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
             ::SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, nullptr);
-            const_cast<CImage&>(img).StretchBlt(
+            const_cast<CImage*>(img)->StretchBlt(
                 dc.GetSafeHdc(),
                 tc.left, tc.top, tc.Width(), tc.Height(),
-                0, 0, img.GetWidth(), img.GetHeight(),
+                0, 0, img->GetWidth(), img->GetHeight(),
                 SRCCOPY);
             ::SetStretchBltMode(dc.GetSafeHdc(), oldMode);
         }
@@ -586,9 +607,9 @@ void CNgHistoryList::DrawRow(CDC& dc, const Entry& e, const CRect& rowRc) {
         dc.SelectObject(p_f2);
     };
 
-    drawThumb(e.img,  0, _T("Image"));
-    drawThumb(e.heat, 1, _T("Anomaly Map"));
-    drawThumb(e.mask, 2, _T("Pred Mask"));
+    drawThumb(e.img.get(),  0, _T("Image"));
+    drawThumb(e.heat.get(), 1, _T("Anomaly Map"));
+    drawThumb(e.mask.get(), 2, _T("Pred Mask"));
 }
 
 void CNgHistoryList::OnPaint() {

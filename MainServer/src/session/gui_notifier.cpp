@@ -33,7 +33,10 @@
 
 #include "core/logger.h"
 
+#include <array>
+#include <chrono>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 
 using factory::security::escape_json;
@@ -75,8 +78,53 @@ void GuiNotifier::register_handlers() {
 //   [4바이트 JSON 길이] + [JSON] + [원본 JPEG] + [히트맵 PNG] + [마스크 PNG]
 //   JSON 내 image_size / heatmap_size / pred_mask_size 로 각 크기 전달.
 //   크기가 0이면 해당 이미지는 생략(하위호환).
+// v0.14.2: 대용량 NG 패킷 rate limit.
+// 목적:
+//   AI 추론서버가 카메라 미연결 상태에서 더미 이미지로 학습 분포를 벗어난 NG 를
+//   초당 여러 건 생성하면, 2~3MB 짜리 패킷이 MFC 로 쏟아져 TCP 프레이밍 경계가
+//   어긋나고 CImage 복사 어설션(atlimage.h:1629) 을 유발했다.
+//   동일 스테이션의 연속 NG 푸시 간격을 최소 200ms 로 제한하여 버퍼 혼잡 방지.
+//
+// 정책:
+//   - 일반 NG(총 <2MB): 제한 없음 (실운영 부하 보호)
+//   - 대용량 NG(≥2MB):  스테이션별 최소 200ms 간격 보장, 초과분 drop + 로그
+//   - drop 해도 DB INSERT 는 이미 완료된 뒤라 이력은 보존됨
+static bool should_rate_limit_ng_push(int station_id, std::size_t total_bytes) {
+    constexpr std::size_t LARGE_THRESHOLD = 2ULL * 1024 * 1024;  // 2 MB
+    constexpr int         MIN_INTERVAL_MS = 200;
+    if (total_bytes < LARGE_THRESHOLD) return false;  // 작은 패킷은 통과
+
+    // 스테이션 index (1~2) → array slot. 범위 밖은 통과.
+    if (station_id < 1 || station_id > 2) return false;
+
+    static std::mutex                                         g_mu;
+    static std::array<std::chrono::steady_clock::time_point, 3> g_last{};  // [0]미사용,[1]Station1,[2]Station2
+
+    std::lock_guard<std::mutex> lock(g_mu);
+    const auto now = std::chrono::steady_clock::now();
+    const auto& last = g_last[station_id];
+    if (last.time_since_epoch().count() != 0) {
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last).count();
+        if (elapsed_ms < MIN_INTERVAL_MS) {
+            return true;  // drop
+        }
+    }
+    g_last[station_id] = now;
+    return false;
+}
+
 void GuiNotifier::on_gui_push(const std::any& payload) {
     const auto& ev = std::any_cast<const InspectionEvent&>(payload);
+
+    // 대용량 연속 NG rate limit (상세 주석은 should_rate_limit_ng_push 참조)
+    const std::size_t total_bin = ev.image_bytes.size()
+                                + ev.heatmap_bytes.size()
+                                + ev.pred_mask_bytes.size();
+    if (should_rate_limit_ng_push(ev.station_id, total_bin)) {
+        log_push("NG 푸시 스킵 (rate limit) | 스테이션=%d 크기=%zu bytes",
+                 ev.station_id, total_bin);
+        return;
+    }
 
     std::ostringstream os;
     os << "{\"protocol_no\":110"
@@ -94,13 +142,10 @@ void GuiNotifier::on_gui_push(const std::any& payload) {
 
     // 세 바이너리를 순서대로 이어붙여 하나의 연속 블록으로 전송.
     // MFC 클라이언트는 JSON에서 각 size를 읽고 offset 계산으로 분리한다.
-    const std::size_t total_size = ev.image_bytes.size()
-                                 + ev.heatmap_bytes.size()
-                                 + ev.pred_mask_bytes.size();
-
-    if (total_size > 0) {
+    // total_bin 은 위 rate limit 체크에서 이미 계산됨.
+    if (total_bin > 0) {
         std::vector<uint8_t> combined;
-        combined.reserve(total_size);
+        combined.reserve(total_bin);
         combined.insert(combined.end(), ev.image_bytes.begin(),     ev.image_bytes.end());
         combined.insert(combined.end(), ev.heatmap_bytes.begin(),   ev.heatmap_bytes.end());
         combined.insert(combined.end(), ev.pred_mask_bytes.begin(), ev.pred_mask_bytes.end());

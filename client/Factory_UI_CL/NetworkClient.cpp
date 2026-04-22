@@ -358,9 +358,18 @@ void CNetworkClient::RecvLoop()
         }
 
         // ── 2단계: 헤더에서 JSON 크기 추출 (ParseHeader가 64KB 상한 검증) ──
+        // v0.14.2: 비정상 헤더 발생 시 원인 추적을 위해 raw 바이트도 함께 로깅.
+        // 대부분의 원인은 이전 패킷의 이미지 바이너리 꼬리 바이트를 새 헤더로
+        // 오인하는 경우 (서버↔클라 프레이밍 어긋남). TCP 동기화 복구가 불가하므로
+        // 연결을 끊고 UI 가 재접속 루프를 돌도록 유도한다.
         UINT32 jsonSize = 0;
         if (!CPacketBuilder::ParseHeader(header, jsonSize)) {
-            TRACE(_T("[NetworkClient] 비정상 헤더 (size=%u)\n"), jsonSize);
+            const BYTE b0 = static_cast<BYTE>(header[0]);
+            const BYTE b1 = static_cast<BYTE>(header[1]);
+            const BYTE b2 = static_cast<BYTE>(header[2]);
+            const BYTE b3 = static_cast<BYTE>(header[3]);
+            TRACE(_T("[NetworkClient] 비정상 헤더 (size=%u raw=%02X %02X %02X %02X) — TCP 프레이밍 어긋남 추정, 재접속\n"),
+                  jsonSize, b0, b1, b2, b3);
             break;
         }
 

@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "InspectionData.h"
 #include <atlimage.h>   // CImage — PNG/JPEG/BMP 디코드용 (ATL, MFC 프로젝트에 기본 포함)
+#include <memory>       // std::unique_ptr — Entry 의 CImage 간접 소유
 #include <vector>
 
 // 카메라 뷰 (Pylon 이미지 플레이스홀더 + 서버 수신 이미지 렌더링)
@@ -90,14 +91,24 @@ class CNgHistoryList : public CStatic {
 public:
     CNgHistoryList();
 
+    // v0.14.2: 근본 해결 — CImage 를 값으로 보유하면 std::vector 의 재할당/이동 시
+    // HBITMAP 의 얕은 복사가 발생해 ATLASSERT(hBitmap == m_hBitmap) 어설션을 유발한다.
+    // std::unique_ptr 로 간접 보관하면 Entry 이동 비용이 포인터 교체로 축소되고
+    // 소유권이 명확해진다. Entry 자체는 이동만 허용 (복사 금지).
     struct Entry {
         int     id        = 0;
         int     stationId = 0;
         double  score     = 0.0;
-        CString time;                // 표시용 문자열 ("HH:MM:SS" 또는 "#id")
-        CImage  img;                 // 디코드된 원본
-        CImage  heat;                // 디코드된 히트맵
-        CImage  mask;                // 디코드된 마스크
+        CString time;                                // 표시용 문자열 ("HH:MM:SS" 또는 "#id")
+        std::unique_ptr<CImage> img;                 // 디코드된 원본 (nullptr 허용 = 비었음)
+        std::unique_ptr<CImage> heat;                // 디코드된 히트맵
+        std::unique_ptr<CImage> mask;                // 디코드된 마스크
+
+        Entry() = default;
+        Entry(const Entry&) = delete;                // 복사 금지 — CImage 얕은 복사 차단
+        Entry& operator=(const Entry&) = delete;
+        Entry(Entry&&) noexcept = default;           // 이동은 허용 (포인터 소유권 이전)
+        Entry& operator=(Entry&&) noexcept = default;
     };
 
     // 새 NG 1건을 리스트 맨 위에 추가. 초과분은 꼬리부터 버림.

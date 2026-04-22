@@ -418,6 +418,18 @@ class StationRunner:
         fps = max(0.1, float(getattr(self._config, "camera_fps", 2.0)))
         period = 1.0 / fps
 
+        # v0.14.2: 카메라 미연결 시 사용할 "정상 placeholder" 이미지를 1회만 로드.
+        # 기존에는 랜덤 픽셀(100~200)을 매번 생성했는데, 이 경우 PatchCore 가
+        # 전 영역을 이상으로 판정 → NG 판정된 히트맵/마스크 PNG 가 압축 효율 최악이라
+        # 2~3 MB 급 대용량 패킷이 초당 여러 건 쏟아져 클라이언트 TCP 파싱 경계가 깨지고
+        # MFC CImage assertion(atlimage.h:1629) 발생. 이를 원천 차단한다.
+        #
+        # 해결: 실제 학습 분포(정상 이미지)와 유사한 고정 이미지를 반복 사용하면
+        # PatchCore 가 OK 로 판정 → NG 푸시 자체가 발생하지 않음.
+        placeholder: Optional[_np.ndarray] = None
+        if not self._camera.is_open:
+            placeholder = self._load_placeholder_frame()
+
         try:
             while self._is_running:
                 # v0.14.0: pause 상태면 wait — resume 시 즉시 깨어남.
@@ -438,9 +450,13 @@ class StationRunner:
                         await asyncio.sleep(period)
                         continue
                 else:
-                    # 카메라 미연결/미지원 → 더미 이미지(랜덤 BGR uint8)
-                    # 실제 추론을 방해하지 않도록 None 대신 ndarray 로 생성.
-                    frame = _np.random.randint(100, 200, (224, 224, 3), dtype=_np.uint8)
+                    # 카메라 미연결/미지원 → placeholder 이미지 반복 사용
+                    # 랜덤 픽셀을 쓰지 않는 이유는 위 placeholder 주석 참조.
+                    # placeholder 로드 실패 시 회색 단색(128) 이미지로 fallback.
+                    if placeholder is not None:
+                        frame = placeholder.copy()  # copy 로 안전하게 per-frame 인스턴스
+                    else:
+                        frame = _np.full((224, 224, 3), 128, dtype=_np.uint8)
 
                 self._frame_seq += 1
                 item = GrabItem(self._frame_seq, frame, time.time())
@@ -977,6 +993,62 @@ class StationRunner:
     # 참고: @staticmethod는 self(인스턴스)를 사용하지 않는 메서드입니다.
     #       인스턴스 상태와 무관한 순수 유틸리티 함수에 사용합니다.
     # -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # _load_placeholder_frame() 메서드 (v0.14.2)
+    # -----------------------------------------------------------------------
+    # 목적: 카메라 미연결 시 grab_producer 가 돌려쓸 "정상 이미지" 1장을 로드한다.
+    #
+    # 왜: 기존에는 _np.random.randint 로 매번 랜덤 픽셀을 생성했으나,
+    #     PatchCore 입장에서 랜덤 이미지는 학습 분포와 완전히 동떨어진 OOD 라
+    #     전 영역을 이상으로 판정 → 히트맵/마스크 PNG 압축 효율 최악 → 2~3MB
+    #     대용량 NG 패킷이 초당 여러 건 MFC 로 쏟아져 TCP 파싱 경계/CImage 복사
+    #     이슈를 유발했다.
+    #
+    # 구현: data/station{N}/test/ 에서 첫 .bmp/.jpg/.png 파일 1장을 OpenCV 로
+    #       읽어 caching. 파일이 없으면 None 을 반환하고 호출자가 회색 fallback.
+    #
+    # 보안/성능:
+    #   - 로드는 프로세스 생애 1회만 발생 (caching)
+    #   - config.patchcore_input_size 에 맞춰 리사이즈하지 않고 원본을 사용 —
+    #     실제 카메라 프레임과 동일 크기/채널 유지 (추론 전 Inferencer 가 리사이즈).
+    # -----------------------------------------------------------------------
+    def _load_placeholder_frame(self):
+        import numpy as _np
+        from pathlib import Path as _Path
+        try:
+            import cv2 as _cv2
+        except ImportError:
+            return None
+
+        # v0.14.3: normal/ 우선 탐색 — test/ 에는 NG 이미지가 섞여 있어
+        # 불량 이미지를 placeholder 로 고정하면 실제 현장에 투입 전 혼동을 줌.
+        # normal/ → test/ 순으로 탐색하여 정상 이미지만 placeholder 로 사용.
+        station_id = int(getattr(self._config, "station_id", 1))
+        base_dir = _Path(__file__).resolve().parent.parent / "data" / f"station{station_id}"
+        candidates = [
+            base_dir / "normal",          # 정상 이미지 — OK 판정 보장
+            base_dir / "train" / "normal",  # 일부 레포는 train/normal 구조
+            base_dir / "test",              # 마지막 fallback (혼합 가능)
+        ]
+        exts = (".bmp", ".jpg", ".jpeg", ".png")
+        for dir_path in candidates:
+            if not dir_path.exists():
+                continue
+            for f in sorted(dir_path.iterdir()):
+                if f.suffix.lower() in exts:
+                    # np.fromfile + imdecode: 한글 경로 안전 (cv2.imread 는 한글 경로 실패)
+                    try:
+                        data = _np.fromfile(str(f), dtype=_np.uint8)
+                        img = _cv2.imdecode(data, _cv2.IMREAD_COLOR)
+                        if img is not None and img.size > 0:
+                            logger.info("placeholder 로드: %s (shape=%s)", f.name, img.shape)
+                            return img
+                    except Exception as exc:
+                        logger.warning("placeholder 로드 실패(%s): %s", f.name, exc)
+                        continue
+        logger.warning("placeholder 이미지 없음 — 회색 fallback 사용")
+        return None
+
     @staticmethod
     def _encode_image(image: Any) -> Optional[bytes]:
         """이미지를 JPEG 바이트로 인코딩."""
