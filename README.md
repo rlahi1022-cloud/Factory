@@ -260,6 +260,38 @@ Camera → AI Server → Main Server → DB → MFC Client
 - MFC  `CPacketBuilder::BuildRetrainUploadFrame()` / `GenerateSessionId()`
 - MFC  `CPageModel::OnRetrainUploadAck()` — ACK 수신 → 진행률 + RETRAIN_REQ 자동 발행
 
+### v0.14.0 — 검사 pause/resume 원격 제어
+
+클라이언트 메뉴 [검사 > 시작/중지] 가 **실제 AI 추론서버의 grab 루프를 중단/재개** 하도록 연결됨.
+이전엔 로컬 시뮬레이션 타이머만 on/off 하는 더미 동작이었음.
+
+**신규 프로토콜**:
+| 번호 | 이름 | 방향 |
+|---|---|---|
+| 160 | `INSPECT_CONTROL_REQ` | 클라 → 메인 |
+| 161 | `INSPECT_CONTROL_RES` | 메인 → 클라 |
+| 1020 | `INFERENCE_CONTROL_CMD` | 메인 → 추론 |
+| 1021 | `INFERENCE_CONTROL_RES` | 추론 → 메인 |
+
+**흐름**:
+```
+MFC 메뉴 [검사 > 중지]
+  ↓ INSPECT_CONTROL_REQ(160) {action:"pause", station_filter:0}
+MainServer: ConnectionRegistry 에서 ai_inference_* 찾아 각각에 중계
+  ↓ INFERENCE_CONTROL_CMD(1020) {action:"pause"}
+추론서버 TcpClient → StationRunner._handle_inference_control
+  ↓ self._pause_event.clear()
+_run_grab_producer: pause_event.wait() 에서 블록 → 카메라 grab 중단
+  → 추론/송신 파이프라인 자연스럽게 멈춤
+  ↓ INFERENCE_CONTROL_RES(1021) ACK
+MainServer → 클라 INSPECT_CONTROL_RES(161) → MessageBox 알림
+```
+
+**구현 특징**:
+- `asyncio.Event` 기반 → resume 시 grab 루프가 **즉시** 깨어남 (poll 없음)
+- station_filter: 0=전체, 1/2=특정 스테이션만
+- HealthChecker 의 server_type 태깅을 그대로 활용 (별도 식별 로직 X)
+
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고
 (CRITICAL 7 + HIGH 12 + MEDIUM 16 + LOW 11 = 총 46/47 완료)

@@ -77,6 +77,8 @@ class TcpClient:
 
         # ── 콜백 ──
         self._on_model_reload: Optional[Callable[[dict], Any]] = None  # 모델 리로드 콜백
+        # v0.14.0: INFERENCE_CONTROL_CMD(1020) 수신 콜백 — StationRunner 가 pause/resume 처리
+        self._on_inference_control: Optional[Callable[[dict], Any]] = None
         self._station_id: int = 0  # 이 추론서버의 스테이션 번호
 
     def set_station_id(self, station_id: int) -> None:
@@ -94,6 +96,14 @@ class TcpClient:
             callback: 모델 리로드를 수행할 함수 (cmd_dict를 인자로 받음)
         """
         self._on_model_reload = callback
+
+    def set_on_inference_control(self, callback: Callable[[dict], Any]) -> None:
+        """INFERENCE_CONTROL_CMD(1020) 수신 시 호출될 콜백 (v0.14.0).
+
+        Args:
+            callback: pause/resume 를 수행할 함수 (cmd_dict["action"] = "pause"|"resume")
+        """
+        self._on_inference_control = callback
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 연결 관리
@@ -347,6 +357,13 @@ class TcpClient:
                     await self._handle_model_reload(msg_dict)
                     continue
 
+                # ── INFERENCE_CONTROL_CMD(1020) → 검사 pause/resume + ACK ──
+                # v0.14.0: 메인서버가 보낸 action="pause"/"resume" 에 따라
+                # StationRunner 의 grab 이벤트 on/off.
+                if protocol_no == ProtocolNo.INFERENCE_CONTROL_CMD:
+                    await self._handle_inference_control(msg_dict)
+                    continue
+
                 # ── ACK/NACK 라우팅 ──
                 # inspection_id로 대기 중인 Future를 찾아 결과를 전달
                 inspection_id = msg_dict.get("inspection_id")
@@ -452,6 +469,52 @@ class TcpClient:
         }
         res_packet = PacketBuilder.build_packet(
             protocol_no=int(ProtocolNo.MODEL_RELOAD_RES),
+            body_dict=res_body,
+            request_id=request_id,
+        )
+        await self._send_raw(res_packet)
+
+    async def _handle_inference_control(self, cmd_dict: dict) -> None:
+        """INFERENCE_CONTROL_CMD(1020) 수신 → pause/resume + ACK(1021) (v0.14.0).
+
+        메인서버가 클라 요청(INSPECT_CONTROL_REQ 160)을 릴레이해 오면,
+        StationRunner 에 등록된 콜백이 실제 pause/resume 을 적용한다.
+        ACK 로 현재 상태(paused: true/false)를 회신한다.
+
+        Args:
+            cmd_dict: {action: "pause"|"resume", request_id: ...}
+        """
+        request_id = cmd_dict.get("request_id", "")
+        action = cmd_dict.get("action", "")
+
+        paused_now = False
+        ok = False
+        msg = ""
+
+        if self._on_inference_control is not None:
+            try:
+                # 콜백 반환값으로 현재 paused 상태를 받음 (True/False)
+                result = self._on_inference_control(cmd_dict)
+                if isinstance(result, bool):
+                    paused_now = result
+                ok = True
+                logger.info("검사 %s 적용 완료 | paused=%s", action, paused_now)
+            except Exception as exc:
+                msg = f"control callback failed: {exc}"
+                logger.error(msg)
+        else:
+            msg = "control callback not registered"
+            logger.warning(msg)
+
+        res_body = {
+            "station_id": self._station_id,
+            "action": action,
+            "paused": paused_now,
+            "success": ok,
+            "message": msg,
+        }
+        res_packet = PacketBuilder.build_packet(
+            protocol_no=int(ProtocolNo.INFERENCE_CONTROL_RES),
             body_dict=res_body,
             request_id=request_id,
         )

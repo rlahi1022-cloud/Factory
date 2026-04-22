@@ -39,6 +39,9 @@ private:
     void handle_retrain_upload(int fd, const std::string& json,
                                const std::vector<uint8_t>& binary);
 
+    // v0.14.0: 검사 pause/resume 요청 → 각 추론서버에 INFERENCE_CONTROL_CMD 중계
+    void handle_inspect_control(int fd, const std::string& json);
+
     // 유틸리티
     static std::string extract_str(const std::string& json, const std::string& key);
     static int extract_int(const std::string& json, const std::string& key);

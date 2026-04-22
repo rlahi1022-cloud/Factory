@@ -182,6 +182,11 @@ public:
     //   inspectionId  — 대상 검사 ID (수신한 패킷의 ID 그대로 반환)
     static CString BuildAck(int ackProtocolNo, const CString& inspectionId);
 
+    // BuildInspectControlReq (v0.14.0): 검사 pause/resume 요청 JSON (프로토콜 160)
+    //   stationFilter: 0=전체, 1=Station1, 2=Station2
+    //   action: _T("pause") 또는 _T("resume")
+    static CString BuildInspectControlReq(int stationFilter, const CString& action);
+
 private:
     // GetTimestamp: 현재 시각을 ISO8601 형식 문자열로 반환
     // 예) "2026-04-16T14:30:00"

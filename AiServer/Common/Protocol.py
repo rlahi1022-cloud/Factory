@@ -57,6 +57,8 @@ class ProtocolNo(IntEnum):
     MODEL_DEPLOY_ACK_EXT   = 157   # MFC → 운용: 배포 알림 수신 확인
     RETRAIN_UPLOAD         = 158   # v0.13.0: MFC → 운용 학습용 이미지 1장 업로드 (JSON+binary)
     RETRAIN_UPLOAD_ACK     = 159   # v0.13.0: 운용 → MFC 업로드 결과 ACK
+    INSPECT_CONTROL_REQ    = 160   # v0.14.0: MFC → 운용 검사 일시정지/재개 요청
+    INSPECT_CONTROL_RES    = 161   # v0.14.0: 운용 → MFC 결과 ACK
 
     SERVER_HEALTH_PUSH     = 170   # 운용 → MFC: 각 서버 헬스 상태 푸시 (5초 주기)
 
@@ -82,6 +84,8 @@ class ProtocolNo(IntEnum):
 
     MODEL_RELOAD_CMD       = 1010  # 운용 → 추론: 새 모델로 교체하라는 명령
     MODEL_RELOAD_RES       = 1011  # 추론 → 운용: 모델 교체 성공/실패 응답
+    INFERENCE_CONTROL_CMD  = 1020  # v0.14.0: 운용 → 추론 검사 pause/resume
+    INFERENCE_CONTROL_RES  = 1021  # v0.14.0: 추론 → 운용 상태 ACK
 
     # ===== 내부 1100~1199: 학습 서버 ↔ 운용서버 =====
 

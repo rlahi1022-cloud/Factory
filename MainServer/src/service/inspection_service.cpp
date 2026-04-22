@@ -41,7 +41,11 @@
 #include <cmath>      // std::isfinite (score NaN/Inf 체크)
 #include <filesystem>
 #include <fstream>
+#include <functional> // std::hash (thread id → size_t)
 #include <sstream>
+#include <system_error>
+#include <thread>     // std::this_thread::get_id (임시파일명 유일성)
+#include <unistd.h>   // getpid()
 
 namespace factory {
 
@@ -104,22 +108,23 @@ InspectionResult InspectionService::persist(const InspectionEvent& ev) {
 
     // 1. NG 이미지 3장 저장 (DB INSERT 전에 먼저 저장 — 경로를 DB에 바로 기록하기 위함)
     //    각 저장 실패는 치명적이지 않고 해당 경로만 비움.
+    //    v0.13.3: 파일명에 inspection_id 를 포함시켜 병렬 워커 경합을 원천 차단.
     if (!ev.image_bytes.empty()) {
-        result.image_path = save_blob(ev.station_id, ev.timestamp,
+        result.image_path = save_blob(ev.station_id, ev.timestamp, ev.inspection_id,
                                       ev.image_bytes, "original", ".jpg");
         if (result.image_path.empty()) {
             log_warn("AI", "원본 이미지 저장 실패 | id=%s", ev.inspection_id.c_str());
         }
     }
     if (!ev.heatmap_bytes.empty()) {
-        result.heatmap_path = save_blob(ev.station_id, ev.timestamp,
+        result.heatmap_path = save_blob(ev.station_id, ev.timestamp, ev.inspection_id,
                                         ev.heatmap_bytes, "heatmap", ".png");
         if (result.heatmap_path.empty()) {
             log_warn("AI", "히트맵 저장 실패 | id=%s", ev.inspection_id.c_str());
         }
     }
     if (!ev.pred_mask_bytes.empty()) {
-        result.pred_mask_path = save_blob(ev.station_id, ev.timestamp,
+        result.pred_mask_path = save_blob(ev.station_id, ev.timestamp, ev.inspection_id,
                                           ev.pred_mask_bytes, "mask", ".png");
         if (result.pred_mask_path.empty()) {
             log_warn("AI", "Pred Mask 저장 실패 | id=%s", ev.inspection_id.c_str());
@@ -200,18 +205,37 @@ bool InspectionService::validate(InspectionEvent& ev, std::string& out_error) {
     return true;
 }
 
-// 이미지 바이너리를 날짜 디렉터리 + epoch ms 기반 파일명으로 저장한다.
-// 원본/히트맵/마스크 3종 모두 동일한 ms 타임스탬프를 써서 같은 검사에 속한 파일임을
-// 파일명으로도 식별 가능하게 한다 (동일 호출 트랜잭션 내에서는 ms가 증가할 수 있지만,
-// 동일 검사 내 파일들은 suffix로 구분되므로 문제 없음).
+// ---------------------------------------------------------------------------
+// save_blob — 이미지 바이너리를 디스크에 atomic 저장 (v0.13.3 race-safe)
+//
+// 파일명:
+//   {root}/station{N}/{YYYYMMDD}/{sanitized_inspection_id}_{suffix}.{ext}
+//     예) ./storage/station1/20260422/station1-20260422055748159-000025_original.jpg
+//
+// 경합 방지 (v0.13.3 이전의 epoch_ms 방식 → inspection_id 기반으로 전환):
+//   이전: ng_{ms}_{suffix}.{ext} — 병렬 워커 2개가 같은 ms 에 진입하면 동일 파일
+//         충돌 → 크기 불일치/삭제 레이스/파일 사라짐 예외 발생
+//   현재: inspection_id 는 "station{N}-{YYYYMMDDHHMMSSmmm}-{seq6}" 로 AI 서버가
+//         발급하는 원천 유일 키 → 충돌 원천 불가
+//
+// atomic write 패턴:
+//   1) 임시파일 {path}.tmp.{pid}.{tid} 에 먼저 기록 + flush
+//   2) 크기 검증 (try/catch 로 filesystem 예외 흡수)
+//   3) std::filesystem::rename 으로 최종 경로로 atomic 교체
+//   → 다른 프로세스/스레드가 중간 상태 파일을 보지 못함
+//
+// 로그 레벨:
+//   작은 불일치/디스크 부족 등은 log_err_img, 정상은 log_img.
+// ---------------------------------------------------------------------------
 std::string InspectionService::save_blob(int station_id,
                                          const std::string& timestamp,
+                                         const std::string& inspection_id,
                                          const std::vector<uint8_t>& bytes,
                                          const std::string& suffix,
                                          const std::string& ext) {
     if (bytes.empty()) return "";
 
-    // 날짜 디렉터리 생성 (YYYYMMDD)
+    // 날짜 디렉터리 (YYYYMMDD) — timestamp 의 "YYYY-MM-DD" 앞 10자 활용
     std::string yyyymmdd;
     if (timestamp.size() >= 10) {
         yyyymmdd = timestamp.substr(0, 4) +
@@ -230,53 +254,103 @@ std::string InspectionService::save_blob(int station_id,
         yyyymmdd = os.str();
     }
 
-    // epoch ms로 파일명 충돌 방지 (suffix로 원본/히트맵/마스크 구분)
-    auto now = std::chrono::system_clock::now().time_since_epoch();
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+    // inspection_id sanitize — 파일명에 안전한 문자만 허용 (영숫자/-/_ 만).
+    // '/', '\\', '..' 등 경로 탐색/금지문자 차단.
+    std::string safe_id;
+    safe_id.reserve(inspection_id.size());
+    for (char c : inspection_id) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_') {
+            safe_id.push_back(c);
+        } else {
+            safe_id.push_back('_');
+        }
+    }
+    if (safe_id.empty()) {
+        // 만약 inspection_id 가 비어있거나 다 비허용 문자면 fallback 으로 epoch ms 사용.
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        safe_id = "unk_" + std::to_string(ms);
+    }
 
     std::ostringstream path_os;
     path_os << image_root_dir_ << "/station" << station_id
-            << "/" << yyyymmdd << "/ng_" << ms << "_" << suffix << ext;
-    std::string save_path = path_os.str();
+            << "/" << yyyymmdd << "/" << safe_id << "_" << suffix << ext;
+    const std::string final_path = path_os.str();
 
-    std::filesystem::create_directories(std::filesystem::path(save_path).parent_path());
+    // 임시파일 경로 — PID + thread id 로 동일 프로세스 내 스레드 간에도 유일
+    std::ostringstream tmp_os;
+    tmp_os << final_path << ".tmp." << ::getpid() << "."
+           << std::hash<std::thread::id>{}(std::this_thread::get_id());
+    const std::string tmp_path = tmp_os.str();
 
-    // 디스크 여유 공간 확인 (최소 100MB 여유 필요)
-    auto space_info = std::filesystem::space(
-        std::filesystem::path(save_path).parent_path());
-    if (space_info.available < 100ULL * 1024 * 1024) {
-        log_err_img("디스크 여유 공간 부족 | 잔여=%zu MB",
-                    space_info.available / (1024 * 1024));
+    std::error_code ec;
+    std::filesystem::create_directories(
+        std::filesystem::path(final_path).parent_path(), ec);
+    if (ec) {
+        log_err_img("디렉터리 생성 실패 | %s | %s",
+                    final_path.c_str(), ec.message().c_str());
         return "";
     }
 
-    std::ofstream ofs(save_path, std::ios::binary);
-    if (!ofs) {
-        log_err_img("파일 열기 실패 | %s", save_path.c_str());
-        return "";
-    }
-    ofs.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    ofs.flush();
-    if (!ofs.good()) {
-        log_err_img("파일 쓰기 실패 | %s", save_path.c_str());
-        ofs.close();
-        std::filesystem::remove(save_path);
-        return "";
-    }
-    ofs.close();
-
-    // 저장된 파일 크기 검증
-    auto file_size = std::filesystem::file_size(save_path);
-    if (file_size != bytes.size()) {
-        log_err_img("이미지 크기 불일치 | 예상=%zu 실제=%zu",
-                    bytes.size(), file_size);
-        std::filesystem::remove(save_path);
-        return "";
+    // 디스크 여유 공간 확인 (최소 100MB)
+    try {
+        auto space_info = std::filesystem::space(
+            std::filesystem::path(final_path).parent_path());
+        if (space_info.available < 100ULL * 1024 * 1024) {
+            log_err_img("디스크 여유 공간 부족 | 잔여=%zu MB",
+                        space_info.available / (1024 * 1024));
+            return "";
+        }
+    } catch (...) {
+        // space() 실패는 치명적이지 않음 — 계속 진행
     }
 
-    log_img("이미지 저장 완료 | %s", save_path.c_str());
-    return save_path;
+    // ── 1) 임시파일 쓰기 ──
+    {
+        std::ofstream ofs(tmp_path, std::ios::binary);
+        if (!ofs) {
+            log_err_img("임시파일 열기 실패 | %s", tmp_path.c_str());
+            return "";
+        }
+        ofs.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+        ofs.flush();
+        if (!ofs.good()) {
+            log_err_img("임시파일 쓰기 실패 | %s", tmp_path.c_str());
+            ofs.close();
+            std::filesystem::remove(tmp_path, ec);
+            return "";
+        }
+    } // ofs close() — RAII
+
+    // ── 2) 크기 검증 (filesystem 예외 흡수) ──
+    try {
+        auto file_size = std::filesystem::file_size(tmp_path);
+        if (file_size != bytes.size()) {
+            log_err_img("이미지 크기 불일치 | 예상=%zu 실제=%zu",
+                        bytes.size(), file_size);
+            std::filesystem::remove(tmp_path, ec);
+            return "";
+        }
+    } catch (const std::exception& exc) {
+        log_err_img("파일 크기 확인 실패 | %s | %s",
+                    tmp_path.c_str(), exc.what());
+        std::filesystem::remove(tmp_path, ec);
+        return "";
+    }
+
+    // ── 3) atomic rename (tmp → final) ──
+    std::filesystem::rename(tmp_path, final_path, ec);
+    if (ec) {
+        log_err_img("rename 실패 | %s → %s | %s",
+                    tmp_path.c_str(), final_path.c_str(), ec.message().c_str());
+        std::filesystem::remove(tmp_path, ec);
+        return "";
+    }
+
+    log_img("이미지 저장 완료 | %s", final_path.c_str());
+    return final_path;
 }
 
 } // namespace factory

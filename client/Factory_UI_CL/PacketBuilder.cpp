@@ -683,3 +683,30 @@ CString CPacketBuilder::BuildAck(int ackProtocolNo, const CString& inspectionId)
 
     return CString(json);
 }
+
+// BuildInspectControlReq (v0.14.0): 검사 pause/resume 요청 JSON
+CString CPacketBuilder::BuildInspectControlReq(int stationFilter, const CString& action)
+{
+    CStringA ts    = GetTimestamp();
+    CStringA reqId = GenerateRequestId();
+    CStringA actA(action);
+
+    CStringA json;
+    json.Format(
+        "{"
+        "\"protocol_no\":%d,"
+        "\"protocol_version\":\"%s\","
+        "\"request_id\":\"%s\","
+        "\"station_filter\":%d,"
+        "\"action\":\"%s\","
+        "\"timestamp\":\"%s\""
+        "}",
+        factory_client::INSPECT_CONTROL_REQ,
+        factory_client::PROTOCOL_VERSION,
+        (LPCSTR)reqId,
+        stationFilter,
+        (LPCSTR)actA,
+        (LPCSTR)ts);
+
+    return CString(json);
+}

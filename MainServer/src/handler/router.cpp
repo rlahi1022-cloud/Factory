@@ -143,6 +143,15 @@ void Router::on_packet_received(const std::any& payload) {
             log_ai("모델 리로드 응답 수신");
             break;
 
+        // ── 검사 제어 응답 (v0.14.0) ────────────────────────────────────
+        case ProtocolNo::INFERENCE_CONTROL_RES: {
+            int st = extract_int(packet.json_payload, "station_id");
+            std::string action = extract_str(packet.json_payload, "action");
+            log_ai("검사 제어 응답 수신 | station=%d action=%s",
+                   st, action.c_str());
+            break;
+        }
+
         // ── 학습 진행률 (epoch/loss 등 실시간 업데이트) ────────────────
         case ProtocolNo::TRAIN_PROGRESS: {
             TrainProgressEvent ev{};

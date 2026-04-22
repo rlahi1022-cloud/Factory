@@ -26,9 +26,34 @@
 // 실패 시 out.Destroy()로 초기화된 상태를 보장.
 namespace CameraViewUtil {
 
+// v0.14.1: 이미지 매직바이트 검증 — 알려진 포맷(JPEG/PNG) 아니면 Load 호출 금지.
+// 이유: 손상/빈/일부 바이트를 CImage::Load 에 넘기면 내부 상태가 깨져
+//       이후 StretchBlt 에서 ATLASSERT(hBitmap == m_hBitmap) 터짐.
+//       atlimage.h:1629. 로드 전에 거르는 게 가장 안전.
+static bool LooksLikeImageBytes(const std::vector<BYTE>& b) {
+    if (b.size() < 16) return false;           // 최소 헤더 크기
+    // JPEG: FF D8 FF
+    if (b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) return true;
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (b.size() >= 8 &&
+        b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47 &&
+        b[4] == 0x0D && b[5] == 0x0A && b[6] == 0x1A && b[7] == 0x0A) return true;
+    // BMP: "BM"
+    if (b[0] == 0x42 && b[1] == 0x4D) return true;
+    // GIF: "GIF8"
+    if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x38) return true;
+    return false;
+}
+
 bool LoadImageFromBytes(const std::vector<BYTE>& bytes, CImage& out) {
+    // 기존 상태 완전 초기화 — 이전 로드가 부분 성공했더라도 확실히 정리
     out.Destroy();
-    if (bytes.empty()) return false;
+
+    // 매직바이트 검증 — 손상/빈 데이터를 CImage::Load 에 보내지 않음.
+    // 이것이 atlimage.h:1629 ATLASSERT 방어의 핵심.
+    if (!LooksLikeImageBytes(bytes)) {
+        return false;
+    }
 
     HGLOBAL hMem = ::GlobalAlloc(GMEM_MOVEABLE, bytes.size());
     if (!hMem) return false;
@@ -47,10 +72,18 @@ bool LoadImageFromBytes(const std::vector<BYTE>& bytes, CImage& out) {
         return false;
     }
 
-    HRESULT hr = out.Load(pStream);
+    HRESULT hr = S_OK;
+    try {
+        hr = out.Load(pStream);
+    } catch (...) {
+        // 혹시 Load 내부에서 예외 → 확실히 정리
+        hr = E_FAIL;
+    }
     pStream->Release();  // HGLOBAL도 여기서 함께 해제
 
-    if (FAILED(hr)) {
+    // Load 성공이라 해도 너비/높이가 0 이면 사용 불가 → 버린다.
+    if (FAILED(hr) || out.IsNull() ||
+        out.GetWidth() <= 0 || out.GetHeight() <= 0) {
         out.Destroy();
         return false;
     }
@@ -58,16 +91,29 @@ bool LoadImageFromBytes(const std::vector<BYTE>& bytes, CImage& out) {
 }
 
 // StretchBlt 이미지 → 대상 사각형에 맞춰 그리기 (비율 유지 X, 단순 stretch)
+// v0.14.1: CImage 상태를 엄격 검증해 ATLASSERT 방어.
+//   IsNull() + GetWidth/Height > 0 + DC 유효 확인 후에만 그린다.
 static void DrawImageStretched(CImage& img, CDC& dc, const CRect& rc) {
     if (img.IsNull() || rc.Width() <= 0 || rc.Height() <= 0) return;
+    const int iw = img.GetWidth();
+    const int ih = img.GetHeight();
+    if (iw <= 0 || ih <= 0) return;   // 손상된 CImage 상태 회피
+
+    HDC hDC = dc.GetSafeHdc();
+    if (!hDC) return;
+
     // HALFTONE 모드 — 축소 시 깔끔한 필터링
-    int oldMode = ::SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
-    ::SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, nullptr);
-    img.StretchBlt(dc.GetSafeHdc(),
-                   rc.left, rc.top, rc.Width(), rc.Height(),
-                   0, 0, img.GetWidth(), img.GetHeight(),
-                   SRCCOPY);
-    ::SetStretchBltMode(dc.GetSafeHdc(), oldMode);
+    int oldMode = ::SetStretchBltMode(hDC, HALFTONE);
+    ::SetBrushOrgEx(hDC, 0, 0, nullptr);
+    try {
+        img.StretchBlt(hDC,
+                       rc.left, rc.top, rc.Width(), rc.Height(),
+                       0, 0, iw, ih,
+                       SRCCOPY);
+    } catch (...) {
+        // CImage 내부에서 예외가 나면 그리기 포기 — 빈 배경으로 표시
+    }
+    ::SetStretchBltMode(hDC, oldMode);
 }
 
 } // namespace CameraViewUtil
@@ -88,8 +134,13 @@ void CCameraView::SetInspection(int st, bool ng, double sc, EDefect def) {
 void CCameraView::Tick() { m_flash = !m_flash; if (m_isNG) Invalidate(); }
 
 void CCameraView::SetImage(const std::vector<BYTE>& bytes) {
-    if (bytes.empty()) { m_img.Destroy(); }
-    else { CameraViewUtil::LoadImageFromBytes(bytes, m_img); }
+    // v0.14.1: 무조건 Destroy 먼저 — 이전 이미지 상태를 남기지 않음.
+    // LoadImageFromBytes 실패 시 m_img 는 Null 상태로 유지되어
+    // OnPaint 에서 자연스럽게 그려지지 않는다 (빈 배경 + 뱃지만 표시).
+    m_img.Destroy();
+    if (!bytes.empty()) {
+        (void)CameraViewUtil::LoadImageFromBytes(bytes, m_img);
+    }
     Invalidate();
 }
 
@@ -198,8 +249,11 @@ CHeatmapView::CHeatmapView() : m_active(false) {}
 void CHeatmapView::SetActive(bool a) { m_active=a; Invalidate(); }
 
 void CHeatmapView::SetImage(const std::vector<BYTE>& bytes) {
-    if (bytes.empty()) { m_img.Destroy(); }
-    else { CameraViewUtil::LoadImageFromBytes(bytes, m_img); }
+    // v0.14.1: CCameraView::SetImage 와 동일 방어 패턴
+    m_img.Destroy();
+    if (!bytes.empty()) {
+        (void)CameraViewUtil::LoadImageFromBytes(bytes, m_img);
+    }
     Invalidate();
 }
 
@@ -247,8 +301,11 @@ void CPredMaskView::SetMask(bool is_active,
 }
 
 void CPredMaskView::SetImage(const std::vector<BYTE>& bytes) {
-    if (bytes.empty()) { m_img.Destroy(); }
-    else { CameraViewUtil::LoadImageFromBytes(bytes, m_img); }
+    // v0.14.1: CCameraView::SetImage 와 동일 방어 패턴
+    m_img.Destroy();
+    if (!bytes.empty()) {
+        (void)CameraViewUtil::LoadImageFromBytes(bytes, m_img);
+    }
     Invalidate();
 }
 
