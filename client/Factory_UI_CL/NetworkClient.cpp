@@ -468,22 +468,47 @@ void CNetworkClient::RecvLoop()
 // recv()가 한 번에 100바이트를 주지 않을 수 있습니다.
 // 예) 첫 번째 recv() → 60바이트, 두 번째 recv() → 40바이트
 // 따라서 원하는 만큼 받을 때까지 반복해야 합니다.
+//
+// v0.14.5 버그 수정:
+//   SO_RCVTIMEO(5초) 가 걸려 있으므로 큰 바이너리(예: NG_PUSH 5~6MB)를 받는
+//   중간에 잠깐 데이터가 끊기면 recv 가 SOCKET_ERROR + WSAETIMEDOUT 을 반환한다.
+//   예전 구현은 이걸 치명적 에러로 취급 → RecvLoop break → 한 사이클 뒤 끊김.
+//   이제 타임아웃은 "부분 진행" 으로 간주해 재시도하고, 종료 요청(m_bRunning=false)
+//   또는 실제 소켓 에러/정상종료(got==0) 만 실패로 처리한다.
+//   전체 완료까지 2분 하드리밋으로 무한 대기도 차단.
 bool CNetworkClient::RecvN(char* buf, int n)
 {
-    int totalRecv = 0;  // 지금까지 받은 바이트 수
+    int totalRecv = 0;
+    const DWORD startTick = ::GetTickCount();
+    constexpr DWORD HARD_DEADLINE_MS = 120 * 1000;  // 2분 — 비정상 스톨 방어
 
     while (totalRecv < n) {
-        // recv: 소켓에서 데이터 수신
-        // 반환값: 받은 바이트 수. 0이면 상대방이 연결 종료. 음수면 에러.
-        int got = recv(m_socket, buf + totalRecv, n - totalRecv, 0);
-
-        if (got <= 0) {
-            // got == 0: 서버가 정상적으로 연결 종료
-            // got < 0: 에러 발생 (SOCKET_ERROR)
+        if (!m_bRunning) return false;  // 사용자 Disconnect()
+        if (::GetTickCount() - startTick > HARD_DEADLINE_MS) {
+            TRACE(_T("[NetworkClient] RecvN 하드리밋 초과 — %d/%d\n"), totalRecv, n);
             return false;
         }
 
-        totalRecv += got;
+        int got = recv(m_socket, buf + totalRecv, n - totalRecv, 0);
+
+        if (got > 0) {
+            totalRecv += got;
+            continue;
+        }
+        if (got == 0) {
+            // 서버가 정상적으로 연결 종료
+            return false;
+        }
+        // got < 0 → 실제 에러인지 타임아웃인지 구분
+        int err = WSAGetLastError();
+        if (err == WSAETIMEDOUT || err == WSAEWOULDBLOCK) {
+            // 5초 동안 추가 데이터가 안 옴 — 큰 페이로드 중간 스톨.
+            // 연결은 살아있으므로 재시도 (전체 하드리밋은 위에서 감시).
+            continue;
+        }
+        // 실제 소켓 에러 (연결 끊김 등)
+        TRACE(_T("[NetworkClient] RecvN 에러: %d (%d/%d바이트)\n"), err, totalRecv, n);
+        return false;
     }
 
     return true;

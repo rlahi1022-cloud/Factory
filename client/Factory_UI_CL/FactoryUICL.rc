@@ -228,7 +228,9 @@ BEGIN
     LTEXT    "Standby",               IDC_STATIC_S1_LED,  130, 294, 220, 10
 
     // ── NG 이벤트 이력 (최대 10건, 세로 리스트, 스크롤) ─────────────────
-    // 각 행: [라벨][원본][히트맵][마스크] — CNgHistoryList가 소유드로우.
+    // v0.14.5: 텍스트 전용 컬럼 [ID|스테이션|시각|결과|점수] — CNgHistoryList가 소유드로우.
+    //  상단 3뷰(CCameraView/CHeatmapView/CPredMaskView)에서 실이미지 확인하므로
+    //  하단 이력은 메타정보만 표시 (종합현황 PageHome 의 NG 리스트와 동일 컨셉).
     LTEXT    "NG 이벤트 이력 (최근 10건)", IDC_STATIC,    10, 324,250, 10
     CONTROL  "", IDC_NG_LIST1, "STATIC",
              SS_BLACKFRAME | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP,
