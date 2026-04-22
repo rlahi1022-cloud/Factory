@@ -51,30 +51,51 @@ void SessionManager::register_session(int client_fd, const std::string& remote_a
 }
 
 // ---------------------------------------------------------------------------
-// unregister_session — 세션 제거 + 송신 스레드 정리 (join)
+// unregister_session — 세션 제거 + 송신 스레드 정리
+//
+// v0.14.3.1 버그 수정:
+//   이전 구현은 erase(it) 를 먼저 하고 나중에 sender->join() 했는데,
+//   erase 로 GuiSession 이 소멸되면 sender_loop 이 계속 접근하는 running/queue/cv
+//   같은 unique_ptr 들도 같이 소멸 → **use-after-free → segfault**.
+//
+//   수정: (1) 스레드에 종료 신호만 보내고 thread object 만 꺼냄
+//         (2) **mutex 밖에서** sender 스레드가 완전히 종료될 때까지 join
+//         (3) 스레드 종료 확정된 뒤 erase
+//   순서가 중요 — 스레드가 sess 포인터 참조를 멈춘 뒤에만 erase 해야 안전.
+//
+// 다른 쓰레드와의 레이스:
+//   (1) 단계 이후 broadcast 가 들어오면 큐에 쌓이지만 sender 가 곧 종료되어
+//   소비되지 않음 → 큐에만 쌓임. (3) 에서 erase 시 자연스럽게 소멸.
+//   메모리 약간 낭비되지만 crash 보다 낫다.
 // ---------------------------------------------------------------------------
 void SessionManager::unregister_session(int client_fd) {
-    // sender 스레드 종료를 기다리기 위해 mutex_ 밖에서 join 해야 한다
-    // (스레드가 send 중 블록됐다면 mutex 를 경쟁하지 않도록)
+    // (1) 스레드에 종료 신호만 보내고 thread object 획득
     std::unique_ptr<std::thread> sender_to_join;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = sessions_.find(client_fd);
         if (it == sessions_.end()) return;
-
-        // 송신 스레드 종료 신호 + 깨우기
-        if (it->second.running) it->second.running->store(false);
+        if (it->second.running)  it->second.running->store(false);
         if (it->second.queue_cv) it->second.queue_cv->notify_all();
-
-        // 스레드 소유권을 이전해서 mutex 밖에서 join
         sender_to_join = std::move(it->second.sender);
-
-        log_clt("클라이언트 해제 | fd=%d ip=%s", client_fd,
-                it->second.remote_addr.c_str());
-        sessions_.erase(it);
+        // erase 는 아직 하지 않음 — 스레드가 아직 running/queue 참조 중일 수 있음
     }
+
+    // (2) mutex 밖에서 스레드가 루프 탈출 후 완전히 종료될 때까지 대기
+    //     sender_loop 의 wait() 는 running==false 로 깨어나 즉시 리턴함.
     if (sender_to_join && sender_to_join->joinable()) {
         sender_to_join->join();
+    }
+
+    // (3) 스레드 종료 확정 → 안전하게 세션 삭제
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = sessions_.find(client_fd);
+        if (it != sessions_.end()) {
+            log_clt("클라이언트 해제 | fd=%d ip=%s", client_fd,
+                    it->second.remote_addr.c_str());
+            sessions_.erase(it);
+        }
     }
 }
 
@@ -195,25 +216,38 @@ bool SessionManager::send_frame(int fd, const OutgoingMessage& msg) {
 //   해당 클라의 큐만 쌓임 → drop-oldest 로 자연스럽게 해소.
 // ---------------------------------------------------------------------------
 void SessionManager::sender_loop(GuiSession* sess) {
-    if (!sess || !sess->running) return;
-    while (sess->running->load()) {
-        OutgoingMessage msg;
-        {
-            std::unique_lock<std::mutex> qlock(*sess->queue_mutex);
-            sess->queue_cv->wait(qlock, [sess] {
-                return !sess->queue->empty() || !sess->running->load();
-            });
-            if (!sess->running->load() && sess->queue->empty()) break;
-            msg = std::move(sess->queue->front());
-            sess->queue->pop_front();
+    // 방어 — 구성 요소 중 하나라도 null 이면 즉시 종료 (등록 경로 버그 대비)
+    if (!sess || !sess->running || !sess->queue ||
+        !sess->queue_mutex || !sess->queue_cv) {
+        return;
+    }
+    try {
+        while (sess->running->load()) {
+            OutgoingMessage msg;
+            {
+                std::unique_lock<std::mutex> qlock(*sess->queue_mutex);
+                sess->queue_cv->wait(qlock, [sess] {
+                    return !sess->queue->empty() || !sess->running->load();
+                });
+                if (!sess->running->load() && sess->queue->empty()) break;
+                if (sess->queue->empty()) continue;  // spurious wakeup
+                msg = std::move(sess->queue->front());
+                sess->queue->pop_front();
+            }
+            // 소켓 fd 는 세션 수명동안 유효. 송신 실패는 log 만 남기고 다음 메시지로.
+            if (!send_frame(sess->client_fd, msg)) {
+                log_err_push("송신 실패 | fd=%d ip=%s json=%zu bin=%zu",
+                             sess->client_fd, sess->remote_addr.c_str(),
+                             msg.json.size(), msg.binary.size());
+                // 연속 실패여도 계속 시도 (recv 쪽에서 dead 감지되면 세션 정리됨)
+            }
         }
-        // 소켓 fd 는 세션 수명동안 유효. 송신 실패는 log 만 남기고 다음 메시지로.
-        if (!send_frame(sess->client_fd, msg)) {
-            log_err_push("송신 실패 | fd=%d ip=%s json=%zu bin=%zu",
-                         sess->client_fd, sess->remote_addr.c_str(),
-                         msg.json.size(), msg.binary.size());
-            // 연속 실패여도 계속 시도 (recv 쪽에서 dead 감지되면 세션 정리됨)
-        }
+    } catch (const std::exception& exc) {
+        log_err_push("sender_loop 예외 | fd=%d err=%s",
+                     sess ? sess->client_fd : -1, exc.what());
+    } catch (...) {
+        log_err_push("sender_loop 알 수 없는 예외 | fd=%d",
+                     sess ? sess->client_fd : -1);
     }
 }
 

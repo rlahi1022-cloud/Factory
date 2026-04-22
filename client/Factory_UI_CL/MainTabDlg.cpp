@@ -849,7 +849,12 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
         // 라이브 NG_PUSH가 오면 상단은 덮어쓰고, 하단 리스트에는 추가됨.
         if (!m_initialImagesLoaded && m_stats) {
             m_initialImagesLoaded = true;
-            constexpr int kHistoryImagesPerStation = 10;  // 리스트 상한과 일치
+            // v0.14.4: 초기 이미지 preload 를 대폭 축소.
+            //   이전엔 Station1/2 × 10 = 20장 × 약 5MB = 100MB 를 로그인 직후
+            //   쏟아부어서 TCP 가 터지고 연결이 끊어지는 현상 발생.
+            //   → Station 당 최신 1장만 preload (총 2장 × 5MB = 10MB) 로 제한.
+            //   나머지 이력은 사용자가 해당 row 를 클릭할 때 on-demand 로 로드.
+            constexpr int kHistoryImagesPerStation = 1;
             auto ids1 = m_stats->GetRecentInspectionIdsByStation(1, kHistoryImagesPerStation);
             auto ids2 = m_stats->GetRecentInspectionIdsByStation(2, kHistoryImagesPerStation);
             // 역순으로 보냄(오래된 것 먼저) — 응답이 오는 순서대로 리스트 앞에 prepend되면
