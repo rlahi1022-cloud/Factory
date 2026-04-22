@@ -61,8 +61,8 @@ from pathlib import Path
 # 이 스크립트 파일(TestPipeline.py)의 절대 경로
 _THIS = Path(__file__).resolve()
 # Factory/config/config.json 경로 계산
-# TestPipeline.py는 Factory/AiServer/tests/에 있으므로 parent.parent.parent = Factory
-_CONFIG = _THIS.parent.parent.parent / "config" / "config.json"
+# TestPipeline.py는 Factory/AiServer/tests/common/에 있으므로 parent × 4 = Factory
+_CONFIG = _THIS.parent.parent.parent.parent / "config" / "config.json"
 
 # config.json 파일을 UTF-8로 읽어서 JSON 파싱
 with open(_CONFIG, "r", encoding="utf-8") as f:

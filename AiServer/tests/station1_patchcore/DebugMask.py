@@ -5,7 +5,7 @@ Anomalib이 실제로 어떤 pred_mask를 반환하는지 확인하는 디버그
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import cv2
 import numpy as np

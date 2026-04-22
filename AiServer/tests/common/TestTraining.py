@@ -35,7 +35,7 @@ from pathlib import Path
 
 # AiServer 루트 폴더를 파이썬 모듈 검색 경로에 추가한다.
 # 왜: tests 폴더 안에서 실행해도 Training, Common 등 상위 폴더의 모듈을 import할 수 있게 하기 위함이다.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 
 def test_patchcore_training(station_id: int, data_dir: str, device: str = "auto") -> None:
