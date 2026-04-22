@@ -53,10 +53,14 @@ enum class EventType : int {
     INSPECTION_INBOUND,       // 입고 검사 결과 도착 (프로토콜 1000)
     INSPECTION_ASSEMBLY,      // 조립 검사 결과 도착 (프로토콜 1002)
 
-    // ── 후처리 (Service 레이어 도입 후 정리) ──
-    // INSPECTION_VALIDATED, IMAGE_SAVE_REQUESTED, DB_WRITE_REQUESTED 제거됨
-    // → InspectionService가 내부에서 직접 처리
-    DB_WRITE_COMPLETED,       // Service 성공 → AckSender가 ACK 전송
+    // ── 검증 통과 → 백그라운드 영속화 (v0.12.0 분리) ──
+    // StationHandler 가 validate_only() 만 하고 즉시 ACK 를 쏘고,
+    // 실제 이미지 저장 + DB INSERT 는 이 이벤트를 구독한 InspectionService 워커가
+    // 별도 스레드에서 비동기 처리. AI 서버 ACK 타임아웃을 원천 회피.
+    INSPECTION_VALIDATED,
+
+    // ── 후처리 ──
+    DB_WRITE_COMPLETED,       // (legacy) Service 성공 신호 — v0.12.0 부터 AckSender 미사용
     GUI_PUSH_REQUESTED,       // Service 성공 → GuiNotifier가 클라이언트 푸시
 
     // ── ACK / 메타 정보 ──

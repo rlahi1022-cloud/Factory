@@ -81,7 +81,8 @@ void GuiRouter::route(int client_fd, const std::string& remote_addr,
         case static_cast<int>(ProtocolNo::RETRAIN_REQ):
             handle_retrain(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::EXT_ACK):
-            // 클라이언트의 keepalive/heartbeat — 서버 쪽 응답 불필요
+        case static_cast<int>(ProtocolNo::INSPECT_NG_ACK_EXT):
+            // 클라이언트 → 서버 ACK (keepalive, NG 수신 확인 등) — 별도 응답 불필요
             break;
         default:
             log_clt("미처리 프로토콜 | no=%d ip=%s", protocol_no, remote_addr.c_str());
