@@ -242,8 +242,13 @@ bool Config::parse(const std::string& json) {
                         if (!p.consume(',')) break;     // 다음 필드 구분자
                     }
                     p.consume('}');                      // 객체 닫기
+                    idx++;                               // ★ v0.15.5: 카운트 증가를 먼저
+                    // v0.15.5 치명 버그 수정:
+                    //   이전엔 consume(',') 뒤에서 idx++ → 마지막 객체(',' 없음)는 break 로
+                    //   조기 탈출하면서 idx 가 증가 안 됨 → count 가 1 부족한 값으로 저장 →
+                    //   get_health_targets() 가 마지막 target(ai_training) 을 무시하던 버그.
+                    //   파싱된 values_ 데이터 자체는 있지만 count 가 2 라 접근 불가 상태였음.
                     if (!p.consume(',')) break;          // 다음 객체 없으면 종료
-                    idx++;                               // 배열 인덱스 증가
                 }
                 // 배열 길이를 "xxx.count" 키에 저장 → get_health_targets()가 사용
                 values_[full_key + ".count"] = std::to_string(idx);
