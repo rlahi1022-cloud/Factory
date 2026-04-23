@@ -131,14 +131,23 @@ path traversal 방어(basename 화), 50MB 상한, session_id 유효성 검사 �
 | 판정 | score > threshold → NG |
 | 결함 분류 | score 구간별 (scratch, dent, contamination, deformation) |
 
-### Station2 — YOLO11 + PatchCore (조립 검사)
+### Station2 — YOLO11 단독 (조립 검사, v0.15.4 변경)
 
 | 항목 | 내용 |
 |------|------|
-| 1차 모델 | YOLO11 객체 탐지 (cap, label, liquid_level) |
-| 2차 모델 | PatchCore 표면 이상탐지 |
-| 판정 | YOLO 결함 감지 OR PatchCore 이상 → NG |
-| 출력 필드 | cap_ok, label_ok, fill_ok, detections, patchcore_score |
+| 모델 | YOLO11 객체 탐지 (cap, label, liquid_level) |
+| 판정 | YOLO 가 결함(누락/기울어짐 등) 감지 → NG |
+| 출력 필드 | cap_ok, label_ok, fill_ok, detections (patchcore_score 는 0.0 고정) |
+
+**v0.15.4 변경**: Station2 는 **YOLO11 단독** 으로 확정. 이전 계획의 "YOLO11 + PatchCore
+하이브리드" 에서 PatchCore 는 제거됨. `config.json` 의 `station2.patchcore_model_path`
+가 빈 값이면 Station2Inferencer 가 자동으로 PatchCore 경로를 skip 하고 YOLO 판정만 사용.
+
+영향:
+- `pred_mask` / `heatmap` 도 Station2 에서는 **영구적으로 미생성** (이전 v0.15.3 에서
+  "v0.16 구현 후보" 라 기록했던 계획은 폐기)
+- DB `assemblies.patchcore_score` 는 호환성 위해 0.0 값 계속 INSERT (컬럼 제거는 차기 마이그레이션)
+- MFC `CPageModel` 콤보박스에서 "Station #2 — PatchCore" 항목 제거
 
 ## AI서버가 보내는 NG 패킷 필드
 
@@ -286,7 +295,7 @@ _run_grab_producer():
 
 `create_data_yaml()` 가 항상 실제 구조에 맞게 `data.yaml` 을 덮어쓰므로 Roboflow 세트도 그대로 학습.
 
-## Station2 pred_mask 미생성 (v0.15.3 실측 관찰, v0.16 후보)
+## Station2 pred_mask 미생성 (v0.15.3 관찰 → v0.15.4 영구 확정)
 
 Station2 본격 가동(2026-04-23) 시점의 실측:
 
@@ -302,14 +311,9 @@ NG 푸시 | 스테이션=2 (원본=120,399  히트맵=1,213,960  마스크=0)
 - DB: `inspections.pred_mask_path` → NULL 저장 정상
 - MFC UI: `CameraView::SetImage(empty_vector)` 가 플레이스홀더 처리 (v0.14.7 race 방지 포함)
 
-**향후 구현 방향** (v0.16 후보):
-1. `Station2Inferencer._run_patchcore(label_roi)` 가 내부에서 PatchCore anomaly_map / pred_mask 를
-   함께 반환하도록 확장
-2. `infer()` 반환 dict 에 `"pred_mask": np.ndarray` 키 추가
-3. StationRunner 송신부는 이미 `pred_mask` 키 존재 시 PNG 인코딩하도록 되어있어 **수정 불필요**
-
-구현 영역은 `AiServer/Common/Inferencer.py` 의 Station2 섹션(~50줄 수정)으로 한정됨.
-시연에 영향 없으므로 정식 릴리스 이후 여유 시간에 진행 권장.
+**v0.15.4 결정**: ~~v0.16 pred_mask 구현~~ 계획 폐기. Station2 는 YOLO11 단독 확정되었으므로
+`pred_mask` 는 **영구적으로 미생성**. 라벨 표면 품질 검사는 Station1 PatchCore 와
+YOLO11 의 object-level 결함 판정(cap_missing / label_misaligned 등) 이 대체.
 
 ## INSPECT_META `model_id` 연결 (v0.15.0)
 

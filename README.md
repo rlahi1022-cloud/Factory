@@ -30,7 +30,7 @@ Camera → AI Server → Main Server → DB → MFC Client
 
   * asyncio.Queue 기반 비동기 파이프라인
   * Station1: PatchCore 이상탐지 (입고 검사)
-  * Station2: YOLO11 + PatchCore 하이브리드 (조립 검사)
+  * Station2: YOLO11 단독 (조립 검사) — v0.15.4 에서 PatchCore 제거 확정
   * NG 데이터만 서버 전송 (네트워크 최적화)
   * ACK 기반 재전송 (1초 타임아웃, 최대 3회)
 

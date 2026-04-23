@@ -56,7 +56,7 @@ mysql -u factorymanager -p1234 Factory -e \
 | 종합 현황 | CPageHome | OK/NG 누적, 불량률, 스테이션별 현황, NG 이력 리스트 (Summary 값은 로그인 직후 `STATS_RES(131)` 수신 시 초기화) |
 | ① 입고 검사 | CPageStation1 | PatchCore 결과 (카메라뷰 + 히트맵 + 이상점수) + 검사 설정 정보 서버값 자동 갱신 (v0.15.0) |
 | ② 조립 검사 | CPageStation2 | YOLO11 결과 (카메라뷰 + 디텍션 + 히트맵) |
-| 모델 관리 | CPageModel | 배포 모델 목록, 재학습 요청/진행률 (v0.11.0: Station2 PatchCore 선택 추가, v0.15.0: 재학습 중복 클릭 차단) |
+| 모델 관리 | CPageModel | 배포 모델 목록, 재학습 요청/진행률 (v0.15.0: 재학습 중복 클릭 차단, v0.15.4: Station2 PatchCore 옵션 제거 — YOLO11 단독 확정) |
 
 > **v0.15.2 변경**: 기존 "통계/이력" (CPageStats) 탭이 완전 제거되어 탭 구성이 5개 → 4개로 축소됨.
 > 통계 요약 정보는 CPageHome 의 Summary 영역이 계속 표시. 검사 이력 리스트도 CPageHome +
@@ -149,7 +149,7 @@ client/
 | 114 | INSPECT_HISTORY_REQ | station_filter, date_from, date_to, limit, request_id | ✅ 완성 |
 | 130 | STATS_REQ | station_filter, date_from, date_to, request_id | ✅ 완성 |
 | 150 | MODEL_LIST_REQ | request_id, timestamp | ✅ 완성 |
-| 152 | RETRAIN_REQ | station_id, model_type, product_name, image_count, session_id, request_id | ✅ 완성 (v0.11.0: Station2 PatchCore, v0.13.0: session_id 추가) |
+| 152 | RETRAIN_REQ | station_id, model_type, product_name, image_count, session_id, request_id | ✅ 완성 (v0.13.0: session_id 추가. v0.15.4: Station2 는 YOLO11 만 사용, PatchCore 요청은 Station1 전용) |
 | 158 | RETRAIN_UPLOAD | session_id, station_id, model_type, filename, file_index, total_files, image_size + [binary] | ✅ v0.13.0 (파일 업로드) |
 
 ### 서버 → 클라이언트 (응답/push)
