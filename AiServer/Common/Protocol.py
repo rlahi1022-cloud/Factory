@@ -131,6 +131,10 @@ ACK_REQUIRED_NOS: frozenset[int] = frozenset({
     ProtocolNo.TRAIN_FAIL,          # 학습 실패 — 누락되면 운용서버가 상태를 모름
     ProtocolNo.INSPECT_NG_PUSH,     # MFC에 NG 푸시 — 화면 갱신에 필요
     ProtocolNo.MODEL_DEPLOY_NOTIFY, # 모델 배포 알림 — MFC에서 활성 모델 표시
+    # v0.15.0: 학습 데이터 업로드도 ACK 필수로 분류 (C++ requires_ack() 와 일치).
+    # AiServer 는 현재 이 두 프로토콜 송신자가 아니지만, 공통 정의로 정합성 유지.
+    ProtocolNo.RETRAIN_UPLOAD,      # 클라→메인 (158) — 네트워크 순단 시 재전송
+    ProtocolNo.TRAIN_DATA_UPLOAD,   # 메인→학습 (1108) — 학습셋 누락 방지
 })
 
 

@@ -128,11 +128,22 @@ VALUES ('EMP-001', 'admin01', '$2b$12$...해시값...', 'Admin');
 
 학습서버 TRAIN_COMPLETE(1104) 수신 시 DbManager가 자동 INSERT.
 
+> ⚠️ **기획서 v0.12 ERD 대비 누락 컬럼**: `trained_by INT NULL FK → users.id` 가 기획서엔
+> 있으나 실제 `schema.sql` 에는 없음. "누가 학습한 모델인가" 추적 기능 미구현 상태.
+> 향후 `models` 테이블에 컬럼 추가 시 호환성 고려.
+
 ### bottles (용기 상태 추적)
 
 | 테이블 | 용도 |
 |--------|------|
 | bottles | 용기 상태 추적 (추후 연동) |
+
+> ⚠️ **기획서 v0.12 ERD 대비 컬럼 구성 차이**:
+> - 기획서: `bottle_type VARCHAR(50)`, `batch_no VARCHAR(50)`, `status ENUM('pending','ok','ng')`
+> - 실제 `schema.sql`: `code VARCHAR(50) UNIQUE`, `status VARCHAR(20)`, `updated_at` 추가
+>
+> 현재 DAO 가 `bottles` 에 INSERT 하지 않으므로 운영상 영향 없음. 기획서 원안대로 복원할지
+> 현 스키마를 기준으로 기획서를 업데이트할지는 추후 결정 필요.
 
 ## AI서버 필드 → DB 컬럼 매핑
 

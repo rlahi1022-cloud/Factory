@@ -127,6 +127,10 @@ inline bool requires_ack(ProtocolNo no) {
         case ProtocolNo::TRAIN_FAIL:
         case ProtocolNo::INSPECT_NG_PUSH:
         case ProtocolNo::MODEL_DEPLOY_NOTIFY:
+        // v0.15.0: 학습 데이터 업로드 파이프라인 ACK 필수화.
+        //   v0.13.0 도입 당시 requires_ack 누락 → 네트워크 순단 시 재전송 미적용.
+        case ProtocolNo::RETRAIN_UPLOAD:         // 클라→메인 (158)
+        case ProtocolNo::TRAIN_DATA_UPLOAD:      // 메인→학습 (1108)
             return true;
         default:
             return false;

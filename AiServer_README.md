@@ -237,3 +237,59 @@ body = {
 | `defect` | str | 결함 유형 (OK면 빈 문자열) |
 
 추가 필드(예: `detections`, `heatmap`, `cap_ok`)는 자유롭게 포함 가능 — Sender가 그대로 NG 패킷 본문에 실어 보냄.
+
+---
+
+## 검사 pause/resume (v0.14.7 최종판)
+
+```
+클라 MFC 메뉴 [검사 > 중지]
+  ↓ INSPECT_CONTROL_REQ(160)
+MainServer → 추론 INFERENCE_CONTROL_CMD(1020)
+  ↓ TcpClient._handle_inference_control
+StationRunner._handle_inference_control(cmd_dict):
+    if action == "pause":  self._pause_event.clear()
+    if action == "resume": self._pause_event.set()
+_run_grab_producer():
+    await self._pause_event.wait()   # pause 동안 여기서 블록
+    frame = await grab()             # Pylon 은 계속 grabbing 상태 유지
+```
+
+**설계 변경 배경 (v0.14.0 → v0.14.5 → v0.14.7)**:
+- v0.14.0: `_pause_event` 토글만 — 정상 동작
+- v0.14.5: "카메라도 멈춰야 한다" 요구로 `camera.stop_grabbing()` / `start_grabbing()` 추가 —
+  **두 번째 Start 이후 프레임이 안 나오는 Pylon 드라이버 버그 발생**
+- v0.14.7: **HW stop/start 완전 제거**, `_pause_event` 토글만 사용.
+  `GrabStrategy_LatestImageOnly` 가 pause 동안 최신 1프레임만 유지 → stale 누적 없음.
+  1클릭 = 100% 즉시 반응.
+
+**Tradeoff**: 카메라 HW 전력 상시 ON. 안정성 우선으로 채택.
+
+## HEALTH_PONG 양방향 (v0.14.7 + v0.15.0)
+
+추론/학습 서버 모두 `HEALTH_PING(1200)` 을 받으면 `HEALTH_PONG(1201)` 로 응답.
+
+- **추론서버 (Station1/2)**: `TcpClient._handle_health_ping` 이 자동 응답.
+  v0.15.0 부터 `"server_type": "station1"|"station2"` 필드 명시 포함.
+- **학습서버**: v0.14.7 에서 `TrainingMain._notify_recv_loop` 추가. 기존엔 notify 채널이
+  send-only 였는데 양방향으로 확장 → `"server_type": "training"` 응답.
+  → `ConnectionRegistry` 가 `ai_training` 으로 태깅 → GUI LED 초록 전환 가능.
+
+## YOLO 학습 데이터 레이아웃 자동 감지 (v0.14.7)
+
+`Training/TrainYolo._detect_yolo_layout(data_dir)` 가 5가지 레이아웃 자동 감지:
+- 표준: `images/train`, `images/val`
+- Roboflow: `train/images`, `valid/images`
+- Roboflow-val: `train/images`, `val/images`
+- Flat: 이미지 최상위 + `labels/`
+- Flat-valid: 이미지 + `valid/` 하위
+
+`create_data_yaml()` 가 항상 실제 구조에 맞게 `data.yaml` 을 덮어쓰므로 Roboflow 세트도 그대로 학습.
+
+## INSPECT_META `model_id` 연결 (v0.15.0)
+
+`StationRunner._send_inspect_meta` 가 `Inferencer.active_model_id` 를 실어 보냄.
+- `BaseInferencer.active_model_id` 기본 0
+- `MODEL_RELOAD_CMD(1010)` 에 `"model_db_id"` 필드가 포함되면 `_handle_model_reload` 가
+  `self._inferencer.active_model_id` 에 저장
+- MainServer 가 아직 이 필드를 동봉하지 않으면 0 유지 (이전 호환)

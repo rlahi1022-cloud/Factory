@@ -168,7 +168,18 @@ void CPageModel::OnBtnSelectFolder()
 
 void CPageModel::OnBtnRetrain()
 {
-    if (m_files.empty() || m_training) return;
+    // v0.15.0: 재학습 중복 실행 차단 — 이전엔 조용히 return 만 했는데, 사용자가
+    //   "왜 반응이 없지?" 하고 재클릭하는 사례가 있어 팝업으로 명시 피드백.
+    if (m_training) {
+        MessageBox(_T("이미 재학습이 진행 중입니다.\n완료 또는 실패 응답 수신 후 다시 시도하세요."),
+                   _T("중복 요청"), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (m_files.empty()) {
+        MessageBox(_T("업로드할 학습 이미지가 없습니다. 폴더를 먼저 선택하세요."),
+                   _T("알림"), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
     if (m_folderPath.IsEmpty()) {
         MessageBox(_T("먼저 학습 이미지 폴더를 선택하세요."),
                    _T("알림"), MB_OK | MB_ICONINFORMATION);

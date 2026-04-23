@@ -292,6 +292,42 @@ MainServer → 클라 INSPECT_CONTROL_RES(161) → MessageBox 알림
 - station_filter: 0=전체, 1/2=특정 스테이션만
 - HealthChecker 의 server_type 태깅을 그대로 활용 (별도 식별 로직 X)
 
+### v0.14.5~v0.14.7 — 안정성/UI 최적화
+
+* **v0.14.5**: JSON 파서 상한 64KB → **1MB** (200건 이력 응답 88KB 끊김 해결),
+  `WSAETIMEDOUT` 재시도 정책(2분 하드리밋), IDT_RECONNECT 10초 → 2초
+* **v0.14.6**: NG 3장 이미지(원본/히트맵/마스크) 네트워크 전송 안정화 —
+  긴 변 1280 이하로 다운스케일, 더미 레코드 생성 완전 제거
+* **v0.14.7**:
+  - `NG_PUSH(110)` JSON 에 **`"id"` (DB AUTO_INCREMENT) 필드 추가** — MFC NG 리스트 중복방지 키
+  - 학습서버 notify 양방향 통신(`_notify_recv_loop`) 추가 — HEALTH_PONG 에 `server_type="training"`
+  - pause/resume 최종 단순화: 카메라 HW stop/start 제거, `_pause_event` 토글만
+  - 세션 해제 3초 debounce — micro-disconnect 로그 노이즈 제거
+  - `CameraView` race 방지 (`CRITICAL_SECTION` + 더블버퍼링)
+  - 서버 LED tri-state (`Unknown`/`Up`/`Down`)
+  - YOLO 학습 데이터 레이아웃 5종 자동 감지 (Roboflow 포함)
+
+### v0.14.9 — Arduino 단순화
+
+* Arduino 빨강/초록 LED 로직 단순화 (`arduino_led_control.ino` 통합)
+* MFC PageStation1 임계값 "0.50" 하드코딩 제거 → "AUTO (F1 최적화)" 표기
+
+### v0.15.0 — 통신 경로 정합성 (현재)
+
+* **MODEL_LIST_RES(151) → PageStation1 연결**: v0.14.9 에서 하드코딩 제거 후 "로딩 중..." 만
+  표시되던 것을 실제 서버값으로 자동 갱신 (`MainTabDlg::OnNetResponse` 에서 주입)
+* **`requires_ack()` 보강**: `RETRAIN_UPLOAD(158)` / `TRAIN_DATA_UPLOAD(1108)` 도 ACK 필수
+  분류 (C++ `Protocol.h` + Python `Protocol.py` 양쪽)
+* **`HEALTH_PONG(1201)` 에 `server_type` 필드 명시**: 이전엔 `station_id` 로 유추하던 것을
+  `"station1"/"station2"` 로 직접 전송 → ConnectionRegistry 매칭 단순화
+* **`PacketBuilder::ExtractString` 백슬래시 카운팅 수정**: `\\"` 같은 escape 패턴에서
+  조기 종료 가능성 차단
+* **재학습 중복 클릭 차단**: `PageModel::OnBtnRetrain` 이 진행 중일 때 MessageBox 로 명시
+* **`TcpClient.py` 모델 파일 임시파일 정리 `except: pass` 제거**: WARN 로그로 추적
+* **`Inferencer.active_model_id` 도입**: `INSPECT_META` 의 `model_id=0` 하드코딩 제거.
+  `MODEL_RELOAD_CMD` 에 `model_db_id` 필드 포함 시 자동 세팅 (현재 서버는 미동봉 → 0 유지)
+* **`ConnectionPool` 주석 보강**: nullptr 저장의 의도(shutdown double-close 회피)를 명확화
+
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고
 (CRITICAL 7 + HIGH 12 + MEDIUM 16 + LOW 11 = 총 46/47 완료)

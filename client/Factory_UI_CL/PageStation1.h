@@ -34,6 +34,11 @@ public:
     //   골라 하단 m_ngList 를 초기 채움. 텍스트 전용 리스트이므로 이미지는 주입하지 않음.
     //   실시간 NG_PUSH 가 들어오면 기존 AddNgEntry 경로로 맨 위에 누적됨.
     void PopulateNgHistoryFromJson(const std::string& json);
+
+    // v0.15.0: MODEL_LIST_RES(151) 수신 시 호출 — station_id=1 && is_active=1 모델을 찾아
+    //   상단 "검사 설정" 정보(IDC_STATIC_S1_CFG_*)를 서버값으로 갱신.
+    //   초기엔 "로딩 중..."/"-"로 표시되다가 이 함수 호출로 실제 값이 주입된다.
+    void UpdateModelInfo(const std::string& json);
 protected:
     CCameraView     m_cam;     // 패널 1: 원본 이미지 (Image)
     CHeatmapView    m_heat;    // 패널 2: Anomaly Map 오버레이

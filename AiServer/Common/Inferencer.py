@@ -148,6 +148,11 @@ class BaseInferencer:
             config: StationConfig 객체 (모델 경로, 임계값 등 설정 포함)
         """
         self._config = config  # 설정 객체 저장
+        # v0.15.0: 현재 활성화된 모델의 DB id (INSPECT_META 의 model_id 필드용).
+        #   MODEL_RELOAD_CMD(1010) 수신 시 cmd_dict["model_db_id"] 로 세팅.
+        #   MainServer 가 아직 이 필드를 보내지 않으면 0 유지(= 추적 불가 상태).
+        #   향후 MainServer GuiNotifier 쪽에 model_db_id 동봉 기능 추가 시 자동 동작.
+        self.active_model_id: int = 0
 
     def load_model(self) -> None:
         """모델 파일을 메모리에 로드한다. 하위 클래스에서 반드시 구현해야 한다."""

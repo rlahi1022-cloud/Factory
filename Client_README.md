@@ -57,7 +57,7 @@ mysql -u factorymanager -p1234 Factory -e \
 | 입고 검사 | CPageStation1 | PatchCore 결과 (카메라뷰 + 히트맵 + 이상점수) |
 | 조립 검사 | CPageStation2 | YOLO11 결과 (카메라뷰 + 디텍션 + 히트맵) |
 | 통계/이력 | CPageStats | 시간대별 추세, 파레토 차트, 레이턴시 분포 |
-| 모델 관리 | CPageModel | 배포 모델 목록, 재학습 요청/진행률 (v0.11.0: Station2 PatchCore 선택 추가) |
+| 모델 관리 | CPageModel | 배포 모델 목록, 재학습 요청/진행률 (v0.11.0: Station2 PatchCore 선택 추가, v0.15.0: 재학습 중복 클릭 차단) |
 
 ## 디렉터리 구조
 
@@ -109,13 +109,19 @@ client/
 클라이언트                          메인서버
     │                                   │
     │<────── INSPECT_NG_PUSH(110) ──────│
-    │   {inspection_id, station_id,     │
+    │   {id, inspection_id, station_id, │  ← v0.14.7: id(DB AUTO_INCREMENT) 추가
     │    result, defect_type, score,    │
-    │    latency_ms, timestamp}         │
+    │    latency_ms, timestamp,         │
+    │    image_size, heatmap_size,      │  ← v0.9.0: 3장 이미지 크기
+    │    pred_mask_size}                │
+    │   + 원본/히트맵/마스크 바이너리 3장
     │                                   │
     │── INSPECT_NG_ACK_EXT(111) ───────>│
     │   {inspection_id}                 │
 ```
+
+필드 변환: AI→Main 은 `"defect"`, Main→Client 는 `"defect_type"` (의도적 변환).
+`id` 필드(v0.14.7) 는 NG 리스트 중복방지 키로 사용 (이전 로컬 카운터 `m_nextId` 폐기).
 
 ### 서버 상태 수신
 
@@ -217,6 +223,9 @@ TestPacketBuilder.exe
 - 재학습 요청/진행률 (RETRAIN_REQ/RETRAIN_PROGRESS_PUSH)
   - **v0.11.0**: CPageModel 콤보박스에 "Station #2 — PatchCore" 옵션 추가 —
     YOLO11 과 라벨 표면 PatchCore 를 각각 독립적으로 재학습 요청 가능
+  - **v0.15.0**: 재학습 진행 중 버튼 재클릭 시 MessageBox 로 차단 (이전엔 조용히 무시)
+- **v0.15.0**: MODEL_LIST_RES(151) 수신 시 PageStation1 의 "검사 설정" 라벨 자동 갱신
+  (모델명/버전을 서버값으로 표기 — 이전엔 하드코딩 "PatchCore v1.2.0" 이었음)
 - 서버 헬스 LED 표시
 - 시뮬레이션 모드 (서버 미연결 시 더미 데이터)
 - **config.json 통합 설정 로드** (ClientConfig)

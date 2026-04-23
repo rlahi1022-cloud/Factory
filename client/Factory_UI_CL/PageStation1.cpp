@@ -226,3 +226,67 @@ void CPageStation1::OnBtnS1Stop()
     if (CWnd* w = GetDlgItem(IDC_BTN_S1_START)) w->EnableWindow(TRUE);
     if (CWnd* w = GetDlgItem(IDC_BTN_S1_STOP))  w->EnableWindow(FALSE);
 }
+
+// ============================================================================
+// UpdateModelInfo (v0.15.0) — MODEL_LIST_RES(151) 수신 시 검사 설정 정보 갱신.
+// ============================================================================
+// 서버 응답 예시:
+//   {"protocol_no":151,"models":[
+//     {"id":1,"station_id":1,"model_type":"PatchCore","version":"v20260422_1530",
+//      "accuracy":0.95,"deployed_at":"2026-04-22 15:30:00","is_active":1}, ...]}
+//
+// Station1 은 station_id=1 && is_active=1 인 PatchCore 모델을 찾아
+// IDC_STATIC_S1_CFG_MODEL 에 "PatchCore v20260422_1530" 형식으로 표시.
+// input_size/backbone/threshold 는 서버에서 오지 않으므로 프로젝트 기본값 고정 표기.
+void CPageStation1::UpdateModelInfo(const std::string& json)
+{
+    CStringA jsonA(json.c_str());
+
+    int arrStart = jsonA.Find("\"models\"");
+    if (arrStart < 0) return;
+    int arrS = jsonA.Find('[', arrStart);
+    int arrE = jsonA.Find(']', arrS);
+    if (arrS < 0 || arrE < 0) return;
+
+    CStringA arr = jsonA.Mid(arrS + 1, arrE - arrS - 1);
+
+    // station_id=1 && is_active=1 인 최초 모델만 사용.
+    CStringA modelType, version;
+    int pos = 0;
+    while (pos < arr.GetLength()) {
+        int os = arr.Find('{', pos);
+        int oe = arr.Find('}', os);
+        if (os < 0 || oe < 0) break;
+        CStringA obj = arr.Mid(os, oe - os + 1);
+
+        int sid    = CPacketBuilder::ExtractInt(obj, "station_id");
+        int active = CPacketBuilder::ExtractInt(obj, "is_active");
+        if (sid == 1 && active == 1) {
+            modelType = CPacketBuilder::ExtractString(obj, "model_type");
+            version   = CPacketBuilder::ExtractString(obj, "version");
+            break;
+        }
+        pos = oe + 1;
+    }
+
+    auto set = [&](int id, LPCTSTR v) {
+        CWnd* w = GetDlgItem(id); if (w) w->SetWindowText(v);
+    };
+
+    if (!modelType.IsEmpty()) {
+        CString label;
+        label.Format(_T("%S %S"), (LPCSTR)modelType,
+                     version.IsEmpty() ? "(no-ver)" : (LPCSTR)version);
+        set(IDC_STATIC_S1_CFG_MODEL, label);
+        // 서버가 아직 input_size/backbone/threshold 를 보내지 않으므로 프로젝트 기본값 표기.
+        set(IDC_STATIC_S1_CFG_INPUT,    _T("224×224"));
+        set(IDC_STATIC_S1_CFG_THRESH,   _T("AUTO (F1 최적화)"));
+        set(IDC_STATIC_S1_CFG_BACKBONE, _T("ResNet-18 (사전학습)"));
+        TRACE(_T("[PageStation1] 모델 정보 갱신: %s\n"), (LPCTSTR)label);
+    } else {
+        set(IDC_STATIC_S1_CFG_MODEL,    _T("미배포"));
+        set(IDC_STATIC_S1_CFG_INPUT,    _T("-"));
+        set(IDC_STATIC_S1_CFG_THRESH,   _T("-"));
+        set(IDC_STATIC_S1_CFG_BACKBONE, _T("-"));
+    }
+}

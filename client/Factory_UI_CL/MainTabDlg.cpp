@@ -940,8 +940,11 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
         break;
 
     case factory_client::MODEL_LIST_RES:
-        // 모델 목록 응답 → 모델 페이지에 전달
+        // 모델 목록 응답 → 모델 페이지 + Station1 검사 설정 정보 갱신 (v0.15.0)
+        //   Station1 의 상단 "검사 설정" 라벨(모델명/입력크기/임계값/백본)은
+        //   로그인 직후엔 "로딩 중..."/"-"로 표시되다가 이 응답 수신 시 실제 값으로 주입된다.
         if (m_model) m_model->OnModelListRes(*pJson);
+        if (m_st1)   m_st1  ->UpdateModelInfo(*pJson);
         break;
 
     case factory_client::RETRAIN_RES:

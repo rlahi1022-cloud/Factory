@@ -388,8 +388,16 @@ class TcpClient:
         Args:
             ping_dict: 수신한 HEALTH_PING 메시지 내용
         """
+        # v0.15.0: server_type 필드 명시적 포함.
+        #   ConnectionRegistry 의 server_type 태깅이 기존엔 station_id 로부터 유추되었으나,
+        #   (Router 가 packet 내용으로 server_type 추론 → ai_inference_1/2 매칭)
+        #   Protocol_README 에 명시된 대로 PONG 응답에 server_type 을 직접 실어 보내
+        #   매칭 로직을 단순화하고 로그 추적성을 높인다.
+        #   학습서버(TrainingMain._notify_recv_loop) 는 이미 v0.14.7 에서 동일 방식 적용됨.
+        server_type = f"station{self._station_id}" if self._station_id in (1, 2) else "unknown"
         pong_body = {
             "station_id": self._station_id,  # 어느 스테이션인지
+            "server_type": server_type,      # v0.15.0: "station1" / "station2"
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "status": "normal",  # 현재 상태 (normal / degraded)
             "queue_size": 0,     # 처리 대기 중인 큐 크기
@@ -445,10 +453,16 @@ class TcpClient:
                 cmd_dict["model_path"] = local_path
             except Exception as exc:
                 logger.error("모델 파일 저장 실패: %s", exc)
-                # 실패 시 임시파일 정리
+                # 실패 시 임시파일 정리 (v0.15.0: except: pass 제거)
+                #   수백 MB 모델 파일의 임시본이 남으면 디스크가 조용히 소진되므로
+                #   정리 실패 자체를 WARN 로그로 추적할 수 있게 한다. 예외 종류와
+                #   경로까지 기록해 운영자가 수동 정리 가능.
                 if os.path.exists(tmp_path):
-                    try: os.remove(tmp_path)
-                    except: pass
+                    try:
+                        os.remove(tmp_path)
+                    except OSError as rm_exc:
+                        logger.warning("임시파일 정리 실패 path=%s err=%s",
+                                       tmp_path, rm_exc)
 
         success = False
         if self._on_model_reload is not None:
