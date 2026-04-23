@@ -740,6 +740,17 @@ class Station2Inferencer(BaseInferencer):
         fill_ok = ("liquid_level" in detected_classes
                    and "liquid_level_missing" not in defects)
 
+        # v0.15.3 주석: Station1 과 달리 이 dict 에는 "heatmap" / "pred_mask" / "anomaly_map"
+        #   키가 **의도적으로 없음** — 현재 구현에서 Station2 는 YOLO 구조 판정을 우선으로
+        #   NG 를 결정하고, PatchCore 는 total_score 기여만 함. 그 결과:
+        #     - StationRunner._run_inference 가 result_dict.get("pred_mask") → None 획득
+        #     - pred_mask_bytes = None 으로 송신 → GUI 푸시 JSON 에 pred_mask_size=0
+        #     - MFC CPageStation2 의 Pred Mask 뷰 = 플레이스홀더 유지 (안전한 폴백)
+        #   통신/DB/UI 모두 pred_mask_size=0 을 정상 처리하므로 **기능 미완성**일 뿐
+        #   통신 에러나 크래시 원인 아님. v0.16 후보 작업:
+        #     _run_patchcore 호출 내부에서 anomaly_map / pred_mask 도 가져와 여기 dict 에
+        #     추가하면 Station1 과 동일 UI 완성도 확보 (StationRunner 송신부는 이미
+        #     pred_mask 키가 있으면 PNG 인코딩하도록 되어있어 추가 수정 불필요).
         return {
             "result": "NG" if is_ng else "OK",
             "score": round(total_score, 4),
@@ -752,6 +763,8 @@ class Station2Inferencer(BaseInferencer):
             "fill_ok": fill_ok,
             "yolo_detections": detections,
             "bbox_overlay": bbox_overlay,               # 바운딩 박스 오버레이 이미지
+            # "pred_mask": (미구현 — 위 주석 참조)
+            # "heatmap":   (미구현 — bbox_overlay 가 현재 히트맵 역할 대체)
         }
 
     # ── YOLO11 객체탐지 실행 ──

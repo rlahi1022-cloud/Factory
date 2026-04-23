@@ -286,6 +286,31 @@ _run_grab_producer():
 
 `create_data_yaml()` 가 항상 실제 구조에 맞게 `data.yaml` 을 덮어쓰므로 Roboflow 세트도 그대로 학습.
 
+## Station2 pred_mask 미생성 (v0.15.3 실측 관찰, v0.16 후보)
+
+Station2 본격 가동(2026-04-23) 시점의 실측:
+
+```
+NG 푸시 | 스테이션=2 (원본=120,399  히트맵=1,213,960  마스크=0)
+```
+
+**원인**: `Station2Inferencer.infer()` 반환 dict 에 `pred_mask` / `heatmap` 키가 **의도적으로 없음**
+(YOLO 구조 판정 위주, PatchCore 는 `total_score` 기여만).
+
+**현재 안전성** — 통신/DB/UI 모두 빈 마스크를 정상 처리:
+- 통신: `pred_mask_size=0` 프로토콜상 허용
+- DB: `inspections.pred_mask_path` → NULL 저장 정상
+- MFC UI: `CameraView::SetImage(empty_vector)` 가 플레이스홀더 처리 (v0.14.7 race 방지 포함)
+
+**향후 구현 방향** (v0.16 후보):
+1. `Station2Inferencer._run_patchcore(label_roi)` 가 내부에서 PatchCore anomaly_map / pred_mask 를
+   함께 반환하도록 확장
+2. `infer()` 반환 dict 에 `"pred_mask": np.ndarray` 키 추가
+3. StationRunner 송신부는 이미 `pred_mask` 키 존재 시 PNG 인코딩하도록 되어있어 **수정 불필요**
+
+구현 영역은 `AiServer/Common/Inferencer.py` 의 Station2 섹션(~50줄 수정)으로 한정됨.
+시연에 영향 없으므로 정식 릴리스 이후 여유 시간에 진행 권장.
+
 ## INSPECT_META `model_id` 연결 (v0.15.0)
 
 `StationRunner._send_inspect_meta` 가 `Inferencer.active_model_id` 를 실어 보냄.
