@@ -65,10 +65,10 @@ BOOL CPageModel::OnInitDialog()
 
     CComboBox* cb = (CComboBox*)GetDlgItem(IDC_COMBO_TARGET);
     if (cb) {
-        // 인덱스는 OnBtnRetrain() 분기와 동일한 순서를 유지해야 함
+        // v0.15.4: Station2 는 YOLO11 단독 확정 → "Station #2 — PatchCore" 옵션 제거.
+        //   인덱스는 OnBtnRetrain() 분기와 동일한 순서 유지.
         cb->AddString(_T("Station #1 — PatchCore"));   // 0
         cb->AddString(_T("Station #2 — YOLO11"));      // 1
-        cb->AddString(_T("Station #2 — PatchCore"));   // 2 (라벨 표면 품질)
         cb->SetCurSel(0);
     }
 
@@ -168,7 +168,18 @@ void CPageModel::OnBtnSelectFolder()
 
 void CPageModel::OnBtnRetrain()
 {
-    if (m_files.empty() || m_training) return;
+    // v0.15.0: 재학습 중복 실행 차단 — 이전엔 조용히 return 만 했는데, 사용자가
+    //   "왜 반응이 없지?" 하고 재클릭하는 사례가 있어 팝업으로 명시 피드백.
+    if (m_training) {
+        MessageBox(_T("이미 재학습이 진행 중입니다.\n완료 또는 실패 응답 수신 후 다시 시도하세요."),
+                   _T("중복 요청"), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (m_files.empty()) {
+        MessageBox(_T("업로드할 학습 이미지가 없습니다. 폴더를 먼저 선택하세요."),
+                   _T("알림"), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
     if (m_folderPath.IsEmpty()) {
         MessageBox(_T("먼저 학습 이미지 폴더를 선택하세요."),
                    _T("알림"), MB_OK | MB_ICONINFORMATION);
@@ -178,14 +189,15 @@ void CPageModel::OnBtnRetrain()
     // ── 학습 대상 결정 (콤보 인덱스 순서 = OnInitDialog 의 AddString) ──
     //   0: Station #1 — PatchCore
     //   1: Station #2 — YOLO11
-    //   2: Station #2 — PatchCore
+    // v0.15.4: Station2 PatchCore 항목 제거 — sel==2 분기는 더 이상 사용되지 않지만,
+    //   혹시 모를 이전 상태나 리소스 조작으로 진입하면 안전하게 Station #1 로 폴백.
     int station_id = 1;
     CString model_type = _T("PatchCore");
     CComboBox* cb = (CComboBox*)GetDlgItem(IDC_COMBO_TARGET);
     if (cb) {
         int sel = cb->GetCurSel();
-        if (sel == 1)      { station_id = 2; model_type = _T("YOLO11");    }
-        else if (sel == 2) { station_id = 2; model_type = _T("PatchCore"); }
+        if (sel == 1) { station_id = 2; model_type = _T("YOLO11"); }
+        // sel == 0 (기본) 또는 그 외: Station #1 PatchCore
     }
 
     CString product_name;

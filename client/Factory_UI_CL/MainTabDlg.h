@@ -23,7 +23,10 @@
 #include "PageHome.h"
 #include "PageStation1.h"
 #include "PageStation2.h"
-#include "PageStats.h"
+// v0.15.2: PageStats (통계/이력 탭) 완전 제거.
+//   이전 admin 의 "통계 제거 필요" 후속 작업으로 탭 자체를 걷어냄.
+//   STATS_RES(131) 는 PageHome::ApplyStatsRes 가 Summary 누적값 초기화에 계속 사용.
+//   INSPECT_HISTORY_RES(115) 도 PageHome + PageStation1 이 처리.
 #include "PageModel.h"
 #include <vector>
 #include <memory>
@@ -69,14 +72,14 @@ protected:
 
     // ── 탭 컨트롤 ────────────────────────────────────────────────────────
     CTabCtrl m_tab;         // 탭 UI 컨트롤
-    int m_activeTab;        // 현재 활성 탭 인덱스 (0~4)
+    int m_activeTab;        // 현재 활성 탭 인덱스 (0~3, v0.15.2: 통계 탭 제거로 4→3 로 축소)
 
     // ── 페이지 (각 탭의 내용 다이얼로그) ─────────────────────────────────
     std::unique_ptr<CPageHome>     m_home;   // 탭 0: 종합 현황
     std::unique_ptr<CPageStation1> m_st1;    // 탭 1: ① 입고 검사
     std::unique_ptr<CPageStation2> m_st2;    // 탭 2: ② 조립 검사
-    std::unique_ptr<CPageStats>    m_stats;  // 탭 3: 통계/이력
-    std::unique_ptr<CPageModel>    m_model;  // 탭 4: 모델 관리
+    // v0.15.2: 통계/이력 탭 제거 — CPageStats 멤버 삭제.
+    std::unique_ptr<CPageModel>    m_model;  // 탭 3: 모델 관리
 
     // ── 검사 데이터 ──────────────────────────────────────────────────────
     std::vector<InspectionRecord> m_recs;  // 검사 이력 (시뮬레이션 + 서버 데이터)

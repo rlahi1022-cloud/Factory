@@ -64,7 +64,8 @@
     },
     "station2": {
       "model_path": "./models/station2_yolo.pt",
-      "patchcore_model_path": "./models/station2_patchcore.ckpt",
+      "_comment_patchcore": "v0.15.4: Station2 는 YOLO11 단독 확정. 빈 값 → Station2Inferencer 가 자동 skip 하고 YOLO 판정만 사용.",
+      "patchcore_model_path": "",
       "yolo_conf_threshold": 0.5,
       "yolo_iou_threshold": 0.45,
       "yolo_input_size": 640,

@@ -151,12 +151,23 @@ CStringA CPacketBuilder::ExtractString(const CStringA& json, const CStringA& key
     int firstQuote = json.Find('"', colon + 1);
     if (firstQuote < 0 || firstQuote >= jsonLen - 1) return "";
 
-    // value의 끝 따옴표 찾기 (이스케이프된 따옴표 건너뛰기)
+    // value의 끝 따옴표 찾기 (v0.15.0 개선):
+    //   단순히 json[i-1]=='\\' 만 검사하면 `"a\\"b"` 같이 백슬래시가 짝수개 연속될 때
+    //   → `\\` 는 "리터럴 백슬래시" 이므로 그 뒤의 `"` 는 진짜 종료 따옴표인데
+    //   기존 로직은 이것을 escape 된 따옴표로 오판하여 조기 종료 실패 → 필드 오염.
+    //   올바른 판정: 직전 백슬래시 개수가 짝수면 종료, 홀수면 escape.
     int lastQuote = -1;
     for (int i = firstQuote + 1; i < jsonLen; ++i) {
-        if (json[i] == '"' && (i == 0 || json[i - 1] != '\\')) {
-            lastQuote = i;
-            break;
+        if (json[i] == '"') {
+            // 직전 위치에서부터 거꾸로 거슬러 올라가며 `\` 개수(bsCount)를 센다.
+            //   `\\"` → bsCount=2 (짝수) → 이 `"` 는 "리터럴 백슬래시 + 종료 따옴표"
+            //   `\"`  → bsCount=1 (홀수) → 이 `"` 는 이스케이프된 따옴표 (문자열 내부)
+            int bsCount = 0;
+            for (int j = i - 1; j >= firstQuote + 1 && json[j] == '\\'; --j) bsCount++;
+            if ((bsCount % 2) == 0) {
+                lastQuote = i;
+                break;
+            }
         }
     }
     if (lastQuote < 0) return "";
@@ -207,6 +218,9 @@ double CPacketBuilder::ExtractDouble(const CStringA& json, const CStringA& key)
     char* endptr = nullptr;
     double val = strtod((LPCSTR)json + colon + 1, &endptr);
     if (endptr == (LPCSTR)json + colon + 1) return 0.0;  // 숫자 없음
+    // v0.15.2: NaN / Inf 차단 — 악의적 또는 손상된 JSON 이 "score": NaN 같은 값을 보내면
+    //   후속 연산에서 NaN 전파 + UI 표시 깨짐. 0.0 으로 방어.
+    if (!_finite(val)) return 0.0;
     return val;
 }
 

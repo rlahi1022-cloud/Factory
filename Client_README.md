@@ -49,15 +49,18 @@ mysql -u factorymanager -p1234 Factory -e \
    VALUES ('EMP-001', 'admin01', '\$2b\$12\$...', 'Admin');"
 ```
 
-## 화면 구성 (5개 탭)
+## 화면 구성 (4개 탭, v0.15.2)
 
 | 탭 | 클래스 | 기능 |
 |----|--------|------|
-| 종합 현황 | CPageHome | OK/NG 누적, 불량률, 스테이션별 현황, NG 이력 리스트 |
-| 입고 검사 | CPageStation1 | PatchCore 결과 (카메라뷰 + 히트맵 + 이상점수) |
-| 조립 검사 | CPageStation2 | YOLO11 결과 (카메라뷰 + 디텍션 + 히트맵) |
-| 통계/이력 | CPageStats | 시간대별 추세, 파레토 차트, 레이턴시 분포 |
-| 모델 관리 | CPageModel | 배포 모델 목록, 재학습 요청/진행률 (v0.11.0: Station2 PatchCore 선택 추가) |
+| 종합 현황 | CPageHome | OK/NG 누적, 불량률, 스테이션별 현황, NG 이력 리스트 (Summary 값은 로그인 직후 `STATS_RES(131)` 수신 시 초기화) |
+| ① 입고 검사 | CPageStation1 | PatchCore 결과 (카메라뷰 + 히트맵 + 이상점수) + 검사 설정 정보 서버값 자동 갱신 (v0.15.0) |
+| ② 조립 검사 | CPageStation2 | YOLO11 결과 (카메라뷰 + 디텍션 + 히트맵) |
+| 모델 관리 | CPageModel | 배포 모델 목록, 재학습 요청/진행률 (v0.15.0: 재학습 중복 클릭 차단, v0.15.4: Station2 PatchCore 옵션 제거 — YOLO11 단독 확정) |
+
+> **v0.15.2 변경**: 기존 "통계/이력" (CPageStats) 탭이 완전 제거되어 탭 구성이 5개 → 4개로 축소됨.
+> 통계 요약 정보는 CPageHome 의 Summary 영역이 계속 표시. 검사 이력 리스트도 CPageHome +
+> CPageStation1 이 분담. `STATS_REQ(130)` / `INSPECT_HISTORY_REQ(114)` 프로토콜은 그대로 유지.
 
 ## 디렉터리 구조
 
@@ -74,7 +77,7 @@ client/
 │   ├── PageHome.h/cpp                # 종합 현황 페이지
 │   ├── PageStation1.h/cpp            # 입고 검사 페이지
 │   ├── PageStation2.h/cpp            # 조립 검사 페이지
-│   ├── PageStats.h/cpp               # 통계/이력 페이지
+│   │                                 # (v0.15.2: PageStats.h/cpp 삭제됨 — 통계 탭 제거)
 │   ├── PageModel.h/cpp               # 모델 관리 페이지
 │   ├── CameraView.h/cpp              # 카메라/히트맵 커스텀 뷰
 │   ├── Factory_UI_CL.h/cpp           # MFC 앱 클래스
@@ -109,13 +112,19 @@ client/
 클라이언트                          메인서버
     │                                   │
     │<────── INSPECT_NG_PUSH(110) ──────│
-    │   {inspection_id, station_id,     │
+    │   {id, inspection_id, station_id, │  ← v0.14.7: id(DB AUTO_INCREMENT) 추가
     │    result, defect_type, score,    │
-    │    latency_ms, timestamp}         │
+    │    latency_ms, timestamp,         │
+    │    image_size, heatmap_size,      │  ← v0.9.0: 3장 이미지 크기
+    │    pred_mask_size}                │
+    │   + 원본/히트맵/마스크 바이너리 3장
     │                                   │
     │── INSPECT_NG_ACK_EXT(111) ───────>│
     │   {inspection_id}                 │
 ```
+
+필드 변환: AI→Main 은 `"defect"`, Main→Client 는 `"defect_type"` (의도적 변환).
+`id` 필드(v0.14.7) 는 NG 리스트 중복방지 키로 사용 (이전 로컬 카운터 `m_nextId` 폐기).
 
 ### 서버 상태 수신
 
@@ -140,7 +149,7 @@ client/
 | 114 | INSPECT_HISTORY_REQ | station_filter, date_from, date_to, limit, request_id | ✅ 완성 |
 | 130 | STATS_REQ | station_filter, date_from, date_to, request_id | ✅ 완성 |
 | 150 | MODEL_LIST_REQ | request_id, timestamp | ✅ 완성 |
-| 152 | RETRAIN_REQ | station_id, model_type, product_name, image_count, session_id, request_id | ✅ 완성 (v0.11.0: Station2 PatchCore, v0.13.0: session_id 추가) |
+| 152 | RETRAIN_REQ | station_id, model_type, product_name, image_count, session_id, request_id | ✅ 완성 (v0.13.0: session_id 추가. v0.15.4: Station2 는 YOLO11 만 사용, PatchCore 요청은 Station1 전용) |
 | 158 | RETRAIN_UPLOAD | session_id, station_id, model_type, filename, file_index, total_files, image_size + [binary] | ✅ v0.13.0 (파일 업로드) |
 
 ### 서버 → 클라이언트 (응답/push)
@@ -217,6 +226,9 @@ TestPacketBuilder.exe
 - 재학습 요청/진행률 (RETRAIN_REQ/RETRAIN_PROGRESS_PUSH)
   - **v0.11.0**: CPageModel 콤보박스에 "Station #2 — PatchCore" 옵션 추가 —
     YOLO11 과 라벨 표면 PatchCore 를 각각 독립적으로 재학습 요청 가능
+  - **v0.15.0**: 재학습 진행 중 버튼 재클릭 시 MessageBox 로 차단 (이전엔 조용히 무시)
+- **v0.15.0**: MODEL_LIST_RES(151) 수신 시 PageStation1 의 "검사 설정" 라벨 자동 갱신
+  (모델명/버전을 서버값으로 표기 — 이전엔 하드코딩 "PatchCore v1.2.0" 이었음)
 - 서버 헬스 LED 표시
 - 시뮬레이션 모드 (서버 미연결 시 더미 데이터)
 - **config.json 통합 설정 로드** (ClientConfig)

@@ -184,7 +184,7 @@ Visual Studio → 솔루션 정리(Clean) → 리빌드. Windows PC 에서 이�
 - 로그인 → history(200건) → NG 리스트/Summary 일시적 0 → STATS_RES(131) 도착 시 누적값으로 점프. **의도된 동작** (DB 스냅샷 초기화). "로딩 중..." 표시 추가하면 UX 개선 가능.
 - HealthChecker 매 tick broadcast 로 NG_PUSH 와 HEALTH_PUSH 가 겹치면 session 송신 큐 포화 가능. 현재는 drop-oldest 로 방어.
 - Manual 테스트 버튼 제거 후에도 RC 리소스 ID(`IDC_BTN_S1_OK` 등) 는 `Resource.h` 에 남아있음. 다음 RC 청소 때 삭제 권장.
-- README / Protocol_README / AiServer_README 등 MD 문서는 v0.14.3~0.14.5 수준에 머물러 있어 별도 업데이트 필요:
-  - `NG_PUSH(110)` JSON 예시에 `"id"` 필드 추가
-  - 학습서버 notify 양방향 통신 문단 추가
-  - 세션 해제 debounce 규칙 운영 매뉴얼에 반영
+- ~~README / Protocol_README / AiServer_README 등 MD 문서는 v0.14.3~0.14.5 수준에 머물러 있어 별도 업데이트 필요~~ → **v0.15.0 에서 일괄 반영** (`docs/CHANGES_v0.15.0.md` 참조):
+  - ✅ `NG_PUSH(110)` JSON 예시에 `"id"` 필드 추가 (Protocol_README, Client_README)
+  - ✅ 학습서버 notify 양방향 통신 문단 추가 (AiServer_README)
+  - ✅ 세션 해제 debounce 규칙은 README 의 v0.14.7 섹션 참고

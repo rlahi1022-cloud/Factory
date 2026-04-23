@@ -30,7 +30,7 @@ Camera → AI Server → Main Server → DB → MFC Client
 
   * asyncio.Queue 기반 비동기 파이프라인
   * Station1: PatchCore 이상탐지 (입고 검사)
-  * Station2: YOLO11 + PatchCore 하이브리드 (조립 검사)
+  * Station2: YOLO11 단독 (조립 검사) — v0.15.4 에서 PatchCore 제거 확정
   * NG 데이터만 서버 전송 (네트워크 최적화)
   * ACK 기반 재전송 (1초 타임아웃, 최대 3회)
 
@@ -291,6 +291,64 @@ MainServer → 클라 INSPECT_CONTROL_RES(161) → MessageBox 알림
 - `asyncio.Event` 기반 → resume 시 grab 루프가 **즉시** 깨어남 (poll 없음)
 - station_filter: 0=전체, 1/2=특정 스테이션만
 - HealthChecker 의 server_type 태깅을 그대로 활용 (별도 식별 로직 X)
+
+### v0.14.5~v0.14.7 — 안정성/UI 최적화
+
+* **v0.14.5**: JSON 파서 상한 64KB → **1MB** (200건 이력 응답 88KB 끊김 해결),
+  `WSAETIMEDOUT` 재시도 정책(2분 하드리밋), IDT_RECONNECT 10초 → 2초
+* **v0.14.6**: NG 3장 이미지(원본/히트맵/마스크) 네트워크 전송 안정화 —
+  긴 변 1280 이하로 다운스케일, 더미 레코드 생성 완전 제거
+* **v0.14.7**:
+  - `NG_PUSH(110)` JSON 에 **`"id"` (DB AUTO_INCREMENT) 필드 추가** — MFC NG 리스트 중복방지 키
+  - 학습서버 notify 양방향 통신(`_notify_recv_loop`) 추가 — HEALTH_PONG 에 `server_type="training"`
+  - pause/resume 최종 단순화: 카메라 HW stop/start 제거, `_pause_event` 토글만
+  - 세션 해제 3초 debounce — micro-disconnect 로그 노이즈 제거
+  - `CameraView` race 방지 (`CRITICAL_SECTION` + 더블버퍼링)
+  - 서버 LED tri-state (`Unknown`/`Up`/`Down`)
+  - YOLO 학습 데이터 레이아웃 5종 자동 감지 (Roboflow 포함)
+
+### v0.14.9 — Arduino 단순화
+
+* Arduino 빨강/초록 LED 로직 단순화 (`arduino_led_control.ino` 통합)
+* MFC PageStation1 임계값 "0.50" 하드코딩 제거 → "AUTO (F1 최적화)" 표기
+
+### v0.15.0 — 통신 경로 정합성
+
+* **MODEL_LIST_RES(151) → PageStation1 연결**: v0.14.9 에서 하드코딩 제거 후 "로딩 중..." 만
+  표시되던 것을 실제 서버값으로 자동 갱신 (`MainTabDlg::OnNetResponse` 에서 주입)
+* **`requires_ack()` 보강**: `RETRAIN_UPLOAD(158)` / `TRAIN_DATA_UPLOAD(1108)` 도 ACK 필수
+  분류 (C++ `Protocol.h` + Python `Protocol.py` 양쪽)
+* **`HEALTH_PONG(1201)` 에 `server_type` 필드 명시**: 이전엔 `station_id` 로 유추하던 것을
+  `"station1"/"station2"` 로 직접 전송 → ConnectionRegistry 매칭 단순화
+* **`PacketBuilder::ExtractString` 백슬래시 카운팅 수정**: `\\"` 같은 escape 패턴에서
+  조기 종료 가능성 차단
+* **재학습 중복 클릭 차단**: `PageModel::OnBtnRetrain` 이 진행 중일 때 MessageBox 로 명시
+* **`TcpClient.py` 모델 파일 임시파일 정리 `except: pass` 제거**: WARN 로그로 추적
+* **`Inferencer.active_model_id` 도입**: `INSPECT_META` 의 `model_id=0` 하드코딩 제거.
+  `MODEL_RELOAD_CMD` 에 `model_db_id` 필드 포함 시 자동 세팅 (현재 서버는 미동봉 → 0 유지)
+* **`ConnectionPool` 주석 보강**: nullptr 저장의 의도(shutdown double-close 회피)를 명확화
+
+### v0.15.1 — Hotfix: DB 컬럼 정합성
+
+* **`dao.cpp` SQL 컬럼명 `model_path` → `file_path`**: 기획서 v0.12 ERD 및 실제 운영 DB 가
+  `file_path` 를 쓰는데 코드가 `model_path` 로 INSERT 시도 → "Unknown column" 에러로 학습 완료
+  배포 파이프라인 전부 실패하던 문제 수정.
+* **`schema.sql` 을 기획서 ERD 에 맞춰 재정의**: `ENUM('PatchCore','YOLO11')`, `VARCHAR(20)`,
+  `file_path`, `trained_by FK → users.id`.
+* **`ModelInfo` 구조체에 `file_path` 필드 추가** (외부 사용처 영향 없는 확장).
+
+### v0.15.2 — PageStats (통계/이력) 탭 완전 제거 (현재)
+
+* **5개 탭 → 4개 탭**: 종합 현황 / ① 입고 검사 / ② 조립 검사 / 모델 관리
+* admin 의 `5c821f3 통계 제거 필요` 후속 작업 — `CPageStats` 클래스와 리소스 참조 완전 삭제
+  (`PageStats.cpp/h` 삭제 + `MainTabDlg` 에서 `m_stats` 참조 7곳 제거 + vcxproj 엔트리 제거)
+* **기능 이관**:
+  - Summary 누적값 초기화: `PageHome::ApplyStatsRes` (변경 없음)
+  - DB 검사 이력 리스트: `PageHome::OnInspectHistoryRes` + `PageStation1::PopulateNgHistoryFromJson`
+  - NG_IMAGE 의 timestamp/score: 패킷(`pkt->timestamp_iso`, `pkt->score`) 에서 직접 추출
+    (v0.14.7 에서 이미 패킷에 담김)
+* **유지**: `STATS_REQ(130)` / `STATS_RES(131)`, `INSPECT_HISTORY_REQ(114)` / `_RES(115)`
+  프로토콜 자체는 그대로. **MainServer / AiServer 재빌드 불필요**.
 
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고

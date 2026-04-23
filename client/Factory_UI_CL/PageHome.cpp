@@ -73,9 +73,8 @@ void CPageHome::Update(const std::vector<InspectionRecord>& /*recs*/)
         CWnd* w = GetDlgItem(id);
         if (w) w->SetWindowText(v);
     };
-    // v0.15.0: 모델 정보는 서버 MODEL_LIST_RES(151) 수신 시 SetModelInfo()로 주입.
-    // 초기 하드코딩 제거 — 로딩 전까지 빈 문자열 유지.
-    // (기존: "모델: PatchCore v1.2.0 | Latency: ~52ms" 등 하드코딩)
+    set(IDC_STATIC_S1_MODEL_INFO, _T("모델: PatchCore v1.2.0 | Latency: ~52ms"));
+    set(IDC_STATIC_S2_MODEL_INFO, _T("모델: YOLO11 v1.0.0 + PatchCore v1.1.0"));
 
     // 누적 카운터로 Summary/스테이션 박스 다시 그림
     RefreshSummary();
@@ -254,12 +253,9 @@ void CPageHome::AddNgRow(const InspectionRecord& r)
         --total;
     }
 
-    // v0.14.7: Summary 누적 NG 카운터 +1 (station 별).
-    //   OK_COUNT_PUSH(112) 가 다음에 올 때 서버 절대값으로 덮어쓰므로 일시적 오차는 자동 수렴.
-    if (r.station == 1 || r.station == 2) {
-        ++m_cumNg[r.station];
-    }
-    RefreshSummary();
+    // v0.16.0: ++m_cumNg 제거 — OK_COUNT_PUSH(112) 가 5초마다 서버 절대값으로
+    //   덮어쓰므로 여기서 증분하면 중복 증가 발생 (Total 폭증 버그 원인).
+    //   Summary 갱신은 UpdateStationCount() / ApplyStatsRes() 에서만 수행.
 }
 
 // ============================================================================
@@ -313,17 +309,4 @@ void CPageHome::OnLvnDoubleClickNgList(NMHDR* pNMHDR, LRESULT* pResult)
     if (m_onRequestShowImage) {
         m_onRequestShowImage(stationId, inspectionId);
     }
-}
-
-// ============================================================================
-// SetModelInfo (v0.15.0) — 서버 MODEL_LIST_RES(151) 수신 시 모델 정보 갱신
-// ============================================================================
-// MainTabDlg::OnNetResponse 에서 MODEL_LIST_RES 파싱 후 호출.
-// s1Info 예: "PatchCore v1.2.0 | Latency: ~52ms"
-// s2Info 예: "YOLO11 v1.0.0 + PatchCore v1.1.0"
-void CPageHome::SetModelInfo(const CString& s1Info, const CString& s2Info)
-{
-    CWnd* w;
-    if ((w = GetDlgItem(IDC_STATIC_S1_MODEL_INFO))) w->SetWindowText(s1Info);
-    if ((w = GetDlgItem(IDC_STATIC_S2_MODEL_INFO))) w->SetWindowText(s2Info);
 }

@@ -34,14 +34,14 @@
 | 103 | LOGOUT_RES | 운용 → MFC | ✅ 완성 |
 | 104 | REGISTER_REQ | MFC → 운용 | ✅ 완성 (DB INSERT) |
 | 105 | REGISTER_RES | 운용 → MFC | ✅ 완성 |
-| 110 | INSPECT_NG_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier, 이미지 바이너리 첨부) |
+| 110 | INSPECT_NG_PUSH | 운용 → MFC | ✅ 완성 (v0.14.7: `id`(DB AUTO_INCREMENT) 필드 추가, 3장 이미지 동봉) |
 | 112 | INSPECT_OK_COUNT_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
 | 114 | INSPECT_HISTORY_REQ | MFC → 운용 | ✅ 완성 (DB 조회) |
 | 115 | INSPECT_HISTORY_RES | 운용 → MFC | ✅ 완성 |
-| 130 | STATS_REQ | MFC → 운용 | ✅ 완성 (DB 집계) |
-| 131 | STATS_RES | 운용 → MFC | ✅ 완성 |
+| 130 | STATS_REQ | MFC → 운용 | ✅ 완성 (DB 집계) — v0.15.2 이후 PageHome Summary 초기화 전용 |
+| 131 | STATS_RES | 운용 → MFC | ✅ 완성 — PageHome::ApplyStatsRes 에서만 처리 (PageStats 제거) |
 | 150 | MODEL_LIST_REQ | MFC → 운용 | ✅ 완성 (DB 조회) |
-| 151 | MODEL_LIST_RES | 운용 → MFC | ✅ 완성 |
+| 151 | MODEL_LIST_RES | 운용 → MFC | ✅ 완성 (v0.15.0: PageStation1 검사설정 정보 자동 갱신에 사용) |
 | 152 | RETRAIN_REQ | MFC → 운용 | ✅ 완성 (v0.13.0: session_id 필드 추가) |
 | 153 | RETRAIN_RES | 운용 → MFC | ✅ 완성 |
 | 154 | RETRAIN_PROGRESS_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
@@ -50,6 +50,65 @@
 | 160 | INSPECT_CONTROL_REQ | MFC → 운용 | ✅ v0.14.0 (pause/resume 요청) |
 | 161 | INSPECT_CONTROL_RES | 운용 → MFC | ✅ v0.14.0 (pause/resume 결과) |
 | 170 | SERVER_HEALTH_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
+
+#### INSPECT_NG_PUSH (110) 본문 — v0.14.7 갱신
+
+```json
+{
+  "protocol_no": 110,
+  "id": 12345,                          // v0.14.7: DB AUTO_INCREMENT — MFC NG 리스트 중복방지 키
+  "inspection_id": "station1-20260422120000123-000042",
+  "station_id": 1,
+  "result": "NG",
+  "defect_type": "contamination",       // ※ AI→Main 의 "defect" 를 Main→MFC 에서 "defect_type" 로 변환
+  "score": 0.87,
+  "latency_ms": 45,
+  "timestamp": "2026-04-22T12:00:00.123",
+  "image_size": 102400,                 // 이어지는 원본 JPEG 바이트수 (0 이면 없음)
+  "heatmap_size": 51200,                // 이어지는 히트맵 PNG 바이트수
+  "pred_mask_size": 25600               // 이어지는 예측 마스크 PNG 바이트수 (Station2 미해당시 0)
+}
+[원본 image_size 바이트][히트맵 heatmap_size 바이트][마스크 pred_mask_size 바이트]
+```
+
+필드명 변환: AI 서버는 송신 시 `"defect"` 단일 필드 사용. MainServer 내부 `InspectionEvent::defect_type`
+저장 → GUI 송신 시 `"defect_type"` 으로 렌더. 의도적 변환이며 MFC 는 `defect_type` 기대.
+
+#### MODEL_LIST_RES (151) 본문 — v0.15.0
+
+```json
+{
+  "protocol_no": 151,
+  "models": [
+    {
+      "id": 12,                          // DB row id
+      "station_id": 1,
+      "model_type": "PatchCore",
+      "version": "v20260422_1530",
+      "accuracy": 0.953,
+      "deployed_at": "2026-04-22 15:30:00",
+      "is_active": 1
+    }
+  ]
+}
+```
+
+v0.15.0: MFC 클라이언트의 **PageModel(모델 관리 탭)** 과 **PageStation1(검사 설정 GroupBox)** 가
+둘 다 이 응답을 수신. PageStation1 은 `station_id==1 && is_active==1` 인 항목을 찾아
+"모델: PatchCore v20260422_1530" 형식으로 상단 정보 라벨을 자동 갱신.
+
+현재 `input_size`, `backbone`, `threshold` 필드는 프로토콜에 포함되지 않음(MFC 는 프로젝트 기본값 표기).
+향후 서버에서 포함할 계획.
+
+#### INSPECT_CONTROL_REQ (160) / _RES (161) — v0.14.0
+
+```json
+// 160 (MFC → 운용)
+{"protocol_no": 160, "action": "pause", "station_filter": 0, "request_id": "req-..."}
+// 161 (운용 → MFC)
+{"protocol_no": 161, "success": true, "paused": true, "message": "...", "request_id": "req-..."}
+```
+`station_filter`: 0=전체, 1=Station1, 2=Station2. `action`: `"pause"` | `"resume"`.
 
 #### RETRAIN_UPLOAD (158) / RETRAIN_UPLOAD_ACK (159) — v0.13.0
 
@@ -121,7 +180,22 @@
 | 번호 | 이름 | 방향 | 구현 상태 |
 |------|------|------|----------|
 | 1200 | HEALTH_PING | 운용 → 각 서버 | 메인서버: TCP connect만 |
-| 1201 | HEALTH_PONG | 각 서버 → 운용 | AI서버: 자동응답 완성 (server_type 포함) |
+| 1201 | HEALTH_PONG | 각 서버 → 운용 | AI서버: 자동응답 완성 (v0.15.0: `server_type` 명시 동봉) |
+
+#### HEALTH_PONG (1201) 본문 — v0.15.0
+
+```json
+{
+  "protocol_no": 1201,
+  "station_id": 1,
+  "server_type": "station1",   // v0.15.0: "station1" / "station2" / "training"
+  "timestamp": "2026-04-23T10:00:00.123+00:00",
+  "status": "normal",          // "normal" | "degraded"
+  "queue_size": 0
+}
+```
+학습서버는 `_notify_recv_loop` (v0.14.7) 에서 `"training"` 으로 응답. Router 가 `server_type`
+필드를 우선 사용해 `ConnectionRegistry` 에 태깅 (이전엔 `station_id` 로 유추).
 
 **v0.11.0 동적 서버 감지**:
 HealthChecker 는 더 이상 `config.json` 의 IP 하드코딩에 의존하지 않는다.
@@ -144,7 +218,8 @@ HealthChecker 는 `target.name == server_type` 으로 매칭한다.
 ## ACK / 재전송 정책
 
 ### 일반 메시지 (AI ↔ MainServer)
-- **ACK 필수 메시지**: STATION1/2_NG, TRAIN_COMPLETE/FAIL, INSPECT_NG_PUSH, MODEL_DEPLOY_NOTIFY
+- **ACK 필수 메시지**: STATION1/2_NG, TRAIN_COMPLETE/FAIL, INSPECT_NG_PUSH, MODEL_DEPLOY_NOTIFY,
+  MODEL_RELOAD_CMD, **RETRAIN_UPLOAD(158)**, **TRAIN_DATA_UPLOAD(1108)** *(v0.15.0 추가)*
 - **타임아웃**: 3초 (v0.12.0 기준. 기존 1초 → 비동기 분리 후 여유값 3초)
 - **최대 재전송**: 3회
 - **NACK 수신 시**: 재전송하지 않고 drop + 에러 로그

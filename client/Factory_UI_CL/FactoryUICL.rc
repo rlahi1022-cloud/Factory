@@ -31,6 +31,10 @@
 #ifndef IDC_NG_LIST2
 #define IDC_NG_LIST2                 2318
 #endif
+
+#ifndef IDC_LIST_HISTORY
+#define IDC_LIST_HISTORY             2330
+#endif
 #ifndef IDC_STATIC_S2_NG_COUNT
 #define IDC_STATIC_S2_NG_COUNT       2319
 #endif
@@ -208,7 +212,7 @@ BEGIN
     // x=583 (392+185+6), w=210
     GROUPBOX "Result",                IDC_STATIC,         583, 14, 210,  80
     LTEXT    "OK",                    IDC_STATIC_S1_RESULT, 593, 24, 190, 42, SS_CENTER
-    LTEXT    "이상 점수: 0.00", IDC_STATIC_S1_SCORE, 591, 68, 196, 10
+    LTEXT    "Score: 0.00 / Thresh: 0.50", IDC_STATIC_S1_SCORE, 591, 68, 196, 10
 
     GROUPBOX "Settings",              IDC_STATIC,         583,  98, 210,  74
     LTEXT    "Model:",                IDC_STATIC,         591, 110,  40,  10
@@ -221,6 +225,12 @@ BEGIN
     LTEXT    "",                      IDC_STATIC_S1_CFG_BACKBONE,633,146, 154, 10
 
     // v0.14.7: Manual OK/NG/Arduino 테스트 버튼 제거 — 실서버 데이터만 사용.
+
+    // v0.15.2: 1공정 검사 Start/Stop 버튼 (INSPECT_CONTROL_REQ station_filter=1)
+    //   Settings 박스(y=98~172) 바로 아래 y=180 위치에 가로 2개 배치.
+    //   핸들러: CPageStation1::OnBtnS1Start / OnBtnS1Stop
+    PUSHBUTTON "검사 시작",           IDC_BTN_S1_START,   583, 180, 100, 16
+    PUSHBUTTON "검사 중지",           IDC_BTN_S1_STOP,    689, 180, 100, 16
 
     // ── 아두이노 상태바 ───────────────────────────────────────────────────
     GROUPBOX "Arduino - Station1",    IDC_STATIC,           4, 282, 890, 36
@@ -334,11 +344,16 @@ BEGIN
     LTEXT    "× NG 이벤트 이력",  IDC_STATIC,        542,224, 200,   9
     LTEXT    "금일 0건",           IDC_STATIC_S2_NG_COUNT,
              770,224, 126,   9
-    // v0.15.0: CNgHistoryList(CStatic 파생)로 교체 — 자체 헤더+스크롤 렌더링.
-    // 기존 SysListView32 → "STATIC" 으로 변경 (Station1 IDC_NG_LIST1과 동일 방식).
-    CONTROL  "", IDC_NG_LIST2,  "STATIC",
-             SS_BLACKFRAME | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP,
+    CONTROL  "", IDC_NG_LIST2,  "SysListView32",
+             LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS |
+             WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
              542,236, 354, 198
+
+    // v0.15.2: 2공정 검사 Start/Stop 버튼 (INSPECT_CONTROL_REQ station_filter=2)
+    //   Station1 과 동일 패턴. DEFECT/REWORK 자리 상단(y=154) 에 가로 2개.
+    //   핸들러: CPageStation2::OnBtnS2Start / OnBtnS2Stop
+    PUSHBUTTON "검사 시작",         IDC_BTN_S2_START,   542, 154, 100, 16
+    PUSHBUTTON "검사 중지",         IDC_BTN_S2_STOP,    646, 154, 100, 16
 
     // ══════════════════════════════════════════════════════════════════
     // [C] 아두이노 상태바 (y=438, h=24, 전체 폭)
@@ -373,6 +388,11 @@ BEGIN
                 CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     PUSHBUTTON  "Query",            IDC_BTN_QUERY,      320, 14, 36, 14
     PUSHBUTTON  "Export CSV",       IDC_BTN_EXPORT_CSV, 360, 14, 60, 14
+    // v0.16.0: 차트 제거 후 이력 테이블 추가
+    CONTROL  "", IDC_LIST_HISTORY, "SysListView32",
+             LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS |
+             WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+             4, 36, 890, 450
 END
 
 /////////////////////////////////////////////////////////////////////////////

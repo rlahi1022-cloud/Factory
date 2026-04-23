@@ -142,11 +142,11 @@ BOOL CMainTabDlg::OnInitDialog()
     m_fSmall.CreatePointFont(75, _T("Tahoma"));          // 7.5pt 작은 글꼴
 
     // ── 탭 항목 추가 ──
+    // v0.15.2: 통계/이력 탭 제거 — 4개 탭 구성.
     m_tab.InsertItem(0, _T("종합 현황"));
     m_tab.InsertItem(1, _T("① 입고 검사"));
     m_tab.InsertItem(2, _T("② 조립 검사"));
-    m_tab.InsertItem(3, _T("통계/이력"));
-    m_tab.InsertItem(4, _T("모델 관리"));
+    m_tab.InsertItem(3, _T("모델 관리"));
     m_tab.SetFont(&m_fSmall);
 
     // ── 타이틀 설정 ──
@@ -185,7 +185,7 @@ BOOL CMainTabDlg::OnInitDialog()
     SetTimer(IDT_HEARTBEAT, 10000, nullptr);
 
     // ── 각 페이지에 NetworkClient 주입 (생성 성공한 페이지만) ──
-    if (m_stats) m_stats->SetNetworkClient(&m_net);
+    // v0.15.2: m_stats 제거
     if (m_model) m_model->SetNetworkClient(&m_net);
     // v0.14.3: Station1/2 Start/Stop 버튼도 서버에 명령을 보내야 하므로 주입
     if (m_st1)   m_st1  ->SetNetworkClient(&m_net);
@@ -233,7 +233,7 @@ void CMainTabDlg::CreatePages()
     create_safe(_T("Home"),     [&]{ m_home  = std::make_unique<CPageHome>(this);     m_home ->Create(IDD_PAGE_HOME,     this); }, IDD_PAGE_HOME);
     create_safe(_T("Station1"), [&]{ m_st1   = std::make_unique<CPageStation1>(this); m_st1  ->Create(IDD_PAGE_STATION1, this); }, IDD_PAGE_STATION1);
     create_safe(_T("Station2"), [&]{ m_st2   = std::make_unique<CPageStation2>(this); m_st2  ->Create(IDD_PAGE_STATION2, this); }, IDD_PAGE_STATION2);
-    create_safe(_T("Stats"),    [&]{ m_stats = std::make_unique<CPageStats>(this);    m_stats->Create(IDD_PAGE_STATS,    this); }, IDD_PAGE_STATS);
+    // v0.15.2: "Stats" 페이지 생성 라인 제거 (통계/이력 탭 삭제).
     create_safe(_T("Model"),    [&]{ m_model = std::make_unique<CPageModel>(this);    m_model->Create(IDD_PAGE_MODEL,    this); }, IDD_PAGE_MODEL);
 
     // 초기 데이터 전달 (살아남은 페이지에만)
@@ -252,11 +252,11 @@ void CMainTabDlg::SwitchTab(int idx)
             d->ShowWindow(m_activeTab == t ? SW_SHOW : SW_HIDE);
     };
 
+    // v0.15.2: 탭 인덱스 3 이 모델 관리로 승격 (통계 탭 제거).
     show(m_home.get(),  0);
     show(m_st1.get(),   1);
     show(m_st2.get(),   2);
-    show(m_stats.get(), 3);
-    show(m_model.get(), 4);
+    show(m_model.get(), 3);
     LayoutPages();
 }
 
@@ -268,7 +268,7 @@ void CMainTabDlg::LayoutPages()
         if (d && d->GetSafeHwnd()) d->MoveWindow(cr);
     };
     mv(m_home.get()); mv(m_st1.get()); mv(m_st2.get());
-    mv(m_stats.get()); mv(m_model.get());
+    mv(m_model.get());   // v0.15.2: m_stats 제거
 }
 
 // PushUpdate: 최신 검사 데이터를 모든 페이지에 전달
@@ -282,7 +282,7 @@ void CMainTabDlg::PushUpdate()
     if (m_home)  m_home ->Update(recs_copy);
     if (m_st1)   m_st1  ->Update(recs_copy);
     if (m_st2)   m_st2  ->Update(recs_copy);
-    if (m_stats) m_stats->Update(recs_copy);
+    // v0.15.2: m_stats->Update 제거 (통계 탭 삭제)
 }
 
 // ============================================================================
@@ -917,8 +917,8 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
 
     switch (protocolNo) {
     case factory_client::INSPECT_HISTORY_RES:
-        // 검사 이력 응답 → 통계 페이지 + 홈 NG 리스트 + 입고 NG 리스트에 전달
-        if (m_stats) m_stats->OnInspectHistoryRes(*pJson);
+        // 검사 이력 응답 → 홈 NG 리스트 + 입고 NG 리스트에 전달
+        //   v0.15.2: 통계 탭 제거 — m_stats->OnInspectHistoryRes 호출 삭제.
         if (m_home)  m_home ->OnInspectHistoryRes(*pJson);
         // v0.14.6: Station1 하단 NG 이력 리스트도 DB 이력으로 초기 채움
         //   (텍스트 전용 리스트 — 이미지 없이 id/시각/점수만).
@@ -934,14 +934,17 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
         break;
 
     case factory_client::STATS_RES:
-        // 통계 데이터 응답 — PageStats(전용) + PageHome(Summary 누적값 초기화, v0.14.7)
-        if (m_stats) m_stats->OnStatsRes(*pJson);
+        // 통계 데이터 응답 — PageHome 의 Summary 누적값 초기화 전용.
+        //   v0.15.2: PageStats 제거로 PageHome::ApplyStatsRes 만 호출.
         if (m_home)  m_home ->ApplyStatsRes(*pJson);
         break;
 
     case factory_client::MODEL_LIST_RES:
-        // 모델 목록 응답 → 모델 페이지에 전달
+        // 모델 목록 응답 → 모델 페이지 + Station1 검사 설정 정보 갱신 (v0.15.0)
+        //   Station1 의 상단 "검사 설정" 라벨(모델명/입력크기/임계값/백본)은
+        //   로그인 직후엔 "로딩 중..."/"-"로 표시되다가 이 응답 수신 시 실제 값으로 주입된다.
         if (m_model) m_model->OnModelListRes(*pJson);
+        if (m_st1)   m_st1  ->UpdateModelInfo(*pJson);
         break;
 
     case factory_client::RETRAIN_RES:
@@ -1057,14 +1060,14 @@ LRESULT CMainTabDlg::OnNetNgImage(WPARAM, LPARAM lParam)
     try {
         CString timeLabel = _T("--:--:--");
         double  score     = 0.0;
-        const bool found  = (m_stats && m_stats->LookupInspectionMeta(pkt->inspection_id, timeLabel, score));
-        if (!found) {
-            if (pkt->timestamp_iso.GetLength() >= 19) {
-                timeLabel = pkt->timestamp_iso.Mid(11, 8);
-            }
-            if (pkt->score > 0.0) {
-                score = pkt->score;
-            }
+        // v0.15.2: m_stats 제거로 LookupInspectionMeta 경로 삭제.
+        //   NG_IMAGE 응답의 timestamp/score 는 이제 패킷 자체(pkt->timestamp_iso/pkt->score)
+        //   에서 직접 추출. NetworkClient 가 v0.14.7 에서 JSON 파싱 시 이미 담아 보냄.
+        if (pkt->timestamp_iso.GetLength() >= 19) {
+            timeLabel = pkt->timestamp_iso.Mid(11, 8);
+        }
+        if (pkt->score > 0.0) {
+            score = pkt->score;
         }
 
         if (pkt->station_id == 1 && m_st1) {

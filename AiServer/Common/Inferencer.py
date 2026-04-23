@@ -148,6 +148,11 @@ class BaseInferencer:
             config: StationConfig 객체 (모델 경로, 임계값 등 설정 포함)
         """
         self._config = config  # 설정 객체 저장
+        # v0.15.0: 현재 활성화된 모델의 DB id (INSPECT_META 의 model_id 필드용).
+        #   MODEL_RELOAD_CMD(1010) 수신 시 cmd_dict["model_db_id"] 로 세팅.
+        #   MainServer 가 아직 이 필드를 보내지 않으면 0 유지(= 추적 불가 상태).
+        #   향후 MainServer GuiNotifier 쪽에 model_db_id 동봉 기능 추가 시 자동 동작.
+        self.active_model_id: int = 0
 
     def load_model(self) -> None:
         """모델 파일을 메모리에 로드한다. 하위 클래스에서 반드시 구현해야 한다."""
@@ -735,6 +740,17 @@ class Station2Inferencer(BaseInferencer):
         fill_ok = ("liquid_level" in detected_classes
                    and "liquid_level_missing" not in defects)
 
+        # v0.15.4 주석: Station2 는 **YOLO11 단독** 으로 확정되었음.
+        #   PatchCore 는 설계상 제거 결정 → 이 dict 에 "heatmap" / "pred_mask" / "anomaly_map"
+        #   키가 없는 것은 **영구적**이며 "미구현" 이 아닌 "설계상 배제".
+        #   (v0.15.3 주석에서 v0.16 후보로 남겼던 pred_mask 구현 계획은 폐기.)
+        #
+        #   config.json 의 station2.patchcore_model_path 가 빈 값이면 self._patchcore=None
+        #   상태로 load 되고, _run_patchcore 는 호출돼도 0.0 을 반환. total_score 는 YOLO
+        #   판정에만 의존. 통신/DB/UI 모두 pred_mask_size=0 을 안전하게 처리.
+        #
+        #   patchcore_score 필드는 DB assemblies.patchcore_score NOT NULL 호환성 때문에
+        #   0.0 값으로 포함 유지. 필드 자체 제거는 DB 마이그레이션 필요해 보류.
         return {
             "result": "NG" if is_ng else "OK",
             "score": round(total_score, 4),
@@ -751,6 +767,8 @@ class Station2Inferencer(BaseInferencer):
             "fill_ok": fill_ok,
             "yolo_detections": detections,
             "bbox_overlay": bbox_overlay,               # 바운딩 박스 오버레이 이미지
+            # "pred_mask": (미구현 — 위 주석 참조)
+            # "heatmap":   (미구현 — bbox_overlay 가 현재 히트맵 역할 대체)
         }
 
     # ── YOLO11 객체탐지 실행 ──

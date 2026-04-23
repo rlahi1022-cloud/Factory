@@ -131,14 +131,23 @@ path traversal 방어(basename 화), 50MB 상한, session_id 유효성 검사 �
 | 판정 | score > threshold → NG |
 | 결함 분류 | score 구간별 (scratch, dent, contamination, deformation) |
 
-### Station2 — YOLO11 + PatchCore (조립 검사)
+### Station2 — YOLO11 단독 (조립 검사, v0.15.4 변경)
 
 | 항목 | 내용 |
 |------|------|
-| 1차 모델 | YOLO11 객체 탐지 (cap, label, liquid_level) |
-| 2차 모델 | PatchCore 표면 이상탐지 |
-| 판정 | YOLO 결함 감지 OR PatchCore 이상 → NG |
-| 출력 필드 | cap_ok, label_ok, fill_ok, detections, patchcore_score |
+| 모델 | YOLO11 객체 탐지 (cap, label, liquid_level) |
+| 판정 | YOLO 가 결함(누락/기울어짐 등) 감지 → NG |
+| 출력 필드 | cap_ok, label_ok, fill_ok, detections (patchcore_score 는 0.0 고정) |
+
+**v0.15.4 변경**: Station2 는 **YOLO11 단독** 으로 확정. 이전 계획의 "YOLO11 + PatchCore
+하이브리드" 에서 PatchCore 는 제거됨. `config.json` 의 `station2.patchcore_model_path`
+가 빈 값이면 Station2Inferencer 가 자동으로 PatchCore 경로를 skip 하고 YOLO 판정만 사용.
+
+영향:
+- `pred_mask` / `heatmap` 도 Station2 에서는 **영구적으로 미생성** (이전 v0.15.3 에서
+  "v0.16 구현 후보" 라 기록했던 계획은 폐기)
+- DB `assemblies.patchcore_score` 는 호환성 위해 0.0 값 계속 INSERT (컬럼 제거는 차기 마이그레이션)
+- MFC `CPageModel` 콤보박스에서 "Station #2 — PatchCore" 항목 제거
 
 ## AI서버가 보내는 NG 패킷 필드
 
@@ -237,3 +246,79 @@ body = {
 | `defect` | str | 결함 유형 (OK면 빈 문자열) |
 
 추가 필드(예: `detections`, `heatmap`, `cap_ok`)는 자유롭게 포함 가능 — Sender가 그대로 NG 패킷 본문에 실어 보냄.
+
+---
+
+## 검사 pause/resume (v0.14.7 최종판)
+
+```
+클라 MFC 메뉴 [검사 > 중지]
+  ↓ INSPECT_CONTROL_REQ(160)
+MainServer → 추론 INFERENCE_CONTROL_CMD(1020)
+  ↓ TcpClient._handle_inference_control
+StationRunner._handle_inference_control(cmd_dict):
+    if action == "pause":  self._pause_event.clear()
+    if action == "resume": self._pause_event.set()
+_run_grab_producer():
+    await self._pause_event.wait()   # pause 동안 여기서 블록
+    frame = await grab()             # Pylon 은 계속 grabbing 상태 유지
+```
+
+**설계 변경 배경 (v0.14.0 → v0.14.5 → v0.14.7)**:
+- v0.14.0: `_pause_event` 토글만 — 정상 동작
+- v0.14.5: "카메라도 멈춰야 한다" 요구로 `camera.stop_grabbing()` / `start_grabbing()` 추가 —
+  **두 번째 Start 이후 프레임이 안 나오는 Pylon 드라이버 버그 발생**
+- v0.14.7: **HW stop/start 완전 제거**, `_pause_event` 토글만 사용.
+  `GrabStrategy_LatestImageOnly` 가 pause 동안 최신 1프레임만 유지 → stale 누적 없음.
+  1클릭 = 100% 즉시 반응.
+
+**Tradeoff**: 카메라 HW 전력 상시 ON. 안정성 우선으로 채택.
+
+## HEALTH_PONG 양방향 (v0.14.7 + v0.15.0)
+
+추론/학습 서버 모두 `HEALTH_PING(1200)` 을 받으면 `HEALTH_PONG(1201)` 로 응답.
+
+- **추론서버 (Station1/2)**: `TcpClient._handle_health_ping` 이 자동 응답.
+  v0.15.0 부터 `"server_type": "station1"|"station2"` 필드 명시 포함.
+- **학습서버**: v0.14.7 에서 `TrainingMain._notify_recv_loop` 추가. 기존엔 notify 채널이
+  send-only 였는데 양방향으로 확장 → `"server_type": "training"` 응답.
+  → `ConnectionRegistry` 가 `ai_training` 으로 태깅 → GUI LED 초록 전환 가능.
+
+## YOLO 학습 데이터 레이아웃 자동 감지 (v0.14.7)
+
+`Training/TrainYolo._detect_yolo_layout(data_dir)` 가 5가지 레이아웃 자동 감지:
+- 표준: `images/train`, `images/val`
+- Roboflow: `train/images`, `valid/images`
+- Roboflow-val: `train/images`, `val/images`
+- Flat: 이미지 최상위 + `labels/`
+- Flat-valid: 이미지 + `valid/` 하위
+
+`create_data_yaml()` 가 항상 실제 구조에 맞게 `data.yaml` 을 덮어쓰므로 Roboflow 세트도 그대로 학습.
+
+## Station2 pred_mask 미생성 (v0.15.3 관찰 → v0.15.4 영구 확정)
+
+Station2 본격 가동(2026-04-23) 시점의 실측:
+
+```
+NG 푸시 | 스테이션=2 (원본=120,399  히트맵=1,213,960  마스크=0)
+```
+
+**원인**: `Station2Inferencer.infer()` 반환 dict 에 `pred_mask` / `heatmap` 키가 **의도적으로 없음**
+(YOLO 구조 판정 위주, PatchCore 는 `total_score` 기여만).
+
+**현재 안전성** — 통신/DB/UI 모두 빈 마스크를 정상 처리:
+- 통신: `pred_mask_size=0` 프로토콜상 허용
+- DB: `inspections.pred_mask_path` → NULL 저장 정상
+- MFC UI: `CameraView::SetImage(empty_vector)` 가 플레이스홀더 처리 (v0.14.7 race 방지 포함)
+
+**v0.15.4 결정**: ~~v0.16 pred_mask 구현~~ 계획 폐기. Station2 는 YOLO11 단독 확정되었으므로
+`pred_mask` 는 **영구적으로 미생성**. 라벨 표면 품질 검사는 Station1 PatchCore 와
+YOLO11 의 object-level 결함 판정(cap_missing / label_misaligned 등) 이 대체.
+
+## INSPECT_META `model_id` 연결 (v0.15.0)
+
+`StationRunner._send_inspect_meta` 가 `Inferencer.active_model_id` 를 실어 보냄.
+- `BaseInferencer.active_model_id` 기본 0
+- `MODEL_RELOAD_CMD(1010)` 에 `"model_db_id"` 필드가 포함되면 `_handle_model_reload` 가
+  `self._inferencer.active_model_id` 에 저장
+- MainServer 가 아직 이 필드를 동봉하지 않으면 0 유지 (이전 호환)

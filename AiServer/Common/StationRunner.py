@@ -899,10 +899,10 @@ class StationRunner:
             "timestamp":  timestamp,
             # 추론에 걸린 시간(밀리초)입니다. 모델 성능 모니터링에 활용됩니다.
             "latency_ms": latency_ms,
-            # 사용된 AI 모델의 ID입니다.
-            # TODO: 현재 0으로 하드코딩되어 있으며, 추후 추론기에서 활성 모델 ID를 받아와야 합니다.
-            # 모델 버전 관리에 필요한 필드입니다.
-            "model_id":   0,    # TODO: 추론기에서 활성 모델 id 받아오기
+            # 사용된 AI 모델의 ID입니다. (v0.15.0: Inferencer.active_model_id 에서 직접 읽음)
+            #   MODEL_RELOAD_CMD 에 "model_db_id" 가 포함되면 실제 값,
+            #   포함되지 않으면 0 (= 추적 불가, 이전 호환).
+            "model_id":   int(getattr(self._inferencer, "active_model_id", 0)),
             # 판정 결과 ("ok" 또는 "ng").
             "result":     result,
         }
@@ -1007,6 +1007,19 @@ class StationRunner:
         # 4) 추론기가 양쪽 슬롯(model_path + patchcore_model_path)을 모두 재로드한다.
         #    반대쪽 슬롯은 config 값이 그대로라 동일 파일이 다시 로드될 뿐 영향 없음.
         self._inferencer.load_model()
+
+        # 5) v0.15.0: 활성 모델 DB id 저장 (INSPECT_META 의 model_id 필드용).
+        #    MainServer 가 MODEL_RELOAD_CMD 송신 시 "model_db_id" 필드를 포함하면
+        #    여기서 추론기에 기록되어 이후 INSPECT_META 에 실려 나간다.
+        #    필드가 없으면 0 유지(= 추적 불가 상태, 이전과 동일).
+        try:
+            new_model_id = int(cmd_dict.get("model_db_id", 0) or 0)
+        except (TypeError, ValueError):
+            new_model_id = 0
+        if new_model_id > 0:
+            self._inferencer.active_model_id = new_model_id
+            logger.info("active_model_id 갱신: %d (station=%d, type=%s)",
+                        new_model_id, my_station, model_type)
 
     # -----------------------------------------------------------------------
     # _handle_inference_control() 메서드 (v0.14.0)

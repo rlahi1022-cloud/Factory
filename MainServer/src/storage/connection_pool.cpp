@@ -123,9 +123,12 @@ MYSQL* ConnectionPool::acquire() {
         MYSQL* new_conn = create_connection();
         // 핵심: all_conns_ 내 old → new 슬롯 교체
         // 만약 이걸 안 하면 shutdown 시 이미 해제된 old 를 다시 close → double-free
+        // new 가 nullptr 이어도 교체 — shutdown 의 `if (conn) mysql_close(conn)` 가
+        // nullptr 방어하므로 double-free 발생하지 않음. 오히려 old 를 그대로 두면
+        // shutdown 시 이미 해제된 포인터를 close 하게 되어 위험.
         for (auto& c : all_conns_) {
             if (c == old_conn) {
-                c = new_conn;  // new 가 nullptr 이어도 교체 (double-close 회피가 우선)
+                c = new_conn;
                 break;
             }
         }
