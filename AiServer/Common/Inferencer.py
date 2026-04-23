@@ -850,7 +850,7 @@ class Station2Inferencer(BaseInferencer):
 
     def _check_position(self, cls_name: str, x1: int, y1: int, x2: int, y2: int,
                         img_w: int, img_h: int) -> bool:
-        """탐지된 객체가 정상 위치 범위 안에 있는지 IoU로 비교한다.
+        """탐지된 객체가 정상 위치 범위 안에 있는지 판정한다.
 
         Args:
             cls_name: 클래스 이름 ("cap", "label", "liquid_level")
@@ -858,18 +858,27 @@ class Station2Inferencer(BaseInferencer):
             img_w, img_h: 이미지 너비, 높이
         Returns:
             True이면 정상 위치, False이면 위치 이탈
+
+        v0.14.13: 위치 검증을 전면 비활성화하고 YOLO 탐지 자체 결과만 믿는다.
+            배경:
+              실 공장 카메라 설치 위치/각도/거리가 학습 데이터와 달라서 IoU 기반
+              reference_boxes 검증이 대부분의 정상 병도 misaligned 로 잘못 판정함.
+              현 단계에선 "탐지 됐는가/안 됐는가" 만으로 missing vs 검출 판정을 하고,
+              위치 이탈 세부 체크는 생략.
+            복구 방법:
+              카메라 설치 확정 후 실 촬영 이미지로 _reference_boxes 를 재튜닝하면
+              (tests/CalibrateReferenceBoxes.py 활용), 아래 return True 를 제거하고
+              원래의 IoU 기반 로직을 되살리면 됨.
         """
-        ref = self._reference_boxes.get(cls_name)
-        if ref is None:
-            return True  # 기준이 없는 클래스는 통과
-
-        # 픽셀 좌표를 0~1 비율로 정규화
-        det_box = (x1 / img_w, y1 / img_h, x2 / img_w, y2 / img_h)
-        ref_box = (ref["x_min"], ref["y_min"], ref["x_max"], ref["y_max"])
-
-        # IoU(Intersection over Union) 계산
-        iou = self._compute_iou(det_box, ref_box)
-        return iou > 0.3  # IoU 30% 이상이면 정상 위치로 판정
+        return True    # v0.14.13: 위치 체크 비활성 — YOLO 탐지만으로 OK/NG 판정
+        # --- 이하 기존 IoU 로직 (백업, 재활성화 시 return True 제거) ---
+        # ref = self._reference_boxes.get(cls_name)
+        # if ref is None:
+        #     return True  # 기준이 없는 클래스는 통과
+        # det_box = (x1 / img_w, y1 / img_h, x2 / img_w, y2 / img_h)
+        # ref_box = (ref["x_min"], ref["y_min"], ref["x_max"], ref["y_max"])
+        # iou = self._compute_iou(det_box, ref_box)
+        # return iou > 0.1
 
     @staticmethod
     def _compute_iou(box_a: tuple, box_b: tuple) -> float:
