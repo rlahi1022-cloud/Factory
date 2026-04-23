@@ -1,7 +1,25 @@
 // ============================================================================
 // gui_router.cpp — GUI 클라이언트 요청 라우터 구현
 // ============================================================================
-// protocol_no별로 GuiService를 호출하고 JSON 응답을 생성하여 전송한다.
+// 책임:
+//   TCP 로 들어온 GUI 클라이언트 요청 JSON 을 protocol_no 로 분기하여 맞는
+//   handle_* 함수를 호출한다. 각 핸들러는 JSON 필드 추출 → GuiService 호출
+//   → 응답 JSON 조립 → 전송 순서로 동작한다.
+//
+// 3계층 중 "Presentation" 층에 해당:
+//   GuiTcpListener → [GuiRouter] → GuiService → DAO
+//
+// 로깅 정책 (v0.11.0):
+//   모든 핸들러 진입부에 `log_clt("~ 요청 수신 | fd=... ...")` 형태로 로그를
+//   남긴다. 어느 클라이언트가 어떤 버튼/페이지 전환을 했는지 서버 쪽에서
+//   실시간 추적 가능하도록 한다.
+//
+// 보안:
+//   - JSON 파싱은 외부 라이브러리 미사용 (extract_str/extract_int).
+//     중첩 객체·배열·이스케이프된 따옴표는 지원하지 않으며, 필드가 문자열 리터럴로
+//     플랫하게 나오는 현재 프로토콜에서만 안전하다.
+//   - 문자열 길이 상한 512자 (extract_str) — 과도한 메모리 점유 방지.
+//   - escape_json 은 security 모듈로 위임하여 제어문자·개행 처리.
 // ============================================================================
 #include "session/gui_router.h"
 #include "session/session_manager.h"
@@ -27,8 +45,23 @@ GuiRouter::GuiRouter(GuiService& service)
     : service_(service) {
 }
 
+// ---------------------------------------------------------------------------
+// route — GuiTcpListener 가 완성된 JSON 1프레임을 넘길 때마다 호출
+//
+// 흐름:
+//   1) extract_int 로 "protocol_no" 필드만 먼저 파싱 (저비용)
+//   2) switch 로 프로토콜 번호 → handle_* 디스패치
+//   3) EXT_ACK(주기적 heartbeat) 는 조용히 무시 — 별도 응답 불필요
+//   4) 미지의 프로토콜은 경고 로그만 남기고 연결은 유지
+//
+// 매개변수:
+//   client_fd    GUI 클라이언트 소켓 fd (응답 송신 대상)
+//   remote_addr  "ip:port" — 미지 프로토콜 진단용
+//   json_request [4바이트 길이 헤더 제거 후] 순수 JSON 본문
+// ---------------------------------------------------------------------------
 void GuiRouter::route(int client_fd, const std::string& remote_addr,
-                      const std::string& json_request) {
+                      const std::string& json_request,
+                      const std::vector<uint8_t>& binary) {
     int protocol_no = extract_int(json_request, "protocol_no");
 
     switch (protocol_no) {
@@ -48,7 +81,20 @@ void GuiRouter::route(int client_fd, const std::string& remote_addr,
             handle_model_list(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::RETRAIN_REQ):
             handle_retrain(client_fd, json_request); break;
+        case static_cast<int>(ProtocolNo::RETRAIN_UPLOAD):
+            // v0.13.0: 학습용 이미지 1장 업로드 (바이너리 동반)
+            handle_retrain_upload(client_fd, json_request, binary); break;
+        case static_cast<int>(ProtocolNo::INSPECT_CONTROL_REQ):
+            // v0.14.0: 검사 pause/resume 요청 → 추론서버에 중계
+            handle_inspect_control(client_fd, json_request); break;
         case static_cast<int>(ProtocolNo::EXT_ACK):
+            // heartbeat — 너무 빈번해서 로그 생략
+            break;
+        case static_cast<int>(ProtocolNo::INSPECT_NG_ACK_EXT):
+            // NG 푸시 수신 확인 — 클라가 **무사히** 푸시를 디코드한 신호.
+            // 이 로그가 "클라이언트 해제" 직전에 찍히면 ACK 보낸 뒤 끊긴 것(정상 경로 중 끊김).
+            // 이 로그가 안 찍히고 바로 해제되면 NG 수신 직후 프로세스가 죽었다는 뜻(크래시 의심).
+            log_clt("NG ACK 수신 | fd=%d ip=%s", client_fd, remote_addr.c_str());
             break;
         default:
             log_clt("미처리 프로토콜 | no=%d ip=%s", protocol_no, remote_addr.c_str());
@@ -103,14 +149,24 @@ void GuiRouter::handle_login(int fd, const std::string& json) {
     //       현재 상태(alive/down)를 HEALTH_PUSH(170)로 즉시 전송한다.
     if (result.success) {
         auto& cfg = Config::instance();
-        auto connections = ConnectionRegistry::instance().get_all_connections();
+        // v0.14.7: 초기 동기화 매칭을 IP prefix → server_type 으로 교체.
+        //   config 에 ip="" (dynamic) 로 설정되어 있으면 prefix ":" 로 어떤 주소도 매칭 안 되어
+        //   모든 LED 가 down 으로 찍혀 있었음. 이제 ConnectionRegistry 가 태깅한 server_type
+        //   (ai_inference_1/2/ai_training) 으로 직접 매칭.
+        auto connections = ConnectionRegistry::instance().get_all_connections_detailed();
 
         for (const auto& target : cfg.get_health_targets()) {
-            // target.ip로 시작하는 연결이 있는지 확인 (HealthChecker와 동일 규칙)
-            std::string ip_prefix = target.ip + ":";
             bool alive = false;
-            for (const auto& [addr, conn_fd] : connections) {
-                if (addr.rfind(ip_prefix, 0) == 0) { alive = true; break; }
+            // 우선 server_type 이 일치하는 연결 탐색
+            for (const auto& [addr, info] : connections) {
+                if (info.server_type == target.name) { alive = true; break; }
+            }
+            // 하위호환: ip 가 설정되어 있으면 prefix 매칭도 병행
+            if (!alive && !target.ip.empty()) {
+                std::string ip_prefix = target.ip + ":";
+                for (const auto& [addr, info] : connections) {
+                    if (addr.rfind(ip_prefix, 0) == 0) { alive = true; break; }
+                }
             }
 
             // HEALTH_PUSH(170) 전송 — 방금 로그인한 이 클라이언트에게만
@@ -128,7 +184,9 @@ void GuiRouter::handle_login(int fd, const std::string& json) {
 }
 
 // ── REGISTER ─────────────────────────────────────────────────────────
-
+// 회원가입 요청 처리. UserDao 가 내부에서 bcrypt 해싱 후 INSERT 하므로
+// 여기서는 JSON 추출과 응답 조립만 담당.
+// ---------------------------------------------------------------------------
 void GuiRouter::handle_register(int fd, const std::string& json) {
     std::string username    = extract_str(json, "username");
     std::string password    = extract_str(json, "password");
@@ -152,7 +210,10 @@ void GuiRouter::handle_register(int fd, const std::string& json) {
 }
 
 // ── LOGOUT ───────────────────────────────────────────────────────────
-
+// 로그아웃은 실제 세션 정리(SessionManager unregister)가 TCP 연결 종료 시점에
+// handle_client 루프 종료 로직에서 수행되므로, 여기서는 클라이언트에게
+// "로그아웃 수락" 응답만 돌려준다. 즉 이 핸들러는 "종료 인사" 역할.
+// ---------------------------------------------------------------------------
 void GuiRouter::handle_logout(int fd, const std::string& json) {
     std::string username = extract_str(json, "username");
     log_clt("로그아웃 | 사용자=%s", username.c_str());
@@ -168,13 +229,20 @@ void GuiRouter::handle_logout(int fd, const std::string& json) {
 }
 
 // ── INSPECT_HISTORY ──────────────────────────────────────────────────
-
+// 검사 이력 페이지(Stats/History) 에서 기간/스테이션 필터로 조회.
+// 이미지 바이너리는 여기서 같이 보내지 않음 — 용량 문제 + 네트워크 효율.
+// 사용자가 특정 row 를 클릭해 "상세보기" 하면 INSPECT_IMAGE_REQ(116) 로
+// on-demand 로 3장(원본/히트맵/마스크) 만 받아가는 2단계 구조.
+// ---------------------------------------------------------------------------
 void GuiRouter::handle_inspect_history(int fd, const std::string& json) {
     std::string request_id = extract_str(json, "request_id");
     int station_filter     = extract_int(json, "station_filter");
     std::string date_from  = extract_str(json, "date_from");
     std::string date_to    = extract_str(json, "date_to");
     int limit              = extract_int(json, "limit");
+
+    log_clt("검사이력 요청 | fd=%d station=%d from=%s to=%s limit=%d",
+            fd, station_filter, date_from.c_str(), date_to.c_str(), limit);
 
     auto records = service_.get_history(station_filter, date_from, date_to, limit);
 
@@ -215,6 +283,8 @@ void GuiRouter::handle_inspect_history(int fd, const std::string& json) {
 void GuiRouter::handle_inspect_image(int fd, const std::string& json) {
     std::string request_id = extract_str(json, "request_id");
     int inspection_id      = extract_int(json, "inspection_id");
+
+    log_clt("검사이미지 요청 | fd=%d inspection_id=%d", fd, inspection_id);
 
     auto rec = service_.get_inspection_by_id(inspection_id);
 
@@ -278,12 +348,18 @@ void GuiRouter::handle_inspect_image(int fd, const std::string& json) {
 }
 
 // ── STATS ────────────────────────────────────────────────────────────
-
+// 통계 페이지(CPageStats) 에서 기간별 OK/NG 집계 조회. 반환 필드:
+//   total, ok/ng count, ng_rate (%), 스테이션별 ok/ng, 평균 지연시간(ms)
+// StatsDao 가 단일 집계 SQL 로 수행 — 행 단위로 긁어오지 않음 (성능).
+// ---------------------------------------------------------------------------
 void GuiRouter::handle_stats(int fd, const std::string& json) {
     std::string request_id = extract_str(json, "request_id");
     int station_filter     = extract_int(json, "station_filter");
     std::string date_from  = extract_str(json, "date_from");
     std::string date_to    = extract_str(json, "date_to");
+
+    log_clt("통계 요청 | fd=%d station=%d from=%s to=%s",
+            fd, station_filter, date_from.c_str(), date_to.c_str());
 
     auto s = service_.get_stats(station_filter, date_from, date_to);
 
@@ -305,9 +381,14 @@ void GuiRouter::handle_stats(int fd, const std::string& json) {
 }
 
 // ── MODEL_LIST ───────────────────────────────────────────────────────
-
+// CPageModel 의 모델 목록 조회. `models` 테이블에서 station/type/version/
+// accuracy/is_active 필드를 긁어 배열로 반환.
+// v0.11.0 이후 model_type 필드가 Station2 PatchCore 구분에 사용됨.
+// ---------------------------------------------------------------------------
 void GuiRouter::handle_model_list(int fd, const std::string& json) {
     std::string request_id = extract_str(json, "request_id");
+
+    log_clt("모델목록 요청 | fd=%d", fd);
 
     auto models = service_.get_models();
 
@@ -337,16 +418,25 @@ void GuiRouter::handle_model_list(int fd, const std::string& json) {
 }
 
 // ── RETRAIN ──────────────────────────────────────────────────────────
-
+// 재학습 요청(152) — GuiService 가 TCP 로 학습서버에 TRAIN_START_REQ(1100)
+// 을 포워딩하고, 수락 여부(success) 를 즉시 클라에 응답.
+// 실제 학습 진행률/완료는 나중에 다른 경로(TRAIN_PROGRESS/COMPLETE) 로 비동기
+// 전달되며 GuiNotifier 가 RETRAIN_PROGRESS_PUSH(154) 로 모든 클라에 브로드캐스트.
+// ---------------------------------------------------------------------------
 void GuiRouter::handle_retrain(int fd, const std::string& json) {
     std::string request_id   = extract_str(json, "request_id");
     int station_id           = extract_int(json, "station_id");
     std::string model_type   = extract_str(json, "model_type");
     std::string product_name = extract_str(json, "product_name");
     int image_count          = extract_int(json, "image_count");
+    std::string session_id   = extract_str(json, "session_id");   // v0.13.0
+
+    log_clt("재학습 요청 수신 | fd=%d station=%d type=%s product=%s 이미지=%d건 session=%s",
+            fd, station_id, model_type.c_str(), product_name.c_str(), image_count,
+            session_id.c_str());
 
     auto result = service_.request_retrain(station_id, model_type, product_name,
-                                            image_count, request_id);
+                                            image_count, request_id, session_id);
 
     std::ostringstream os;
     os << "{\"protocol_no\":153"
@@ -360,52 +450,131 @@ void GuiRouter::handle_retrain(int fd, const std::string& json) {
     send_json(fd, os.str());
 }
 
-// ── 유틸리티 ─────────────────────────────────────────────────────────
+// ── RETRAIN_UPLOAD (v0.13.0) ─────────────────────────────────────────
+// 클라가 학습용 이미지 1장을 업로드 → MainServer 로컬 저장 + 학습서버로 중계.
+// GuiService 가 1) 로컬 저장 2) 학습서버 TCP 중계 3) 결과 수집 까지 수행,
+// 여기서는 요청 파싱과 ACK(159) 응답만 담당.
+// ---------------------------------------------------------------------------
+void GuiRouter::handle_retrain_upload(int fd, const std::string& json,
+                                       const std::vector<uint8_t>& binary) {
+    std::string request_id = extract_str(json, "request_id");
+    std::string session_id = extract_str(json, "session_id");
+    int         station_id = extract_int(json, "station_id");
+    std::string model_type = extract_str(json, "model_type");
+    std::string filename   = extract_str(json, "filename");
+    int         file_index = extract_int(json, "file_index");
+    int         total_files= extract_int(json, "total_files");
 
+    log_clt("학습 업로드 | fd=%d session=%s station=%d type=%s [%d/%d] %s (%zu bytes)",
+            fd, session_id.c_str(), station_id, model_type.c_str(),
+            file_index + 1, total_files, filename.c_str(), binary.size());
+
+    auto result = service_.receive_retrain_upload(
+        session_id, station_id, model_type, filename, binary);
+
+    std::ostringstream os;
+    os << "{\"protocol_no\":" << static_cast<int>(ProtocolNo::RETRAIN_UPLOAD_ACK)
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
+       << ",\"session_id\":\"" << escape_json(session_id) << "\""
+       << ",\"file_index\":" << file_index
+       << ",\"success\":" << (result.success ? "true" : "false")
+       << ",\"saved_path\":\"" << escape_json(result.saved_path) << "\""
+       << ",\"message\":\"" << escape_json(result.message) << "\""
+       << ",\"timestamp\":\"" << get_timestamp() << "\"}";
+
+    send_json(fd, os.str());
+}
+
+// ── INSPECT_CONTROL (v0.14.0) ────────────────────────────────────────
+// 클라 메뉴 [검사 시작/중지] → 모든(또는 지정) 추론서버에 pause/resume 중계.
+// ---------------------------------------------------------------------------
+void GuiRouter::handle_inspect_control(int fd, const std::string& json) {
+    std::string request_id     = extract_str(json, "request_id");
+    int         station_filter = extract_int(json, "station_filter");
+    std::string action         = extract_str(json, "action");
+
+    log_clt("검사 제어 요청 | fd=%d station=%d action=%s",
+            fd, station_filter, action.c_str());
+
+    auto result = service_.inspect_control(station_filter, action, request_id);
+
+    std::ostringstream os;
+    os << "{\"protocol_no\":" << static_cast<int>(ProtocolNo::INSPECT_CONTROL_RES)
+       << ",\"request_id\":\"" << escape_json(request_id) << "\""
+       << ",\"action\":\"" << escape_json(action) << "\""
+       << ",\"success\":" << (result.success ? "true" : "false")
+       << ",\"applied_count\":" << result.applied_count
+       << ",\"message\":\"" << escape_json(result.message) << "\""
+       << ",\"timestamp\":\"" << get_timestamp() << "\"}";
+
+    send_json(fd, os.str());
+}
+
+// ── 유틸리티 ─────────────────────────────────────────────────────────
+// 여러 handle_* 에서 공통으로 쓰이는 경량 헬퍼들.
+// 외부 JSON 라이브러리 없이 문자열 처리만으로 구성 (의존성 최소화).
+// ---------------------------------------------------------------------------
+
+// 현재 로컬 시각을 ISO8601 초단위로. 응답 JSON 의 "timestamp" 필드용.
+// localtime_r / localtime_s 분기: Linux 배포가 기본이지만 Windows 빌드 호환도 유지.
 std::string GuiRouter::get_timestamp() {
     auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm tm{};
 #ifdef _WIN32
     localtime_s(&tm, &now);
 #else
-    localtime_r(&now, &tm);
+    localtime_r(&now, &tm);  // thread-safe 변형 (localtime 은 TLS 공유)
 #endif
     std::ostringstream os;
     os << std::put_time(&tm, "%Y-%m-%dT%H:%M:%S");
     return os.str();
 }
 
+// JSON 값 escape. security 모듈의 통합 구현에 위임 —
+// 제어문자(\n, \t, \\, \") 및 UTF-8 유효성 처리 모두 포함.
 std::string GuiRouter::escape_json(const std::string& s) {
-    // security 모듈의 통합 구현에 위임 — 제어문자/개행 처리 포함
     return factory::security::escape_json(s);
 }
 
+// 4바이트 BE 길이 + JSON 본문 프레이밍으로 송신 (partial send 자동 재시도).
 bool GuiRouter::send_json(int fd, const std::string& json_body) {
     return send_json_frame(fd, json_body);
 }
 
+// ---------------------------------------------------------------------------
+// extract_str — "key":"value" 에서 value 문자열 추출
+// 한계:
+//   - 중첩 객체/배열 미지원 — 1-depth 평탄 JSON 전용
+//   - 이스케이프된 따옴표(\") 미지원 — 현재 프로토콜에서는 문제없음
+// 보안:
+//   512자 상한 — 비정상 대용량 입력으로 인한 메모리 폭주 방지
+// ---------------------------------------------------------------------------
 std::string GuiRouter::extract_str(const std::string& json, const std::string& key) {
     std::string needle = "\"" + key + "\"";
     auto pos = json.find(needle);
     if (pos == std::string::npos) return "";
     auto colon = json.find(':', pos);
     if (colon == std::string::npos) return "";
-    auto fq = json.find('"', colon);
+    auto fq = json.find('"', colon);        // 값의 시작 따옴표
     if (fq == std::string::npos) return "";
-    auto lq = json.find('"', fq + 1);
+    auto lq = json.find('"', fq + 1);       // 값의 끝 따옴표
     if (lq == std::string::npos) return "";
     std::string value = json.substr(fq + 1, lq - fq - 1);
-    // 입력 문자열 길이 제한 (512자) — 과도한 메모리 사용 차단
     if (value.size() > 512) value.resize(512);
     return value;
 }
 
+// ---------------------------------------------------------------------------
+// extract_int — "key":123 에서 정수 추출
+// strtol: 실패 시 0 반환(endptr 미사용) — 필드 없으면 기본값 0 으로 처리하는 것과 동일.
+// ---------------------------------------------------------------------------
 int GuiRouter::extract_int(const std::string& json, const std::string& key) {
     std::string needle = "\"" + key + "\"";
     auto pos = json.find(needle);
     if (pos == std::string::npos) return 0;
     auto colon = json.find(':', pos);
     if (colon == std::string::npos) return 0;
+    // strtol 은 선행 공백을 자동으로 건너뜀 — colon+1 부터 바로 파싱
     return static_cast<int>(std::strtol(json.c_str() + colon + 1, nullptr, 10));
 }
 

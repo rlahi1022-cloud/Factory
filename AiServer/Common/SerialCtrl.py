@@ -1,11 +1,21 @@
 """SerialCtrl.py — Arduino 시리얼 통신 제어
 
-이 파일은 AI 추론 서버가 Arduino에 시리얼(USB) 명령을 보내는 기능을 제공한다.
+역할:
+  AI 추론서버가 NG(불량) 판정을 내렸을 때 Arduino 에 시리얼(USB) 명령을 보내
+  물리적 동작(리젝트 서보/LED/부저/LCD 알림) 을 트리거한다.
 
-Station1 (입고검사): NG 시 → "REJECT:결함유형\n" 전송 → 서보모터 리젝트 + 빨간 LED + 부저
-Station2 (조립검사): NG 시 → "ALERT:결함목록\n" 전송 → RGB LED + LCD 불량 유형 표시
+명령 프로토콜 (줄바꿈으로 구분된 평문):
+  Station1 (입고검사)  "REJECT:결함유형\\n"      → 서보모터 리젝트 + 빨간 LED + 부저
+  Station2 (조립검사)  "ALERT:결함목록\\n"       → RGB LED + LCD 에 불량 유형 표시
+  아두이노 스케치는 Arduino/arduino_led_control/ 참조.
 
-실제 사용 시 pyserial 패키지가 필요하다: pip install pyserial
+설계 특징:
+  - pyserial 미설치/포트 미연결 시에도 예외를 던지지 않고 "no-op" 로 동작.
+    개발/CI 환경에서 아두이노 없이 검사 파이프라인을 테스트할 수 있도록 함.
+  - port=None 이면 "Arduino 미사용" 으로 간주하고 open()/send_command() 가 모두 조용히 패스.
+
+의존성:
+  실제 사용 시 pyserial 필요 → `pip install pyserial`
 """
 
 from __future__ import annotations  # 타입 힌트를 문자열로 처리
@@ -36,9 +46,12 @@ class SerialCtrl:
                   None이면 Arduino를 사용하지 않는 것으로 간주.
             baud: 통신 속도 (기본 9600bps, Arduino 기본값과 일치)
         """
-        self._port = port    # 시리얼 포트 이름
-        self._baud = baud    # 통신 속도 (baud rate)
-        self._serial = None  # pyserial.Serial 인스턴스 (open() 시 생성)
+        self._port = port            # 시리얼 포트 이름
+        self._baud = baud            # 통신 속도 (baud rate)
+        self._serial = None          # pyserial.Serial 인스턴스 (open() 시 생성)
+        # v0.14.8: 미연결 상태에서 send_command 가 무한히 debug 로그만 찍는 걸 방지.
+        # 첫 전송 시도 시 한 번만 WARNING 으로 명시적으로 알려준다.
+        self._warned_noop = False
 
     def open(self) -> None:
         """시리얼 포트를 연다.
@@ -83,11 +96,21 @@ class SerialCtrl:
         시리얼이 연결되지 않은 상태면 로그만 출력하고 넘어간다.
         """
         if self._serial is None:
-            # 시리얼 미연결 — 디버그 로그만 출력 (개발/테스트 환경)
-            logger.debug("SerialCtrl noop send: %s", command.strip())
+            # v0.14.8: 첫 호출 시 한 번만 WARNING — 이후는 DEBUG (로그 노이즈 방지).
+            # 운영자가 "왜 Arduino 가 반응 안 하지?" 를 빠르게 파악할 수 있게 한다.
+            if not self._warned_noop:
+                logger.warning(
+                    "SerialCtrl 명령 무시 (포트 미연결) | port=%s — config.json 의 "
+                    "arduino_port 를 설정하거나 Arduino 연결 상태를 확인하세요. "
+                    "명령: %s", self._port, command.strip()
+                )
+                self._warned_noop = True
+            else:
+                logger.debug("SerialCtrl noop send: %s", command.strip())
             return
         try:
             # 문자열을 ASCII 바이트로 변환하여 전송
             self._serial.write(command.encode("ascii"))
+            logger.info("SerialCtrl 송신 | %s", command.strip())
         except Exception as exc:
             logger.error("SerialCtrl send failed: %s", exc)

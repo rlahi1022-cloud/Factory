@@ -5,10 +5,15 @@
 #include "CameraView.h"
 #include <vector>
 
+class CNetworkClient;   // fwd — pause/resume 송신용
+
 class CPageStation1 : public CDialogEx {
     DECLARE_DYNAMIC(CPageStation1)
 public:
     CPageStation1(CWnd* p=nullptr);
+
+    // v0.14.3: 부모가 네트워크 핸들 주입 — Start/Stop 버튼이 INSPECT_CONTROL_REQ 송신
+    void SetNetworkClient(CNetworkClient* net) { m_net = net; }
     enum { IDD = IDD_PAGE_STATION1 };
     void Update(const std::vector<InspectionRecord>& recs);
     void Tick();
@@ -24,17 +29,24 @@ public:
                     const std::vector<BYTE>& image,
                     const std::vector<BYTE>& heatmap,
                     const std::vector<BYTE>& pred_mask);
+
+    // v0.14.6: 로그인 직후 DB 이력 응답(INSPECT_HISTORY_RES) 에서 station_id=1 NG 만
+    //   골라 하단 m_ngList 를 초기 채움. 텍스트 전용 리스트이므로 이미지는 주입하지 않음.
+    //   실시간 NG_PUSH 가 들어오면 기존 AddNgEntry 경로로 맨 위에 누적됨.
+    void PopulateNgHistoryFromJson(const std::string& json);
 protected:
     CCameraView     m_cam;     // 패널 1: 원본 이미지 (Image)
     CHeatmapView    m_heat;    // 패널 2: Anomaly Map 오버레이
     CPredMaskView   m_mask;    // 패널 3: Pred Mask 오버레이
     CNgHistoryList  m_ngList;  // 하단: 최근 NG 10건 이력 리스트
     InspectionRecord m_last;
+    CNetworkClient*  m_net = nullptr;   // v0.14.3: Start/Stop 버튼용 네트워크 핸들
     void Refresh();
     virtual BOOL OnInitDialog() override;
     virtual void DoDataExchange(CDataExchange* pDX) override;
-    afx_msg void OnBtnOK();
-    afx_msg void OnBtnNG();
-    afx_msg void OnBtnArduino();
+    // v0.14.7: Manual OK/NG/Arduino 버튼 제거.
+    // v0.14.3: 1공정 검사 시작/중지 (station_filter=1)
+    afx_msg void OnBtnS1Start();
+    afx_msg void OnBtnS1Stop();
     DECLARE_MESSAGE_MAP()
 };

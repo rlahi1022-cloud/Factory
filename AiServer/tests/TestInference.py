@@ -128,26 +128,54 @@ def test_station1(image: np.ndarray, model_path: str, threshold: float,
     print(f"  이상점수:   {result['score']}")
     # result['defect']: 감지된 결함 유형. 없으면 None이므로 '(없음)'을 출력한다.
     print(f"  결함유형:   {result['defect'] or '(없음)'}")
-    # result.get('heatmap'): 히트맵 이미지가 있는지 확인한다.
-    # 히트맵은 이미지에서 어떤 영역이 이상한지 시각적으로 보여주는 컬러맵이다.
-    print(f"  히트맵:     {'있음' if result.get('heatmap') is not None else '없음'}")
+    # 시각화용 raw 데이터가 있는지 확인 — 실제 MainServer 전송과 동일한 조건
+    print(f"  히트맵:     {'있음' if result.get('raw_anomaly_map') is not None else '없음'}")
+    print(f"  Pred Mask:  {'있음' if result.get('pred_mask') is not None else '없음'}")
     # 추론에 걸린 시간을 소수점 1자리까지 밀리초 단위로 출력한다.
     print(f"  추론시간:   {elapsed_ms:.1f} ms")
     # 빈 줄을 출력하여 가독성을 높인다.
     print()
 
-    # 히트맵이 존재하면 이미지 파일로 저장을 시도한다.
-    if result.get("heatmap") is not None:
-        try:
-            # cv2(OpenCV): 이미지 읽기/쓰기/처리를 위한 컴퓨터 비전 라이브러리
-            import cv2
-            # 히트맵을 JPEG 파일로 저장한다. 나중에 눈으로 확인할 수 있다.
-            cv2.imwrite("test_station1_heatmap.jpg", result["heatmap"])
-            print("  히트맵 저장: test_station1_heatmap.jpg")
-        except ImportError:
-            # OpenCV가 설치되지 않은 환경에서는 저장을 건너뛴다.
-            # 왜 무시하는가: 히트맵 저장은 필수 기능이 아니므로 에러 없이 넘어간다.
-            pass
+    # ── 3장 파일 저장 ──
+    # 실운영(StationRunner → MainServer → MFC)과 완전히 동일한 포맷으로 출력:
+    #   test_station1_original.jpg   — 원본 JPEG
+    #   test_station1_heatmap.png    — 원본 + Anomaly Map 오버레이 (JET 컬러맵)
+    #   test_station1_mask.png       — 원본 + Pred Mask 빨간 윤곽선
+    # 실제 MainServer가 받는 heatmap_bytes / pred_mask_bytes와 바이트 단위로 동일.
+    try:
+        import cv2
+        from Common.Visualizer import (
+            make_heatmap_overlay,
+            make_pred_mask_overlay,
+            encode_image,
+        )
+
+        # 1) 원본 저장 (JPEG)
+        orig_bytes = encode_image(image, ".jpg", quality=90)
+        if orig_bytes:
+            Path("test_station1_original.jpg").write_bytes(orig_bytes)
+            print(f"  원본 저장:     test_station1_original.jpg ({len(orig_bytes)} bytes)")
+
+        # 2) 히트맵 오버레이 — raw_anomaly_map 사용 (NG 판정과 무관하게 생성)
+        raw_map = result.get("raw_anomaly_map")
+        if raw_map is not None:
+            heatmap_img = make_heatmap_overlay(image, raw_map, alpha=0.5)
+            heatmap_bytes = encode_image(heatmap_img, ".png")
+            if heatmap_bytes:
+                Path("test_station1_heatmap.png").write_bytes(heatmap_bytes)
+                print(f"  히트맵 저장:   test_station1_heatmap.png ({len(heatmap_bytes)} bytes)")
+
+        # 3) Pred Mask 윤곽선 — 빨간 테두리
+        pred_mask = result.get("pred_mask")
+        if pred_mask is not None:
+            mask_img = make_pred_mask_overlay(image, pred_mask)
+            mask_bytes = encode_image(mask_img, ".png")
+            if mask_bytes:
+                Path("test_station1_mask.png").write_bytes(mask_bytes)
+                print(f"  마스크 저장:   test_station1_mask.png ({len(mask_bytes)} bytes)")
+    except ImportError as exc:
+        # OpenCV 미설치 또는 Visualizer import 실패 시 저장을 건너뛴다.
+        print(f"  [경고] 시각화 저장 건너뜀: {exc}")
 
 
 def test_station2(image: np.ndarray, yolo_path: str, patchcore_path: str,

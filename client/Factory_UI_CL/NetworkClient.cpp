@@ -1,16 +1,36 @@
 // ============================================================================
-// NetworkClient.cpp
+// NetworkClient.cpp — MainServer GUI 포트(9010) 전용 TCP 클라이언트
 // ============================================================================
-// 목적:
-//   메인서버(포트 9010)와 TCP 통신을 수행하는 네트워크 클라이언트 구현부입니다.
-//   백그라운드 스레드에서 서버의 푸시 데이터를 수신하고,
-//   PostMessage를 통해 UI 스레드에 안전하게 전달합니다.
+// 책임:
+//   - 서버 접속/해제 (Connect / Disconnect)
+//   - 프레임 송수신: [4바이트 BE 길이] + [JSON 본문] (+ [바이너리 페이로드])
+//   - 수신 백그라운드 스레드 운영 (RecvLoop)
+//   - 서버 푸시 이벤트를 UI 스레드로 PostMessage 전달
+//   - 주기적 heartbeat (EXT_ACK) 전송으로 세션 유지
 //
-// 핵심 개념:
-//   - WinSock2: Windows에서 소켓 프로그래밍을 위한 API
-//   - _beginthreadex: C 런타임 라이브러리와 호환되는 스레드 생성 함수
-//   - PostMessage: 스레드 간 안전한 메시지 전달 (비동기)
-//   - CRITICAL_SECTION: 공유 자원(소켓)에 대한 동시 접근 방지
+// 스레드 모델:
+//   UI 스레드  — Send*, Disconnect, 파라미터 설정
+//   Recv 스레드 — RecvLoop 무한 루프 (select 타임아웃 5초 기반)
+//   m_csSend CRITICAL_SECTION 으로 Send 경쟁 차단.
+//
+// 수신 이벤트 라우팅:
+//   RecvLoop 가 프로토콜 번호를 파싱해 해당하는 WM_NET_* 메시지를
+//   m_hNotifyWnd (MainTabDlg) 로 PostMessage → 메시지맵 핸들러가 처리.
+//     110 INSPECT_NG_PUSH         → WM_NET_NG_PUSH (+ 이미지 바이너리 포인터)
+//     112 INSPECT_OK_COUNT_PUSH   → WM_NET_OK_COUNT_PUSH
+//     115 INSPECT_HISTORY_RES     → WM_NET_RESPONSE (범용)
+//     117 INSPECT_IMAGE_RES       → WM_NET_NG_IMAGE (바이너리 동봉)
+//     151 MODEL_LIST_RES          → WM_NET_RESPONSE
+//     153 RETRAIN_RES             → WM_NET_RESPONSE
+//     154 RETRAIN_PROGRESS_PUSH   → WM_NET_RETRAIN_PROGRESS
+//     170 SERVER_HEALTH_PUSH      → WM_NET_HEALTH_PUSH
+//
+// 보안/안정성:
+//   - recv_n 으로 TCP 스트림에서 정확한 바이트 수 보장
+//   - JSON 크기 상한 64KB / 이미지 블록 상한 50MB — 비정상 입력 차단
+//   - RecvLoop 에서 에러 감지 시 WM_NET_DISCONNECTED 발송 → UI 자동 복구
+//
+// 대응 서버 모듈: MainServer/src/session/gui_tcp_listener.cpp + gui_router.cpp
 // ============================================================================
 
 #include "pch.h"
@@ -79,11 +99,48 @@ bool CNetworkClient::Connect(const CString& host, UINT16 port, HWND hNotifyWnd)
         TRACE(_T("[NetworkClient] SO_KEEPALIVE 설정 실패: %d\n"), WSAGetLastError());
     }
 
+    // v0.14.2: Windows TCP Keepalive 간격을 명시적으로 설정 (SIO_KEEPALIVE_VALS).
+    //   기본값: onoff=1, keepalivetime=2시간, keepaliveinterval=1초
+    //   → 우리는 30초 idle 후 5초 간격 probe 로 짧게.
+    //   Windows 는 Linux 처럼 TCP_KEEPIDLE/INTVL/CNT 를 직접 쓸 수 없어 WSAIoctl 사용.
+    //   이렇게 안 하면 SO_KEEPALIVE 만 켜진 상태 = OS 기본 2시간 → 사실상 무력.
+    struct tcp_keepalive {
+        ULONG onoff;
+        ULONG keepalivetime;     // ms — 첫 probe 까지 idle 시간
+        ULONG keepaliveinterval; // ms — probe 간격
+    } ka;
+    ka.onoff             = 1;
+    ka.keepalivetime     = 30 * 1000;   // 30초 idle
+    ka.keepaliveinterval = 5  * 1000;   // 5초 간격 probe
+    DWORD bytesReturned = 0;
+    // WSAIoctl 정의 (mstcpip.h 가 없으면 매크로로 대체 — 대부분 MFC 빌드엔 포함됨)
+    constexpr DWORD SIO_KEEPALIVE_VALS_LOCAL = 0x98000004; // _WSAIOW(IOC_VENDOR, 4)
+    if (WSAIoctl(m_socket, SIO_KEEPALIVE_VALS_LOCAL,
+                 &ka, sizeof(ka),
+                 nullptr, 0,
+                 &bytesReturned,
+                 nullptr, nullptr) == SOCKET_ERROR) {
+        TRACE(_T("[NetworkClient] SIO_KEEPALIVE_VALS 설정 실패: %d\n"),
+              WSAGetLastError());
+    } else {
+        TRACE(_T("[NetworkClient] TCP Keepalive: idle=30s probe=5s 적용\n"));
+    }
+
     BOOL noDelay = TRUE;
     if (setsockopt(m_socket, IPPROTO_TCP, TCP_NODELAY,
                reinterpret_cast<const char*>(&noDelay), sizeof(noDelay)) == SOCKET_ERROR) {
         TRACE(_T("[NetworkClient] TCP_NODELAY 설정 실패: %d\n"), WSAGetLastError());
     }
+
+    // v0.14.2: 수신 버퍼 8MB — 3MB NG 이미지 들어오는 동안 UI 스레드가
+    //   다른 일 처리 중이어도 OS 가 버퍼에 담아줘서 서버 send 가 블록되지 않음.
+    //   Windows 기본값(보통 64KB) 으로는 대용량 수신 중 서버가 먼저 끊는 현상 발생.
+    int rcvbuf = 8 * 1024 * 1024;
+    int sndbuf = 1 * 1024 * 1024;   // 클라→서버는 heartbeat/업로드 정도라 1MB 면 충분
+    setsockopt(m_socket, SOL_SOCKET, SO_RCVBUF,
+               reinterpret_cast<const char*>(&rcvbuf), sizeof(rcvbuf));
+    setsockopt(m_socket, SOL_SOCKET, SO_SNDBUF,
+               reinterpret_cast<const char*>(&sndbuf), sizeof(sndbuf));
 
     // SO_RCVTIMEO: recv() 타임아웃 5초 → heartbeat 주기
     DWORD recvTimeout = 5000;
@@ -301,9 +358,18 @@ void CNetworkClient::RecvLoop()
         }
 
         // ── 2단계: 헤더에서 JSON 크기 추출 (ParseHeader가 64KB 상한 검증) ──
+        // v0.14.2: 비정상 헤더 발생 시 원인 추적을 위해 raw 바이트도 함께 로깅.
+        // 대부분의 원인은 이전 패킷의 이미지 바이너리 꼬리 바이트를 새 헤더로
+        // 오인하는 경우 (서버↔클라 프레이밍 어긋남). TCP 동기화 복구가 불가하므로
+        // 연결을 끊고 UI 가 재접속 루프를 돌도록 유도한다.
         UINT32 jsonSize = 0;
         if (!CPacketBuilder::ParseHeader(header, jsonSize)) {
-            TRACE(_T("[NetworkClient] 비정상 헤더 (size=%u)\n"), jsonSize);
+            const BYTE b0 = static_cast<BYTE>(header[0]);
+            const BYTE b1 = static_cast<BYTE>(header[1]);
+            const BYTE b2 = static_cast<BYTE>(header[2]);
+            const BYTE b3 = static_cast<BYTE>(header[3]);
+            TRACE(_T("[NetworkClient] 비정상 헤더 (size=%u raw=%02X %02X %02X %02X) — TCP 프레이밍 어긋남 추정, 재접속\n"),
+                  jsonSize, b0, b1, b2, b3);
             break;
         }
 
@@ -368,7 +434,18 @@ void CNetworkClient::RecvLoop()
             auto* pkt = new (std::nothrow) NgImagePacket{};
             if (pkt) {
                 pkt->station_id    = CPacketBuilder::ExtractInt(jsonA, "station_id");
-                pkt->inspection_id = CPacketBuilder::ExtractInt(jsonA, "inspection_id");
+                // v0.14.7: MainServer 가 DB row id 를 "id" 필드로 보내면 그걸 우선 사용.
+                // 구버전(또는 id 누락) 대비 fallback 으로 "inspection_id" 를 정수 추출 시도.
+                // inspection_id 는 AI 서버 발급 문자열이라 숫자가 아니면 0 이 됨 — 그 경우
+                // 모든 NG 가 id=0 으로 덮어써져 리스트가 채워지지 않는 문제가 있었다.
+                int dbId = CPacketBuilder::ExtractInt(jsonA, "id");
+                pkt->inspection_id = (dbId > 0)
+                    ? dbId
+                    : CPacketBuilder::ExtractInt(jsonA, "inspection_id");
+                // v0.14.7: 새 NG 는 PageStats 캐시에 없으므로 timestamp/score 를 패킷에 담아 전달.
+                pkt->score         = CPacketBuilder::ExtractDouble(jsonA, "score");
+                CStringA tsA       = CPacketBuilder::ExtractString(jsonA, "timestamp");
+                pkt->timestamp_iso = CString(tsA);
                 pkt->image      = std::move(imgBytes);
                 pkt->heatmap    = std::move(heatBytes);
                 pkt->pred_mask  = std::move(maskBytes);
@@ -402,22 +479,47 @@ void CNetworkClient::RecvLoop()
 // recv()가 한 번에 100바이트를 주지 않을 수 있습니다.
 // 예) 첫 번째 recv() → 60바이트, 두 번째 recv() → 40바이트
 // 따라서 원하는 만큼 받을 때까지 반복해야 합니다.
+//
+// v0.14.5 버그 수정:
+//   SO_RCVTIMEO(5초) 가 걸려 있으므로 큰 바이너리(예: NG_PUSH 5~6MB)를 받는
+//   중간에 잠깐 데이터가 끊기면 recv 가 SOCKET_ERROR + WSAETIMEDOUT 을 반환한다.
+//   예전 구현은 이걸 치명적 에러로 취급 → RecvLoop break → 한 사이클 뒤 끊김.
+//   이제 타임아웃은 "부분 진행" 으로 간주해 재시도하고, 종료 요청(m_bRunning=false)
+//   또는 실제 소켓 에러/정상종료(got==0) 만 실패로 처리한다.
+//   전체 완료까지 2분 하드리밋으로 무한 대기도 차단.
 bool CNetworkClient::RecvN(char* buf, int n)
 {
-    int totalRecv = 0;  // 지금까지 받은 바이트 수
+    int totalRecv = 0;
+    const DWORD startTick = ::GetTickCount();
+    constexpr DWORD HARD_DEADLINE_MS = 120 * 1000;  // 2분 — 비정상 스톨 방어
 
     while (totalRecv < n) {
-        // recv: 소켓에서 데이터 수신
-        // 반환값: 받은 바이트 수. 0이면 상대방이 연결 종료. 음수면 에러.
-        int got = recv(m_socket, buf + totalRecv, n - totalRecv, 0);
-
-        if (got <= 0) {
-            // got == 0: 서버가 정상적으로 연결 종료
-            // got < 0: 에러 발생 (SOCKET_ERROR)
+        if (!m_bRunning) return false;  // 사용자 Disconnect()
+        if (::GetTickCount() - startTick > HARD_DEADLINE_MS) {
+            TRACE(_T("[NetworkClient] RecvN 하드리밋 초과 — %d/%d\n"), totalRecv, n);
             return false;
         }
 
-        totalRecv += got;
+        int got = recv(m_socket, buf + totalRecv, n - totalRecv, 0);
+
+        if (got > 0) {
+            totalRecv += got;
+            continue;
+        }
+        if (got == 0) {
+            // 서버가 정상적으로 연결 종료
+            return false;
+        }
+        // got < 0 → 실제 에러인지 타임아웃인지 구분
+        int err = WSAGetLastError();
+        if (err == WSAETIMEDOUT || err == WSAEWOULDBLOCK) {
+            // 5초 동안 추가 데이터가 안 옴 — 큰 페이로드 중간 스톨.
+            // 연결은 살아있으므로 재시도 (전체 하드리밋은 위에서 감시).
+            continue;
+        }
+        // 실제 소켓 에러 (연결 끊김 등)
+        TRACE(_T("[NetworkClient] RecvN 에러: %d (%d/%d바이트)\n"), err, totalRecv, n);
+        return false;
     }
 
     return true;

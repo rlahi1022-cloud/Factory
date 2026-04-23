@@ -86,6 +86,15 @@ public:
     // 주의: ExtractString은 따옴표 없는 값(true/false)을 잘못 파싱하므로 반드시 이것 사용
     static bool ExtractBool(const CStringA& json, const CStringA& key);
 
+    // ExtractSubArray: JSON 배열 필드의 index번째 객체({...}) 추출 (v0.15.0)
+    // 예) {"detections":[{"class":"cap","conf":0.94,"ok":true}, ...]}
+    //     index=0 → {"class":"cap","conf":0.94,"ok":true}
+    // 배열 없거나 index 초과 시 빈 문자열 반환. 1-depth 배열 전용.
+    static CStringA ExtractSubArray(const CStringA& json, const CStringA& key, int index);
+
+    // ExtractArraySize: JSON 배열 원소 개수 반환 (v0.15.0)
+    static int ExtractArraySize(const CStringA& json, const CStringA& key);
+
     // ExtractStringW: UTF-8 JSON에서 문자열 값을 Unicode CString으로 추출
     // ExtractString의 결과(CStringA)를 UTF-8 → CString 변환하여 반환
     // 한글 등 비-ASCII 문자열을 안전하게 표시하려면 반드시 이걸 사용해야 함
@@ -143,17 +152,49 @@ public:
     //   modelType   — 모델 종류 ("PatchCore" 또는 "YOLO11")
     //   productName — 제품명 (예: "samdasoo_500ml")
     //   imageCount  — 업로드된 학습 이미지 수
+    //   sessionId   — v0.13.0: 업로드 세션 ID (빈 문자열이면 기본 데이터 사용)
     static CString BuildRetrainReq(
         int stationId,
         const CString& modelType,
         const CString& productName,
-        int imageCount);
+        int imageCount,
+        const CString& sessionId = _T(""));
+
+    // BuildRetrainUploadFrame (v0.13.0):
+    //   RETRAIN_UPLOAD(158) 패킷 한 프레임 조립 = [4B BE length][JSON][파일 바이너리]
+    //   파라미터:
+    //     sessionId      — 업로드 세션 ID (파일들을 같은 폴더에 모으기 위한 키)
+    //     stationId      — 1 또는 2
+    //     modelType      — "PatchCore" / "YOLO11"
+    //     filename       — 원본 파일명 (서버에서 basename 화)
+    //     fileIndex      — 0-based 인덱스 (진행률/순서 확인용)
+    //     totalFiles     — 전체 파일 수 (서버에서 is_last 판단)
+    //     fileBytes      — 실제 이미지 바이너리
+    //   반환: 전송용 std::vector<char> 프레임 전체
+    static std::vector<char> BuildRetrainUploadFrame(
+        const CString& sessionId,
+        int stationId,
+        const CString& modelType,
+        const CString& filename,
+        int fileIndex,
+        int totalFiles,
+        const std::vector<char>& fileBytes);
+
+    // GenerateSessionId (v0.13.0):
+    //   "sess-YYYYMMDD-HHMMSS-NNNNN" 형식의 세션 ID 생성 (로컬 타임 + 랜덤).
+    //   한 번의 "재학습 실행" 버튼 클릭 = 하나의 session_id.
+    static CString GenerateSessionId();
 
     // BuildAck: 범용 ACK 응답 JSON 생성
     // 파라미터:
     //   ackProtocolNo — ACK 프로토콜 번호 (예: 111)
     //   inspectionId  — 대상 검사 ID (수신한 패킷의 ID 그대로 반환)
     static CString BuildAck(int ackProtocolNo, const CString& inspectionId);
+
+    // BuildInspectControlReq (v0.14.0): 검사 pause/resume 요청 JSON (프로토콜 160)
+    //   stationFilter: 0=전체, 1=Station1, 2=Station2
+    //   action: _T("pause") 또는 _T("resume")
+    static CString BuildInspectControlReq(int stationFilter, const CString& action);
 
 private:
     // GetTimestamp: 현재 시각을 ISO8601 형식 문자열로 반환

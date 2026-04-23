@@ -1,13 +1,31 @@
 // ============================================================================
-// MainTabDlg.cpp — 메인 탭 다이얼로그 구현부
+// MainTabDlg.cpp — 메인 탭 다이얼로그 (앱 중심 윈도우)
 // ============================================================================
-// 목적:
-//   애플리케이션의 중심 윈도우로, 5개 탭 페이지 관리와 네트워크 통신을 담당합니다.
-//   서버로부터 수신한 실시간 데이터(NG 결과, 헬스체크 등)를 각 페이지에 전달합니다.
+// 책임:
+//   로그인 성공 후 표시되는 중앙 컨트롤러. 다음을 담당:
+//     1) 5개 페이지(Home/Station1/Station2/Stats/Model) 탭 관리
+//     2) CNetworkClient 소유 — 서버 GUI 포트(9010) 단일 연결 유지
+//     3) 서버 수신 메시지 디스패치 — 각 WM_NET_* 핸들러가 해당 페이지로 라우팅
+//     4) 주기 타이머(IDT_STATUSBAR 1초) 로 연결 상태 시각화 갱신
+//     5) 로그아웃 → 앱 재시작 흐름 조정
 //
-// 네트워크 메시지 흐름:
-//   서버 → CNetworkClient(수신 스레드) → PostMessage → MainTabDlg(UI 스레드)
-//        → OnNetNgPush / OnNetHealthPush 등 → 페이지 업데이트
+// 데이터 흐름 (실시간 NG):
+//   서버 INSPECT_NG_PUSH(110) →
+//     CNetworkClient::RecvLoop (별도 스레드) → JSON 파싱 → PostMessage
+//     → OnNetNgPush(UI 스레드) → InspectionRecord 적재 → PushUpdate() →
+//     Station1/Station2 페이지: SetImages + AddNgEntry, Home: 카운트 증가
+//
+// 데이터 흐름 (재학습 진행률):
+//   서버 RETRAIN_PROGRESS_PUSH(154) →
+//     OnNetRetrainProgress → PageModel::OnRetrainProgress(progress, station, type)
+//     v0.11.0 부터 station/type 정보도 함께 전달 → UI 라벨에 명시
+//
+// 초기 로드 흐름 (접속 직후):
+//   로그인 성공 → OnLoginSuccess → RequestInitialData():
+//     - STATS_REQ                 (Home 대시보드)
+//     - MODEL_LIST_REQ            (Model 페이지)
+//     - INSPECT_HISTORY_REQ (×2)  (Station1/2 최근 NG 10건)
+//     이후 각 row 더블클릭 시 INSPECT_IMAGE_REQ(116) 로 이미지 3장 on-demand 로드.
 // ============================================================================
 
 #include "pch.h"
@@ -66,14 +84,16 @@ CMainTabDlg::CMainTabDlg(const UserSession& s, CWnd* p)
     , m_activeTab(0)        // 초기 탭: 종합 현황
     , m_nextId(10020)       // 시뮬레이션 검사 ID 시작값
     , m_tick(0)             // 타이머 틱 초기화
-    , m_sv0(true)           // 학습 PC: 정상
-    , m_sv1(true)           // 추론 PC #1: 정상
-    , m_sv2(true)           // 추론 PC #2: 정상
+    // v0.14.6: 서버 상태 LED 초기값 — HEALTH_PUSH 오기 전까지 Unknown(회색).
+    , m_sv0(ServerState::Unknown)   // 학습 PC
+    , m_sv1(ServerState::Unknown)   // 추론 PC #1
+    , m_sv2(ServerState::Unknown)   // 추론 PC #2
     , m_bConnected(false)   // 네트워크: 미연결
 {
     InitializeCriticalSection(&m_csRecs);
-    // 초기 시뮬레이션 데이터 20건 생성
-    m_recs = QCUtil::GenInitialHistory();
+    // v0.14.6: 시뮬레이션 초기 이력 20건 생성 제거 — 실서버 DB 이력만 쓰도록.
+    //   이전엔 GenInitialHistory() 로 랜덤 OK/NG 를 미리 채워 상단 통계/점수에
+    //   가짜 숫자가 보이던 것을 제거.
 }
 
 CMainTabDlg::~CMainTabDlg()
@@ -82,6 +102,7 @@ CMainTabDlg::~CMainTabDlg()
     KillTimer(IDT_LIVE_UPDATE);
     KillTimer(IDT_STATUSBAR);
     KillTimer(IDT_RECONNECT);
+    KillTimer(IDT_HEARTBEAT);
 
     // 네트워크 연결 해제
     m_net.Disconnect();
@@ -157,10 +178,31 @@ BOOL CMainTabDlg::OnInitDialog()
     SetTimer(IDT_LIVE_UPDATE, 3000, nullptr);
     // IDT_STATUSBAR: 1초마다 상태바 시각 갱신
     SetTimer(IDT_STATUSBAR, 1000, nullptr);
+    // IDT_HEARTBEAT: 10초마다 능동 heartbeat (v0.13.1)
+    // 기존엔 recv 타임아웃(5초) 시에만 heartbeat 를 보냈는데, 푸시가 많을 땐
+    // recv 가 성공해서 heartbeat 가 suppressed → 서버 recv 타임아웃 유발.
+    // 별도 타이머로 무조건 주기적으로 보내 세션을 유지한다.
+    SetTimer(IDT_HEARTBEAT, 10000, nullptr);
 
     // ── 각 페이지에 NetworkClient 주입 (생성 성공한 페이지만) ──
     if (m_stats) m_stats->SetNetworkClient(&m_net);
     if (m_model) m_model->SetNetworkClient(&m_net);
+    // v0.14.3: Station1/2 Start/Stop 버튼도 서버에 명령을 보내야 하므로 주입
+    if (m_st1)   m_st1  ->SetNetworkClient(&m_net);
+    if (m_st2)   m_st2  ->SetNetworkClient(&m_net);
+    // v0.14.6: 홈 NG 리스트 더블클릭 → 이미지 요청 + Station 탭 전환
+    if (m_home) {
+        m_home->SetNetworkClient(&m_net);
+        m_home->SetOnRequestShowImage([this](int station_id, int /*inspection_id*/) {
+            // 탭 인덱스: 0=홈, 1=Station1, 2=Station2, 3=통계, 4=모델
+            int tabIdx = (station_id == 2) ? 2 : 1;
+            if (m_tab.GetSafeHwnd()) {
+                m_tab.SetCurSel(tabIdx);
+                SwitchTab(tabIdx);   // 실제 페이지 표시 갱신
+            }
+            // 이미지 응답은 WM_NET_NG_IMAGE 경로로 들어와 해당 Station 3뷰에 표시됨.
+        });
+    }
 
     // ── 최대화 표시 ──
     ShowWindow(SW_SHOWMAXIMIZED);
@@ -261,20 +303,37 @@ CRect CMainTabDlg::StatusRect() { CRect r; GetClientRect(&r); return CRect(0, r.
 // 커스텀 그리기
 // ============================================================================
 
-BOOL CMainTabDlg::OnEraseBkgnd(CDC* pDC)
+// v0.14.6: 배경 깜빡임 제거.
+//   기존엔 OnEraseBkgnd 에서 전체 클라이언트 영역을 FillSolidRect 로 덮어써서,
+//   InvalidateRect(StatusRect()) 같은 부분 갱신에도 화면 전체가 회색으로 깜빡였다.
+//   이제 배경은 OnPaint 의 더블버퍼 안에서 처리하고, 여기서는 Windows 기본 지움만 차단.
+BOOL CMainTabDlg::OnEraseBkgnd(CDC* /*pDC*/)
 {
-    // 배경을 MFC 스타일 회색으로 채움
-    CRect rc; GetClientRect(&rc);
-    pDC->FillSolidRect(&rc, RGB(212, 208, 200));
-    return TRUE;
+    return TRUE;  // OnPaint 가 배경까지 담당 — 여기서 아무 것도 그리지 않음
 }
 
 void CMainTabDlg::OnPaint()
 {
     CPaintDC dc(this);
-    DrawTitle(dc);
-    DrawToolbar(dc);
-    DrawStatus(dc);
+    CRect rc; GetClientRect(&rc);
+
+    // v0.14.6: 더블버퍼 — 메모리 DC 에 전부 그린 뒤 한 번에 BitBlt 으로 복사.
+    //   이렇게 하면 부분 Invalidate 에도 사용자 눈에는 "점진적 업데이트" 가 아니라
+    //   "한 번에 바뀐" 것처럼 보여 깜빡임이 사라진다.
+    CDC mem; CBitmap bmp;
+    mem.CreateCompatibleDC(&dc);
+    bmp.CreateCompatibleBitmap(&dc, rc.Width(), rc.Height());
+    CBitmap* pOld = mem.SelectObject(&bmp);
+
+    // 배경은 여기서 한 번만 채움 (OnEraseBkgnd 대체)
+    mem.FillSolidRect(&rc, RGB(212, 208, 200));
+
+    DrawTitle(mem);
+    DrawToolbar(mem);
+    DrawStatus(mem);
+
+    dc.BitBlt(0, 0, rc.Width(), rc.Height(), &mem, 0, 0, SRCCOPY);
+    mem.SelectObject(pOld);
 }
 
 // DrawTitle: 상단 그래디언트 타이틀바 (파란색 계열)
@@ -317,33 +376,41 @@ void CMainTabDlg::DrawToolbar(CDC& dc)
     dc.SelectObject(p);
 
     // ── 네트워크 상태 표시 (왼쪽) ──
+    // v0.14.6: 사용자가 직접 로그아웃/종료 하지 않은 이상, 자동 재접속 중의 순간적
+    //   끊김은 "연결됨" 으로 표시해 불필요한 시각적 혼란을 차단.
     dc.SetBkMode(TRANSPARENT);
     CFont* pf = dc.SelectObject(&m_fSmall);
     CString netStatus;
-    netStatus.Format(_T("서버: %s"), m_bConnected ? _T("연결됨") : _T("미연결"));
-    dc.SetTextColor(m_bConnected ? RGB(0, 128, 0) : RGB(200, 0, 0));
+    const bool showConnected = m_bConnected || !m_userDisconnected;
+    netStatus.Format(_T("서버: %s"), showConnected ? _T("연결됨") : _T("미연결"));
+    dc.SetTextColor(showConnected ? RGB(0, 128, 0) : RGB(200, 0, 0));
     CRect nsr(8, rc.top + 4, 120, rc.bottom - 2);
     dc.DrawText(netStatus, &nsr, DT_LEFT | DT_SINGLELINE);
     dc.SelectObject(pf);
 
     // ── 서버 LED (오른쪽) ──
     int x = rc.right - 340;
-    struct { bool ok; LPCTSTR lbl; } svs[] = {
+    struct { ServerState st; LPCTSTR lbl; } svs[] = {
         {m_sv0, _T("학습 PC")},
         {m_sv1, _T("추론 PC #1")},
         {m_sv2, _T("추론 PC #2")}
     };
     for (auto& s : svs) {
-        DrawLed(dc, x, rc.top + 7, s.ok, s.lbl);
+        DrawLed(dc, x, rc.top + 7, s.st, s.lbl);
         x += 115;
     }
 }
 
 // DrawLed: 원형 LED 인디케이터 + 라벨 텍스트
-void CMainTabDlg::DrawLed(CDC& dc, int x, int y, bool ok, LPCTSTR lbl)
+// v0.14.6: Unknown(회색) / Up(초록) / Down(빨강) 3-state 지원.
+void CMainTabDlg::DrawLed(CDC& dc, int x, int y, ServerState st, LPCTSTR lbl)
 {
-    // LED 색상: 정상=초록, 장애=빨강
-    COLORREF col = ok ? RGB(0, 176, 80) : RGB(255, 0, 0);
+    COLORREF col;
+    switch (st) {
+        case ServerState::Up:   col = RGB(0, 176, 80);  break;
+        case ServerState::Down: col = RGB(255, 0, 0);   break;
+        default:                col = RGB(160, 160, 160); break;  // Unknown = 회색
+    }
     CBrush br(col);
     CPen pen(PS_SOLID, 1, RGB(80, 80, 80));
     CPen* pp = dc.SelectObject(&pen);
@@ -377,15 +444,21 @@ void CMainTabDlg::DrawStatus(CDC& dc)
     dc.SetTextColor(RGB(128, 128, 128));
     CFont* pf = dc.SelectObject(&m_fSmall);
 
-    // 왼쪽: TCP/DB 상태 + 마지막 검사 시각
+    // 왼쪽: TCP/DB 상태 + 마지막 검사 시각 (+ 검사 제어 마지막 결과)
     EnterCriticalSection(&m_csRecs);
     InspectionRecord last = m_recs.empty() ? InspectionRecord{} : m_recs.back();
     LeaveCriticalSection(&m_csRecs);
     CString leftText;
+    // v0.14.6: 사용자가 직접 종료/로그아웃 하지 않았으면 "연결" 로 고정 표시
+    const bool showConnected2 = m_bConnected || !m_userDisconnected;
     leftText.Format(_T("TCP: :%d %s | DB: MariaDB | 마지막 검사: %s"),
         factory_client::ClientConfig::GetServerPort(),
-        m_bConnected ? _T("연결") : _T("미연결"),
+        showConnected2 ? _T("연결") : _T("미연결"),
         (LPCTSTR)last.time);
+    // v0.14.5: 검사 제어 결과가 있으면 뒤에 붙여 표시 (실패/성공 모두 여기로).
+    if (!m_inspectCtrlStatus.IsEmpty()) {
+        leftText += _T(" | ") + m_inspectCtrlStatus;
+    }
     CRect lr(6, rc.top, rc.right / 2, rc.bottom);
     dc.DrawText(leftText, &lr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
@@ -409,31 +482,22 @@ void CMainTabDlg::DrawStatus(CDC& dc)
 void CMainTabDlg::OnSize(UINT t, int cx, int cy)
 {
     CDialogEx::OnSize(t, cx, cy);
-    if (m_tab.GetSafeHwnd()) { LayoutPages(); Invalidate(); }
+    // v0.14.6: Invalidate(FALSE) — 배경 지움 없이 Paint 만 (깜빡임 차단).
+    if (m_tab.GetSafeHwnd()) { LayoutPages(); Invalidate(FALSE); }
 }
 
 void CMainTabDlg::OnTimer(UINT_PTR id)
 {
     if (id == IDT_LIVE_UPDATE) {
-        // ── 시뮬레이션 데이터 생성 ──
-        // 서버 미연결 시에도 UI가 동작하도록 시뮬레이션 데이터를 계속 생성합니다.
-        // 서버 연결 시에는 서버 푸시 데이터와 시뮬레이션 데이터가 병행됩니다.
+        // v0.14.6: 시뮬레이션용 가짜 레코드 생성 제거.
+        //   이전엔 QCUtil::GenRecord() 로 3초마다 랜덤 OK/NG 를 생성해 상단 점수창이
+        //   0.xx 로 깜빡이던 현상 유발. 실서버 연결 후엔 불필요 + 오히려 혼란.
+        //   m_tick 증가와 Tick()/상태 애니메이션은 유지.
         ++m_tick;
-        // 추론 PC #2를 20틱마다 1틱동안 장애 시뮬레이션 (서버 미연결 시)
-        if (!m_bConnected) {
-            m_sv2 = (m_tick % 20 != 15);
-        }
-        {
-            EnterCriticalSection(&m_csRecs);
-            m_recs.push_back(QCUtil::GenRecord(m_nextId++));
-            if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
-            LeaveCriticalSection(&m_csRecs);
-        }
-        PushUpdate();
         if (m_st1) m_st1->Tick();
         if (m_st2) m_st2->Tick();
-        InvalidateRect(ToolbarRect());
-        InvalidateRect(StatusRect());
+        InvalidateRect(ToolbarRect(), FALSE);
+        InvalidateRect(StatusRect(), FALSE);
     }
     else if (id == IDT_STATUSBAR) {
         // ── 연결 상태 실시간 동기화 ──
@@ -450,20 +514,36 @@ void CMainTabDlg::OnTimer(UINT_PTR id)
                 KillTimer(IDT_RECONNECT);
                 SetTimer(IDT_RECONNECT, 10000, nullptr);
             }
-            InvalidateRect(ToolbarRect());  // LED/상태 그림 갱신
+            InvalidateRect(ToolbarRect(), FALSE);  // LED/상태 그림 갱신
         }
-        InvalidateRect(StatusRect());
+        InvalidateRect(StatusRect(), FALSE);
     }
     else if (id == IDT_RECONNECT) {
-        // ── 서버 재접속 시도 ──
-        if (!m_net.IsConnected()) {
+        // ── 서버 재접속 시도 (v0.14.5: 성공할 때까지 2초 간격 끈질긴 재시도) ──
+        // 사용자가 직접 종료(로그아웃/앱 종료) 하기 전까지는 계속 연결을 살려둔다.
+        // 팝업/모달은 띄우지 않음 — 백그라운드에서 조용히 다시 붙음.
+        if (m_net.IsConnected()) {
+            KillTimer(IDT_RECONNECT);
+        } else {
             TRACE(_T("[MainTabDlg] 서버 재접속 시도...\n"));
-            ConnectToServer();  // 접속 + LOGIN_REQ 전송
+            ConnectToServer();  // 접속 + LOGIN_REQ
             if (m_net.IsConnected()) {
                 KillTimer(IDT_RECONNECT);
+            } else {
+                // 실패 → 다음 2초에 또 시도 (타이머는 계속 유지)
+                TRACE(_T("[MainTabDlg] 재접속 실패 — 2초 뒤 재시도\n"));
             }
-        } else {
-            KillTimer(IDT_RECONNECT);
+        }
+    }
+    else if (id == IDT_HEARTBEAT) {
+        // v0.13.1: recv 상태와 무관하게 10초마다 능동 heartbeat 송신.
+        // 이유: 서버 푸시가 빈번하면 recv 타임아웃이 안 떠서 기존 heartbeat(recv-타임아웃
+        //      기반) 가 suppressed 됨 → 서버가 클라→서버 트래픽이 없다고 판단해
+        //      recv 타임아웃으로 close 시키던 문제.
+        // 연결 상태일 때만 보내고, 실패해도 조용히 넘김 (다음 주기에 재시도).
+        if (m_net.IsConnected()) {
+            CString pkt = CPacketBuilder::BuildAck(factory_client::EXT_ACK, _T("heartbeat"));
+            m_net.SendJson(pkt);
         }
     }
     CDialogEx::OnTimer(id);
@@ -477,7 +557,10 @@ void CMainTabDlg::OnTabChanged(NMHDR*, LRESULT*)
 
 void CMainTabDlg::OnCancel()
 {
-    m_net.Disconnect();   // 네트워크 정리
+    // v0.14.6: 사용자가 직접 앱 종료를 요청 → 재접속 루프 중단 + UI 에 "미연결" 표시 허용
+    m_userDisconnected = true;
+    KillTimer(IDT_RECONNECT);
+    m_net.Disconnect();
     DestroyWindow();
     PostQuitMessage(0);
 }
@@ -488,8 +571,29 @@ void CMainTabDlg::OnCancel()
 
 void CMainTabDlg::OnFileExit()     { OnCancel(); }
 void CMainTabDlg::OnViewRefresh()  { PushUpdate(); }
-void CMainTabDlg::OnInspectStart() { SetTimer(IDT_LIVE_UPDATE, 3000, nullptr); }
-void CMainTabDlg::OnInspectStop()  { KillTimer(IDT_LIVE_UPDATE); }
+
+// v0.14.0: 검사 시작/중지 — 실제 AI 추론서버에 pause/resume 명령 전송.
+// station_filter=0 (전체) 로 모든 추론서버에 적용. 응답(161)은 OnNetResponse 에서 처리.
+// v0.15.0: 서버 미연결 시 시뮬레이션 타이머 분기 제거 — 실서버 전용.
+void CMainTabDlg::OnInspectStart()
+{
+    if (m_net.IsConnected()) {
+        CString req = CPacketBuilder::BuildInspectControlReq(0, _T("resume"));
+        m_net.SendJson(req);
+        TRACE(_T("[MainTabDlg] 검사 재개 요청 송신 (action=resume)\n"));
+    }
+    // v0.15.0: 미연결 시 아무것도 하지 않음 (시뮬레이션 타이머 제거)
+}
+
+void CMainTabDlg::OnInspectStop()
+{
+    if (m_net.IsConnected()) {
+        CString req = CPacketBuilder::BuildInspectControlReq(0, _T("pause"));
+        m_net.SendJson(req);
+        TRACE(_T("[MainTabDlg] 검사 일시정지 요청 송신 (action=pause)\n"));
+    }
+    // v0.15.0: 미연결 시 아무것도 하지 않음 (시뮬레이션 타이머 제거)
+}
 
 void CMainTabDlg::OnHelpAbout()
 {
@@ -512,6 +616,9 @@ void CMainTabDlg::ConnectToServer()
 {
     if (m_net.IsConnected()) return;
 
+    // v0.14.6: 명시적 로그아웃 후 재로그인 시 "미연결" 플래그 리셋
+    m_userDisconnected = false;
+
     if (m_net.Connect(factory_client::ClientConfig::GetServerIp(),
                       factory_client::ClientConfig::GetServerPort(), m_hWnd)) {
         // ── 접속 직후 LOGIN_REQ 전송 (서버 세션 유지 핵심!) ──
@@ -525,8 +632,10 @@ void CMainTabDlg::ConnectToServer()
         if (m_model) m_model->RequestModelList();
 
         // 검사 이력 + 통계를 자동 조회 → 홈 화면에 실데이터 표시
+        // v0.13.2: 홈 NG 리스트가 20+건 나오도록 limit 200 으로 확대
+        //          (NG 비율 10% 가정 → 평균 20건 확보)
         CString histReq = CPacketBuilder::BuildInspectHistoryReq(
-            0, _T(""), _T(""), 100);  // 전체 스테이션, 최대 100건
+            0, _T(""), _T(""), 200);
         m_net.SendJson(histReq);
 
         CString statsReq = CPacketBuilder::BuildStatsReq(0, _T(""), _T(""));
@@ -534,8 +643,9 @@ void CMainTabDlg::ConnectToServer()
 
         TRACE(_T("[MainTabDlg] 서버 접속 + LOGIN_REQ + 초기 데이터 요청 완료\n"));
     } else {
-        TRACE(_T("[MainTabDlg] 서버 자동 접속 실패 — 시뮬레이션 모드\n"));
-        SetTimer(IDT_RECONNECT, 10000, nullptr);
+        TRACE(_T("[MainTabDlg] 서버 자동 접속 실패 — 2초 뒤 재시도\n"));
+        KillTimer(IDT_RECONNECT);
+        SetTimer(IDT_RECONNECT, 2000, nullptr);
     }
 }
 
@@ -574,6 +684,9 @@ void CMainTabDlg::OnNetDisconnect()
 //   6) 로그인 취소 → 프로그램 종료
 void CMainTabDlg::OnLogout()
 {
+    // v0.14.6: 사용자 명시적 로그아웃 → 재접속 루프 중단, UI 에 "미연결" 표시 허용
+    m_userDisconnected = true;
+
     // 서버에 로그아웃 알림
     if (m_net.IsConnected()) {
         CString logoutJson = CPacketBuilder::BuildLogoutReq(m_session.username);
@@ -609,8 +722,8 @@ void CMainTabDlg::OnLogout()
     // 다시 표시 + 타이머 재시작
     ShowWindow(SW_SHOWMAXIMIZED);
     SetTimer(IDT_LIVE_UPDATE, 3000, nullptr);
-    InvalidateRect(TitleRect());
-    InvalidateRect(ToolbarRect());
+    InvalidateRect(TitleRect(), FALSE);
+    InvalidateRect(ToolbarRect(), FALSE);
 
     // 서버 재접속
     ConnectToServer();
@@ -632,79 +745,109 @@ LRESULT CMainTabDlg::OnNetConnected(WPARAM, LPARAM)
     KillTimer(IDT_RECONNECT);
 
     // 툴바 갱신 (연결 상태 표시)
-    InvalidateRect(ToolbarRect());
-    InvalidateRect(StatusRect());
+    InvalidateRect(ToolbarRect(), FALSE);
+    InvalidateRect(StatusRect(), FALSE);
 
     return 0;
 }
 
 // OnNetDisconnectedMsg: 서버 연결 끊김 (WM_NET_DISCONNECTED)
+// v0.14.5: 재접속 공격적 재시도 정책 — 사용자가 직접 종료(로그아웃/종료)하기 전까지
+//   TCP 가 끊어지면 2초 뒤 자동 재접속 + 재로그인 무한 반복.
+//   기존 10초 지연은 연결이 끊긴 동안 사용자가 아무 것도 못 하는 사각지대가 커서 제거.
+//   이중 트리거 방지 위해 기존 타이머 먼저 Kill.
 LRESULT CMainTabDlg::OnNetDisconnectedMsg(WPARAM, LPARAM)
 {
     m_bConnected = false;
-    // 재접속 시 스테이션 초기 이미지 다시 로드되도록 플래그 리셋
     m_initialImagesLoaded = false;
-    TRACE(_T("[MainTabDlg] 서버 연결 끊김\n"));
+    TRACE(_T("[MainTabDlg] 서버 연결 끊김 — 2초 후 자동 재접속 시도\n"));
 
-    // 재접속 타이머 시작 (10초 후 재시도)
-    SetTimer(IDT_RECONNECT, 10000, nullptr);
+    KillTimer(IDT_RECONNECT);
+    SetTimer(IDT_RECONNECT, 2000, nullptr);
 
-    InvalidateRect(ToolbarRect());
-    InvalidateRect(StatusRect());
+    InvalidateRect(ToolbarRect(), FALSE);
+    InvalidateRect(StatusRect(), FALSE);
 
     return 0;
 }
 
 // OnNetNgPush: NG 검사 결과 수신 (WM_NET_NG_PUSH, 프로토콜 110)
 // 서버가 추론 결과 중 NG인 것을 실시간으로 푸시합니다.
+// v0.14.5: 전체 try/catch 로 감싸 — 파싱/UI 업데이트 중 예외로 프로세스가 죽지 않도록 방어.
+//   과거 두 클라가 동시에 NG 수신 직후 끊긴 사례 있음(크래시 의심).
 LRESULT CMainTabDlg::OnNetNgPush(WPARAM, LPARAM lParam)
 {
-    // LPARAM에서 JSON 문자열 포인터 꺼내기
     std::string* pJson = reinterpret_cast<std::string*>(lParam);
     if (!pJson) return 0;
 
-    // JSON 파싱 → InspectionRecord로 변환
-    CStringA jsonA(pJson->c_str());
-    InspectionRecord rec;
-    rec.id        = m_nextId++;
-    rec.station   = CPacketBuilder::ExtractInt(jsonA, "station_id");
-    rec.isNG      = true;  // NG 푸시이므로 항상 true
-    rec.score     = CPacketBuilder::ExtractDouble(jsonA, "score");
-    rec.latencyMs = CPacketBuilder::ExtractInt(jsonA, "latency_ms");
+    try {
+        CStringA jsonA(pJson->c_str());
+        InspectionRecord rec;
+        // v0.14.7: 서버가 NG_PUSH JSON 에 DB AUTO_INCREMENT id 를 "id" 필드로 실어 보냄.
+        //   이전엔 클라 로컬 카운터(m_nextId)를 써서 종합현황 NG 리스트의 id 가
+        //   실제 DB row id 와 완전히 달라 보이던 문제. 이제 DB id 를 그대로 사용.
+        //   구버전 서버 호환: "id" 필드가 없거나 0 이면 로컬 카운터로 폴백.
+        int dbId = CPacketBuilder::ExtractInt(jsonA, "id");
+        rec.id        = (dbId > 0) ? dbId : m_nextId++;
+        rec.station   = CPacketBuilder::ExtractInt(jsonA, "station_id");
+        rec.isNG      = true;
+        rec.score     = CPacketBuilder::ExtractDouble(jsonA, "score");
+        rec.latencyMs = CPacketBuilder::ExtractInt(jsonA, "latency_ms");
 
-    // 시각 추출 (ISO8601에서 HH:MM:SS 부분)
-    CStringA tsA = CPacketBuilder::ExtractString(jsonA, "timestamp");
-    if (tsA.GetLength() >= 19) {
-        // "2026-04-16T14:30:00" → "14:30:00"
-        rec.time = CString(tsA.Mid(11, 8));
-    } else {
-        SYSTEMTIME st; GetLocalTime(&st);
-        rec.time.Format(_T("%02d:%02d:%02d"), st.wHour, st.wMinute, st.wSecond);
+        // 시각 추출 (ISO8601에서 HH:MM:SS 부분)
+        CStringA tsA = CPacketBuilder::ExtractString(jsonA, "timestamp");
+        if (tsA.GetLength() >= 19) {
+            rec.time = CString(tsA.Mid(11, 8));
+        } else {
+            SYSTEMTIME st; GetLocalTime(&st);
+            rec.time.Format(_T("%02d:%02d:%02d"), st.wHour, st.wMinute, st.wSecond);
+        }
+
+        // 결함 유형 변환
+        CStringA defectA = CPacketBuilder::ExtractString(jsonA, "defect_type");
+        if      (defectA == "anomaly")      rec.defect = EDefect::Anomaly;
+        else if (defectA == "cap_loose")    rec.defect = EDefect::CapLoose;
+        else if (defectA == "cap_missing")  rec.defect = EDefect::CapMissing;
+        else if (defectA == "label_tilt")   rec.defect = EDefect::LabelTilt;
+        else if (defectA == "label_torn")   rec.defect = EDefect::LabelTorn;
+        else if (defectA == "fill_low")     rec.defect = EDefect::FillLow;
+        else                                rec.defect = EDefect::Anomaly;
+
+        // v0.15.0: Station2 전용 — detections[] 배열 파싱
+        // 서버 JSON 예시: "detections":[{"class":"cap","conf":0.94,"ok":true}, ...]
+        if (rec.station == 2) {
+            int detCount = CPacketBuilder::ExtractArraySize(jsonA, "detections");
+            for (int i = 0; i < detCount; ++i) {
+                CStringA obj = CPacketBuilder::ExtractSubArray(jsonA, "detections", i);
+                if (obj.IsEmpty()) continue;
+                YoloDetection det;
+                det.className  = CPacketBuilder::ExtractStringW(obj, "class");
+                det.confidence = CPacketBuilder::ExtractDouble(obj, "conf");
+                det.ok         = CPacketBuilder::ExtractBool(obj, "ok");
+                rec.detections.push_back(det);
+            }
+        }
+
+        // 이력에 추가 (스레드 보호)
+        EnterCriticalSection(&m_csRecs);
+        m_recs.push_back(rec);
+        if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
+        LeaveCriticalSection(&m_csRecs);
+
+        // 홈 페이지 NG 리스트 맨 위에 prepend (실시간)
+        if (m_home && rec.isNG) m_home->AddNgRow(rec);
+
+        // 모든 페이지 업데이트
+        PushUpdate();
+        if (m_st1) m_st1->Tick();
+        if (m_st2) m_st2->Tick();
+        InvalidateRect(StatusRect(), FALSE);
+    } catch (const std::exception& e) {
+        TRACE(_T("[MainTabDlg] OnNetNgPush 예외: %hs\n"), e.what());
+    } catch (...) {
+        TRACE(_T("[MainTabDlg] OnNetNgPush 알 수 없는 예외\n"));
     }
 
-    // 결함 유형 변환
-    CStringA defectA = CPacketBuilder::ExtractString(jsonA, "defect_type");
-    if (defectA == "anomaly")         rec.defect = EDefect::Anomaly;
-    else if (defectA == "cap_loose")  rec.defect = EDefect::CapLoose;
-    else if (defectA == "cap_missing") rec.defect = EDefect::CapMissing;
-    else if (defectA == "label_tilt") rec.defect = EDefect::LabelTilt;
-    else if (defectA == "label_torn") rec.defect = EDefect::LabelTorn;
-    else if (defectA == "fill_low")   rec.defect = EDefect::FillLow;
-    else                              rec.defect = EDefect::Anomaly;
-
-    // 이력에 추가 (스레드 보호)
-    EnterCriticalSection(&m_csRecs);
-    m_recs.push_back(rec);
-    if (m_recs.size() > 50) m_recs.erase(m_recs.begin());
-    LeaveCriticalSection(&m_csRecs);
-
-    // 모든 페이지 업데이트
-    PushUpdate();
-    if (m_st1) m_st1->Tick();
-    if (m_st2) m_st2->Tick();
-    InvalidateRect(StatusRect());
-
-    // 힙에 할당된 JSON 문자열 해제 (메모리 누수 방지!)
     delete pJson;
     return 0;
 }
@@ -740,22 +883,23 @@ LRESULT CMainTabDlg::OnNetHealthPush(WPARAM, LPARAM lParam)
     CStringA jsonA(pJson->c_str());
     CStringA serverName = CPacketBuilder::ExtractString(jsonA, "server_name");
     CStringA status     = CPacketBuilder::ExtractString(jsonA, "status");
-    bool isOk = (status != "down");  // "recovered" → 정상, "down" → 장애
+    // v0.14.6: 서버 실상태 반영 — "down" 은 Down, 그 외(recovered/alive) 는 Up.
+    ServerState st = (status == "down") ? ServerState::Down : ServerState::Up;
 
     // 서버 이름으로 해당 LED 업데이트
     if (serverName.Find("train") >= 0 || serverName.Find("learning") >= 0) {
-        m_sv0 = isOk;       // 학습 PC
+        m_sv0 = st;      // 학습 PC
     } else if (serverName.Find("1") >= 0 || serverName.Find("inbound") >= 0) {
-        m_sv1 = isOk;       // 추론 PC #1
+        m_sv1 = st;      // 추론 PC #1
     } else if (serverName.Find("2") >= 0 || serverName.Find("assembly") >= 0) {
-        m_sv2 = isOk;       // 추론 PC #2
+        m_sv2 = st;      // 추론 PC #2
     }
 
     TRACE(_T("[MainTabDlg] 헬스 상태: %S → %S\n"),
         (LPCSTR)serverName, (LPCSTR)status);
 
     // 툴바(LED 표시) 갱신
-    InvalidateRect(ToolbarRect());
+    InvalidateRect(ToolbarRect(), FALSE);
 
     delete pJson;
     return 0;
@@ -773,33 +917,26 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
 
     switch (protocolNo) {
     case factory_client::INSPECT_HISTORY_RES:
-        // 검사 이력 응답 → 통계 페이지에 전달
+        // 검사 이력 응답 → 통계 페이지 + 홈 NG 리스트 + 입고 NG 리스트에 전달
         if (m_stats) m_stats->OnInspectHistoryRes(*pJson);
+        if (m_home)  m_home ->OnInspectHistoryRes(*pJson);
+        // v0.14.6: Station1 하단 NG 이력 리스트도 DB 이력으로 초기 채움
+        //   (텍스트 전용 리스트 — 이미지 없이 id/시각/점수만).
+        if (m_st1)   m_st1  ->PopulateNgHistoryFromJson(*pJson);
 
-        // 접속 직후 1회만: 스테이션별 최신 N건(기본 10)의 이미지를 자동 요청하여
-        // 상단 대형 3뷰 + 하단 이력 리스트에 DB 기반 실데이터를 즉시 표시.
-        // 라이브 NG_PUSH가 오면 상단은 덮어쓰고, 하단 리스트에는 추가됨.
-        if (!m_initialImagesLoaded && m_stats) {
-            m_initialImagesLoaded = true;
-            constexpr int kHistoryImagesPerStation = 10;  // 리스트 상한과 일치
-            auto ids1 = m_stats->GetRecentInspectionIdsByStation(1, kHistoryImagesPerStation);
-            auto ids2 = m_stats->GetRecentInspectionIdsByStation(2, kHistoryImagesPerStation);
-            // 역순으로 보냄(오래된 것 먼저) — 응답이 오는 순서대로 리스트 앞에 prepend되면
-            // 최종적으로 시간 역순(최신이 맨 위)으로 정렬됨.
-            for (auto it = ids1.rbegin(); it != ids1.rend(); ++it) {
-                m_net.SendJson(CPacketBuilder::BuildInspectImageReq(*it));
-            }
-            for (auto it = ids2.rbegin(); it != ids2.rend(); ++it) {
-                m_net.SendJson(CPacketBuilder::BuildInspectImageReq(*it));
-            }
-            TRACE(_T("[MainTabDlg] 초기 이력 이미지 요청 | s1=%d건 s2=%d건\n"),
-                  (int)ids1.size(), (int)ids2.size());
-        }
+        // v0.14.5: 로그인 직후 자동 이미지 preload 완전 제거.
+        //   [문제] DB 에 검사 레코드는 있어도 저장소에 실 이미지 파일이 없는 경우가
+        //          있음(예: 저장소 초기화/경로 불일치). 그러면 서버가 img=0/heat=0/mask=0
+        //          응답을 주고, 이 "빈 응답" 이후 클라 연결이 불안정해짐.
+        //   [결정] 자동 preload 제거 — 이력 리스트(텍스트)만 즉시 채우고, 실이미지는
+        //          사용자가 행을 클릭할 때 on-demand 로만 요청. 실시간 NG_PUSH(110)
+        //          는 그대로 상단 3뷰에 도착 → 새로운 NG 는 즉시 보임.
         break;
 
     case factory_client::STATS_RES:
-        // 통계 데이터 응답
+        // 통계 데이터 응답 — PageStats(전용) + PageHome(Summary 누적값 초기화, v0.14.7)
         if (m_stats) m_stats->OnStatsRes(*pJson);
+        if (m_home)  m_home ->ApplyStatsRes(*pJson);
         break;
 
     case factory_client::MODEL_LIST_RES:
@@ -811,6 +948,32 @@ LRESULT CMainTabDlg::OnNetResponse(WPARAM wParam, LPARAM lParam)
         // 재학습 시작 응답
         if (m_model) m_model->OnRetrainRes(*pJson);
         break;
+
+    case factory_client::RETRAIN_UPLOAD_ACK:
+        // v0.13.0: 학습 이미지 업로드 개별 ACK — 진행률 업데이트 + 전부 끝나면 RETRAIN_REQ 발행
+        if (m_model) m_model->OnRetrainUploadAck(*pJson);
+        break;
+
+    case factory_client::INSPECT_CONTROL_RES: {
+        // v0.14.0: 검사 pause/resume 결과 처리.
+        // v0.14.5: 모달 MessageBox 제거 + 상태바 텍스트로 사용자 피드백.
+        //   success=false (예: 추론서버 미연결) 여도 팝업 대신 상태바에 메시지만 표시.
+        CStringA jsonA(pJson->c_str());
+        bool ok = CPacketBuilder::ExtractBool(jsonA, "success");
+        CString action = CPacketBuilder::ExtractStringW(jsonA, "action");
+        int applied = CPacketBuilder::ExtractInt(jsonA, "applied_count");
+        if (ok) {
+            m_inspectCtrlStatus.Format(_T("검사 %s 적용됨 (%d대)"),
+                                        (LPCTSTR)action, applied);
+        } else {
+            CString err = CPacketBuilder::ExtractStringW(jsonA, "message");
+            m_inspectCtrlStatus.Format(_T("검사 %s 실패: %s (추론서버 연결 확인)"),
+                                        (LPCTSTR)action, (LPCTSTR)err);
+        }
+        TRACE(_T("[MainTabDlg] 검사 제어 응답: %s\n"), (LPCTSTR)m_inspectCtrlStatus);
+        InvalidateRect(StatusRect(), FALSE);
+        break;
+    }
 
     default:
         TRACE(_T("[MainTabDlg] 미처리 응답: %d\n"), protocolNo);
@@ -828,11 +991,14 @@ LRESULT CMainTabDlg::OnNetRetrainProgress(WPARAM, LPARAM lParam)
     if (!pJson) return 0;
 
     CStringA jsonA(pJson->c_str());
-    int progress = CPacketBuilder::ExtractInt(jsonA, "progress");
+    int     progress   = CPacketBuilder::ExtractInt(jsonA, "progress");
+    int     stationId  = CPacketBuilder::ExtractInt(jsonA, "station_id");
+    CString modelType  = CPacketBuilder::ExtractStringW(jsonA, "model_type");
 
-    // 모델 페이지에 진행률 전달
-    if (m_model) m_model->OnRetrainProgress(progress);
-    TRACE(_T("[MainTabDlg] 재학습 진행률: %d%%\n"), progress);
+    // 모델 페이지에 진행률 전달 — station/type 정보도 함께 넘겨 UI에 표시
+    if (m_model) m_model->OnRetrainProgress(progress, stationId, modelType);
+    TRACE(_T("[MainTabDlg] 재학습 진행률: station=%d type=%s %d%%\n"),
+          stationId, (LPCTSTR)modelType, progress);
 
     delete pJson;
     return 0;
@@ -884,20 +1050,37 @@ LRESULT CMainTabDlg::OnNetNgImage(WPARAM, LPARAM lParam)
           pkt->station_id, pkt->inspection_id,
           pkt->image.size(), pkt->heatmap.size(), pkt->pred_mask.size());
 
-    // 메타데이터(timestamp/score)는 PageStats의 히스토리 캐시에서 조회 — 미발견 시 기본값.
-    CString timeLabel = _T("--:--:--");
-    double  score     = 0.0;
-    if (m_stats) m_stats->LookupInspectionMeta(pkt->inspection_id, timeLabel, score);
+    // v0.14.5: 전체 경로를 try/catch 로 감싸 크래시 차단.
+    //   과거 "NG 푸시 수신 직후 두 클라 동시 끊김" 관측됨 → 이미지 디코드/StretchBlt 에서
+    //   프로세스가 죽는 것이 가장 유력한 시나리오. 여기서 예외를 삼키면 최악의 경우
+    //   해당 푸시의 이미지 표시만 실패하고 연결은 유지된다.
+    try {
+        CString timeLabel = _T("--:--:--");
+        double  score     = 0.0;
+        const bool found  = (m_stats && m_stats->LookupInspectionMeta(pkt->inspection_id, timeLabel, score));
+        if (!found) {
+            if (pkt->timestamp_iso.GetLength() >= 19) {
+                timeLabel = pkt->timestamp_iso.Mid(11, 8);
+            }
+            if (pkt->score > 0.0) {
+                score = pkt->score;
+            }
+        }
 
-    if (pkt->station_id == 1 && m_st1) {
-        // 상단 대형 3뷰 — 최신 1건만 유지 (덮어쓰기)
-        m_st1->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
-        // 하단 이력 리스트 — 최대 10건까지 누적 (동일 id는 교체)
-        m_st1->AddNgEntry(pkt->inspection_id, score, timeLabel,
-                          pkt->image, pkt->heatmap, pkt->pred_mask);
-    } else if (pkt->station_id == 2 && m_st2) {
-        m_st2->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
-        // 스테이션2는 후속 커밋에서 리스트 연결 예정
+        if (pkt->station_id == 1 && m_st1) {
+            m_st1->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
+            m_st1->AddNgEntry(pkt->inspection_id, score, timeLabel,
+                              pkt->image, pkt->heatmap, pkt->pred_mask);
+        } else if (pkt->station_id == 2 && m_st2) {
+            m_st2->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
+            // v0.15.0: Station1과 동일하게 NG 이력 리스트 누적
+            m_st2->AddNgEntry(pkt->inspection_id, score, timeLabel,
+                              pkt->image, pkt->heatmap, pkt->pred_mask);
+        }
+    } catch (const std::exception& e) {
+        TRACE(_T("[MainTabDlg] OnNetNgImage 예외: %hs\n"), e.what());
+    } catch (...) {
+        TRACE(_T("[MainTabDlg] OnNetNgImage 알 수 없는 예외\n"));
     }
 
     delete pkt;

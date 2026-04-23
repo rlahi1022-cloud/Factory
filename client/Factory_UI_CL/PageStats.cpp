@@ -1,4 +1,18 @@
-﻿#include "pch.h"
+﻿// ============================================================================
+// PageStats.cpp — 통계/이력 조회 페이지
+// ============================================================================
+// 책임:
+//   기간/스테이션 필터로 과거 검사 이력 조회 + 그래프/테이블 표시.
+//   - 시간대별 OK/NG 추세선
+//   - 결함 유형별 파레토 차트
+//   - 레이턴시 분포
+//   - CSV 내보내기 (OnBtnExportCSV)
+//
+// 데이터 요청:
+//   OnBtnQuery → STATS_REQ(130) + INSPECT_HISTORY_REQ(114) 동시 전송
+//   두 응답이 모두 도착하면 Rebuild() 로 차트/테이블 재구성.
+// ============================================================================
+#include "pch.h"
 #include "PageStats.h"
 #include "PacketBuilder.h"   // ExtractInt/String/Double
 #include <algorithm>
@@ -6,6 +20,7 @@
 IMPLEMENT_DYNAMIC(CPageStats, CDialogEx)
 BEGIN_MESSAGE_MAP(CPageStats, CDialogEx)
     ON_WM_PAINT()
+    ON_WM_ERASEBKGND()   // v0.14.6: 배경 지움 억제해 깜빡임 차단
     ON_BN_CLICKED(IDC_BTN_QUERY,      OnBtnQuery)
     ON_BN_CLICKED(IDC_BTN_EXPORT_CSV, OnBtnExportCSV)
 END_MESSAGE_MAP()
@@ -17,27 +32,40 @@ BOOL CPageStats::OnInitDialog(){CDialogEx::OnInitDialog();Rebuild();return TRUE;
 void CPageStats::Update(const std::vector<InspectionRecord>& recs){m_recs=recs;Rebuild();Invalidate();}
 
 void CPageStats::Rebuild(){
-    m_trend.clear();
-    for(int h=8;h<20;++h){
-        TPoint p;p.lbl.Format(_T("%d:00"),h);
-        p.s1=(rand()%150)/100.0;p.s2=(rand()%200)/100.0;p.lat=40+rand()%60;
-        m_trend.push_back(p);
-    }
-    m_pareto={{_T("라벨기울어짐"),5},{_T("캡미체결"),3},{_T("이물질"),2},{_T("크랙"),1},{_T("미충전"),1}};
+    // v0.15.0: rand() 기반 더미 추세 데이터 및 하드코딩 파레토 항목 제거.
+    // m_trend / m_pareto 는 OnStatsRes() / OnInspectHistoryRes() 가
+    // 서버 응답을 받은 후에만 채워진다.
+    // 서버 데이터가 없는 상태에서는 빈 차트를 표시.
 }
 
+// v0.14.6: 통계 차트 영역 더블버퍼링 — 갱신 시 깜빡임 제거.
 void CPageStats::OnPaint(){
     CPaintDC dc(this);
     CRect cr; GetClientRect(&cr);
+
+    CDC mem; CBitmap bmp;
+    mem.CreateCompatibleDC(&dc);
+    bmp.CreateCompatibleBitmap(&dc, cr.Width(), cr.Height());
+    CBitmap* pOld = mem.SelectObject(&bmp);
+
+    // 다이얼로그 기본 배경색으로 채우고 그 위에 차트 렌더링
+    mem.FillSolidRect(&cr, ::GetSysColor(COLOR_BTNFACE));
+
     int mg=6, top=36, ch=160, lh=110;
     int hw=(cr.Width()-mg*3)/2;
     CRect trendRc(mg,top,mg+hw,top+ch);
     CRect paretoRc(mg*2+hw,top,cr.right-mg,top+ch);
     CRect latRc(mg,top+ch+mg,cr.right-mg,top+ch+mg+lh);
-    DrawTrend(dc,trendRc);
-    DrawPareto(dc,paretoRc);
-    DrawLatency(dc,latRc);
+    DrawTrend(mem,trendRc);
+    DrawPareto(mem,paretoRc);
+    DrawLatency(mem,latRc);
+
+    dc.BitBlt(0, 0, cr.Width(), cr.Height(), &mem, 0, 0, SRCCOPY);
+    mem.SelectObject(pOld);
 }
+
+// v0.14.6: 배경 지움 억제 — OnPaint 가 더블버퍼 안에서 배경까지 그림.
+BOOL CPageStats::OnEraseBkgnd(CDC* /*pDC*/) { return TRUE; }
 
 void CPageStats::DrawGrid(CDC& dc, CRect rc, int rows, int cols){
     CPen gp(PS_SOLID,1,RGB(204,204,204)); CPen* p=dc.SelectObject(&gp);
@@ -131,9 +159,9 @@ void CPageStats::OnBtnQuery(){
         CString statsReq = CPacketBuilder::BuildStatsReq(0, _T(""), _T(""));
         m_net->SendJson(statsReq);
     } else {
-        // 서버 미연결 시 로컬 더미 데이터로 갱신
-        Rebuild();
-        Invalidate();
+        // v0.15.0: 서버 미연결 시 더미 Rebuild() 제거 → 경고 안내
+        MessageBox(_T("서버에 연결되어 있지 않습니다.\n연결 후 다시 조회하세요."),
+                   _T("통계 조회"), MB_OK | MB_ICONWARNING);
     }
 }
 void CPageStats::OnBtnExportCSV(){

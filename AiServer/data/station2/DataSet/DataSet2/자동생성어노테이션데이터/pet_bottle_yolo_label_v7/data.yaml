@@ -1,0 +1,9 @@
+# YOLO11 dataset config (PET bottle QC)
+path: .
+train: images/train
+val: images/val
+
+names:
+  0: cap
+  1: label
+  2: fill_level

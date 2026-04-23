@@ -1,10 +1,23 @@
 // ============================================================================
-// PacketBuilder.cpp
+// PacketBuilder.cpp — GUI 클라이언트 JSON 패킷 조립/파싱
 // ============================================================================
-// 목적:
-//   PacketBuilder.h에 선언된 패킷 조립/파싱/JSON 빌더 함수들의 구현부입니다.
-//   TCP 프로토콜의 [4바이트 헤더] + [JSON] 포맷을 직접 다루며,
-//   외부 라이브러리 없이 단순한 JSON 생성 및 파싱을 수행합니다.
+// 책임:
+//   - CString(유니코드) ↔ UTF-8 변환 + [4바이트 BE 길이] 프레이밍
+//   - 프로토콜별 요청 JSON 빌드 (로그인/회원가입/이력/통계/모델/재학습)
+//   - 응답 JSON 에서 필드 추출 (Extract* 시리즈)
+//
+// 설계 방침 (서버측과 대칭):
+//   - 외부 JSON 라이브러리 미사용 → 1-depth 평탄 JSON 전용, 중첩 배열/객체는
+//     상위 호출부에서 직접 문자열 조작. 중첩 파싱은 ExtractSubArray 등으로 보조.
+//   - request_id 는 m_requestSeq 로 순번 관리 → 서버와 응답 매칭 용도.
+//   - UTF-8 송수신 보장: WideCharToMultiByte/MultiByteToWideChar 로 왕복 변환
+//     → 한글 메시지/사용자명이 서버 로그에도 깨지지 않음.
+//
+// 보안:
+//   - JSON 이스케이프(EscapeJson) 로 " / \\ / 제어문자 처리 → injection 차단
+//   - 입력 길이 제한은 서버측(extract_str 512자) 에서 재검증
+//
+// 대응 서버 모듈: MainServer/src/session/gui_router.cpp (extract_str/int 파서)
 // ============================================================================
 
 #include "pch.h"
@@ -82,6 +95,14 @@ std::vector<char> CPacketBuilder::BuildPacketWithImage(
 // ============================================================================
 // ParseHeader — 4바이트 Big-Endian 헤더에서 JSON 크기 추출
 // ============================================================================
+// v0.14.5: JSON 상한 64KB → 1MB 확대.
+//   [문제] 검사이력(INSPECT_HISTORY_RES) 응답에 200 건을 담으면 각 레코드가
+//   image_path/heatmap_path/pred_mask_path 같은 긴 문자열 포함 → ~88KB 로 커짐.
+//   기존 64KB 상한에서 ParseHeader 가 false 반환 → RecvLoop break →
+//   로그인 직후 연결 해제. 서버 로그상 "검사이력 응답 200건" 직후 "클라이언트 해제"
+//   로 관측된 현상의 실제 원인.
+//   [결정] 상한을 1MB 로 확대. 이미지 바이너리는 JSON 뒤에 별도 블록으로 오므로
+//   JSON 본문이 이보다 클 일은 사실상 없음 (한도 초과는 여전히 방어).
 bool CPacketBuilder::ParseHeader(const char* headerBuf, UINT32& outJsonSize)
 {
     // 4바이트를 Big-Endian으로 해석하여 정수로 변환합니다.
@@ -92,8 +113,8 @@ bool CPacketBuilder::ParseHeader(const char* headerBuf, UINT32& outJsonSize)
                 | (static_cast<UINT32>(headerBuf[2] & 0xFF) << 8)
                 | (static_cast<UINT32>(headerBuf[3] & 0xFF));
 
-    // 유효성 검사: 크기가 0이거나 64KB를 초과하면 비정상 패킷
-    if (outJsonSize == 0 || outJsonSize > 64 * 1024) {
+    // 유효성 검사: 크기가 0이거나 1MB를 초과하면 비정상 패킷
+    if (outJsonSize == 0 || outJsonSize > 1024 * 1024) {
         return false;
     }
     return true;
@@ -523,14 +544,17 @@ CString CPacketBuilder::BuildModelListReq()
 }
 
 // BuildRetrainReq: 재학습 요청 JSON (프로토콜 152)
+// v0.13.0: sessionId 가 비어있지 않으면 JSON 에 포함 (업로드 세션 → data_path 트리거)
 CString CPacketBuilder::BuildRetrainReq(
     int stationId, const CString& modelType,
-    const CString& productName, int imageCount)
+    const CString& productName, int imageCount,
+    const CString& sessionId)
 {
     CStringA ts = GetTimestamp();
     CStringA reqId = GenerateRequestId();
     CStringA typeA(modelType);
     CStringA prodA(productName);
+    CStringA sessA(sessionId);
 
     CStringA json;
     json.Format(
@@ -542,6 +566,7 @@ CString CPacketBuilder::BuildRetrainReq(
         "\"model_type\":\"%s\","          // "PatchCore" 또는 "YOLO11"
         "\"product_name\":\"%s\","        // 제품명
         "\"image_count\":%d,"             // 업로드된 이미지 수
+        "\"session_id\":\"%s\","          // v0.13.0: 업로드 세션 (빈 문자열=기본 데이터)
         "\"timestamp\":\"%s\""
         "}",
         factory_client::RETRAIN_REQ,
@@ -551,9 +576,97 @@ CString CPacketBuilder::BuildRetrainReq(
         (LPCSTR)typeA,
         (LPCSTR)prodA,
         imageCount,
+        (LPCSTR)sessA,
         (LPCSTR)ts);
 
     return CString(json);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// BuildRetrainUploadFrame (v0.13.0)
+//   RETRAIN_UPLOAD(158) 한 프레임 전체 (헤더 + JSON + 파일 바이너리) 조립.
+//   BuildPacket 은 JSON 만 감싸주므로 여기서는 JSON 을 직접 조립하고
+//   [4B BE length][JSON][binary] 를 하나의 vector<char> 로 반환.
+// ──────────────────────────────────────────────────────────────────────────
+std::vector<char> CPacketBuilder::BuildRetrainUploadFrame(
+    const CString& sessionId,
+    int stationId,
+    const CString& modelType,
+    const CString& filename,
+    int fileIndex,
+    int totalFiles,
+    const std::vector<char>& fileBytes)
+{
+    CStringA ts = GetTimestamp();
+    CStringA reqId = GenerateRequestId();
+    CStringA sessA(sessionId);
+    CStringA typeA(modelType);
+    CStringA nameA(filename);
+
+    CStringA jsonA;
+    jsonA.Format(
+        "{"
+        "\"protocol_no\":%d,"
+        "\"protocol_version\":\"%s\","
+        "\"request_id\":\"%s\","
+        "\"session_id\":\"%s\","
+        "\"station_id\":%d,"
+        "\"model_type\":\"%s\","
+        "\"filename\":\"%s\","
+        "\"file_index\":%d,"
+        "\"total_files\":%d,"
+        "\"image_size\":%d,"
+        "\"timestamp\":\"%s\""
+        "}",
+        factory_client::RETRAIN_UPLOAD,
+        factory_client::PROTOCOL_VERSION,
+        (LPCSTR)reqId,
+        (LPCSTR)sessA,
+        stationId,
+        (LPCSTR)typeA,
+        (LPCSTR)nameA,
+        fileIndex,
+        totalFiles,
+        (int)fileBytes.size(),
+        (LPCSTR)ts);
+
+    // JSON 바이트 수
+    const int jsonLen = jsonA.GetLength();
+
+    // [4B BE length][JSON][binary] 조립
+    std::vector<char> frame;
+    frame.reserve(4 + jsonLen + fileBytes.size());
+
+    // 4B big-endian length
+    frame.push_back(static_cast<char>((jsonLen >> 24) & 0xFF));
+    frame.push_back(static_cast<char>((jsonLen >> 16) & 0xFF));
+    frame.push_back(static_cast<char>((jsonLen >>  8) & 0xFF));
+    frame.push_back(static_cast<char>( jsonLen        & 0xFF));
+
+    // JSON 본문
+    frame.insert(frame.end(), (LPCSTR)jsonA, (LPCSTR)jsonA + jsonLen);
+
+    // 파일 바이너리
+    if (!fileBytes.empty()) {
+        frame.insert(frame.end(), fileBytes.begin(), fileBytes.end());
+    }
+
+    return frame;
+}
+
+// GenerateSessionId (v0.13.0): "sess-YYYYMMDD-HHMMSS-NNNNN"
+CString CPacketBuilder::GenerateSessionId()
+{
+    SYSTEMTIME st;
+    ::GetLocalTime(&st);
+    CString sid;
+    // 뒤 5자리 랜덤 — 같은 초에 두 번 눌러도 충돌 방지
+    int rnd = (int)(::GetTickCount() & 0xFFFF);
+    sid.Format(_T("sess-%04d%02d%02d-%02d%02d%02d-%05d"),
+               st.wYear, st.wMonth, st.wDay,
+               st.wHour, st.wMinute, st.wSecond,
+               rnd);
+    return sid;
 }
 
 // BuildAck: ACK 응답 JSON 생성
@@ -577,4 +690,100 @@ CString CPacketBuilder::BuildAck(int ackProtocolNo, const CString& inspectionId)
         (LPCSTR)ts);
 
     return CString(json);
+}
+
+// BuildInspectControlReq (v0.14.0): 검사 pause/resume 요청 JSON
+CString CPacketBuilder::BuildInspectControlReq(int stationFilter, const CString& action)
+{
+    CStringA ts    = GetTimestamp();
+    CStringA reqId = GenerateRequestId();
+    CStringA actA(action);
+
+    CStringA json;
+    json.Format(
+        "{"
+        "\"protocol_no\":%d,"
+        "\"protocol_version\":\"%s\","
+        "\"request_id\":\"%s\","
+        "\"station_filter\":%d,"
+        "\"action\":\"%s\","
+        "\"timestamp\":\"%s\""
+        "}",
+        factory_client::INSPECT_CONTROL_REQ,
+        factory_client::PROTOCOL_VERSION,
+        (LPCSTR)reqId,
+        stationFilter,
+        (LPCSTR)actA,
+        (LPCSTR)ts);
+
+    return CString(json);
+}
+
+// ============================================================================
+// ExtractSubArray / ExtractArraySize (v0.15.0)
+// ============================================================================
+// JSON 배열 필드에서 n번째 객체({...})를 통째로 추출.
+// 외부 JSON 라이브러리 미사용 — 중괄호 매칭 방식, 1-depth 배열 전용.
+// ============================================================================
+CStringA CPacketBuilder::ExtractSubArray(const CStringA& json,
+                                          const CStringA& key, int index)
+{
+    // 1) "key" 위치 탐색
+    CStringA searchKey = "\"" + key + "\"";
+    int keyPos = json.Find(searchKey);
+    if (keyPos < 0) return "";
+
+    // 2) ':' → '[' 탐색
+    int colonPos = json.Find(':', keyPos + searchKey.GetLength());
+    if (colonPos < 0) return "";
+    int arrStart = json.Find('[', colonPos);
+    if (arrStart < 0) return "";
+
+    // 3) index번째 '{...}' 추출 (중괄호 depth 카운팅)
+    int cur = arrStart + 1;
+    int len = json.GetLength();
+    int found = 0;
+    while (cur < len) {
+        // '{' 또는 배열 끝 ']' 탐색
+        while (cur < len && json[cur] != '{' && json[cur] != ']') ++cur;
+        if (cur >= len || json[cur] == ']') break;
+
+        // '{' 발견 — 매칭 '}' 찾기
+        int depth = 0, start = cur;
+        while (cur < len) {
+            if      (json[cur] == '{') ++depth;
+            else if (json[cur] == '}') { --depth; if (depth == 0) break; }
+            ++cur;
+        }
+        if (found == index)
+            return json.Mid(start, cur - start + 1);
+        ++found;
+        ++cur;
+    }
+    return "";
+}
+
+int CPacketBuilder::ExtractArraySize(const CStringA& json, const CStringA& key)
+{
+    CStringA searchKey = "\"" + key + "\"";
+    int keyPos = json.Find(searchKey);
+    if (keyPos < 0) return 0;
+    int colonPos = json.Find(':', keyPos + searchKey.GetLength());
+    if (colonPos < 0) return 0;
+    int arrStart = json.Find('[', colonPos);
+    if (arrStart < 0) return 0;
+
+    int cur = arrStart + 1, len = json.GetLength(), count = 0;
+    while (cur < len) {
+        while (cur < len && json[cur] != '{' && json[cur] != ']') ++cur;
+        if (cur >= len || json[cur] == ']') break;
+        int depth = 0;
+        while (cur < len) {
+            if      (json[cur] == '{') ++depth;
+            else if (json[cur] == '}') { --depth; if (depth == 0) break; }
+            ++cur;
+        }
+        ++count; ++cur;
+    }
+    return count;
 }

@@ -35,7 +35,7 @@ constexpr const wchar_t* DEFAULT_SERVER_IP = L"10.10.10.130";
 // PROTOCOL_VERSION: 프로토콜 버전 문자열 (서버와 일치해야 함)
 constexpr const char* PROTOCOL_VERSION = "1.0";
 
-// RECV_BUF_SIZE: 수신 버퍼 최대 크기 (64KB, JSON 기준 충분)
+// RECV_BUF_SIZE: 수신 버퍼 최대 크기 (현재 미사용 — 실제 한도는 PacketBuilder::ParseHeader 가 결정, v0.14.5 부터 1MB)
 constexpr int RECV_BUF_SIZE = 65536;
 
 // ── 프로토콜 메시지 번호 (ProtocolNo) ─────────────────────────────────────
@@ -71,6 +71,10 @@ enum ProtocolNo : int {
     RETRAIN_PROGRESS_PUSH  = 154,   // 재학습 진행률 푸시: 서버 → 클라이언트
     MODEL_DEPLOY_NOTIFY    = 156,   // 모델 배포 완료 알림
     MODEL_DEPLOY_ACK_EXT   = 157,   // 배포 알림 수신 확인
+    RETRAIN_UPLOAD         = 158,   // v0.13.0: 학습용 이미지 1장 업로드 (JSON+binary)
+    RETRAIN_UPLOAD_ACK     = 159,   // v0.13.0: 업로드 결과 ACK
+    INSPECT_CONTROL_REQ    = 160,   // v0.14.0: 검사 pause/resume 요청
+    INSPECT_CONTROL_RES    = 161,   // v0.14.0: pause/resume 결과 ACK
 
     // ===== 서버 상태 관련 (170~189) =====
     SERVER_HEALTH_PUSH     = 170,   // 서버 헬스체크 상태 푸시: 서버 → 클라이언트

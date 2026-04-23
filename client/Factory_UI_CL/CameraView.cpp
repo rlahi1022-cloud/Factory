@@ -1,16 +1,16 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "CameraView.h"
 
-// ── 공통 이미지 디코더 ──────────────────────────────────────────────────────
+// ── 공통 이미지 디코더 ─────────────────────────────────────────────────────
 // CImage::Load는 IStream 기반이므로, 바이트 벡터를 HGLOBAL에 복사 후 스트림 생성.
 // 실패 시 out.Destroy()로 초기화된 상태를 보장.
 namespace CameraViewUtil {
 
 bool LoadImageFromBytes(const std::vector<BYTE>& bytes, CImage& out) {
-    // Destroy 전에 DC가 열려있으면 안 되므로 IsNull 체크 후 안전하게 파괴
+    // Destroy 전에 DC가 열려있으면 안 되므로 IsNull 체크 후 안전하게 파괴.
     // ReleaseDC()는 DC가 열린 상태에서만 호출해야 하므로 여기서는 호출하지 않음
-    // → DC 열린 채 Destroy가 발생하는 근본 원인은 Paint 중 SetImage 호출이므로
-    //   CRITICAL_SECTION으로 원천 차단함
+    //   → DC 열린 채 Destroy가 발생하던 근본 원인은 Paint 중 SetImage 호출이므로
+    //     CRITICAL_SECTION으로 외부 차단함.
     if (!out.IsNull()) {
         out.Destroy();
     }
@@ -44,9 +44,9 @@ bool LoadImageFromBytes(const std::vector<BYTE>& bytes, CImage& out) {
 }
 
 // StretchBlt 이미지 → 대상 사각형에 맞춰 그리기 (비율 유지 X, 단순 stretch)
+// v0.14.x: CImage 내부 DC 캐시를 사용하지 않고 별도 DC 생성 — DC 캐시 충돌 원천 방지
 static void DrawImageStretched(CImage& img, CDC& dc, const CRect& rc) {
     if (img.IsNull() || rc.Width() <= 0 || rc.Height() <= 0) return;
-    // CImage 내부 DC 캐시를 사용하지 않고 별도 DC를 생성 — DC 캐시 충돌 완전 방지
     HDC hSrcDC = ::CreateCompatibleDC(dc.GetSafeHdc());
     HBITMAP hOld = (HBITMAP)::SelectObject(hSrcDC, (HBITMAP)img);
     int oldMode = ::SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
@@ -63,7 +63,7 @@ static void DrawImageStretched(CImage& img, CDC& dc, const CRect& rc) {
 
 } // namespace CameraViewUtil
 
-// ── CCameraView ──────────────────────────────────────────────────────────────
+// ── CCameraView ────────────────────────────────────────────────────────────
 IMPLEMENT_DYNAMIC(CCameraView, CStatic)
 BEGIN_MESSAGE_MAP(CCameraView, CStatic)
     ON_WM_PAINT()
@@ -98,16 +98,18 @@ void CCameraView::OnPaint() {
     ::EnterCriticalSection(&m_cs);
     DrawBg(mem, rc);
     ::LeaveCriticalSection(&m_cs);
-    DrawBadge(mem, rc);
+    // v0.14.7: 하단 NG/OK 큰 배지(빨간/초록 띠) 제거 — 사용자 요청.
+    //   결과는 상단 "Result" 영역 텍스트 + 상단 3뷰에서 충분히 표현됨.
+    // DrawBadge(mem, rc);
     dc.BitBlt(0, 0, rc.Width(), rc.Height(), &mem, 0, 0, SRCCOPY);
     mem.SelectObject(pOld);
 }
 
 void CCameraView::DrawBg(CDC& dc, CRect& rc) {
-    // 배경 — 항상 검은색
+    // 배경 — 항상 검정색
     dc.FillSolidRect(&rc, RGB(17,17,17));
 
-    // 서버 수신 이미지가 있으면 전체 영역에 렌더링
+    // 서버 원시 이미지가 있으면 전체 영역에 렌더링
     if (!m_img.IsNull()) {
         CRect inner(rc.left+2, rc.top+2, rc.right-2, rc.bottom-2);
         CameraViewUtil::DrawImageStretched(m_img, dc, inner);
@@ -118,45 +120,7 @@ void CCameraView::DrawBg(CDC& dc, CRect& rc) {
     CBrush* pb = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
     dc.Rectangle(&rc);
     dc.SelectObject(p); dc.SelectObject(pb);
-    // 이미지 없을 때 — 크로스헤어/레이블/내부박스 없이 검은 배경만 유지
-}
-
-void CCameraView::DrawYolo(CDC& dc, CRect& rc) {
-    int W=rc.Width(), H=rc.Height();
-    struct Box { float x,y,w,h; COLORREF c; LPCTSTR lbl; };
-    Box boxes[]={
-        {0.30f,0.09f,0.40f,0.09f,RGB(80,220,80),_T("cap 0.94")},
-        {0.18f,0.29f,0.65f,0.29f,RGB(80,130,240),_T("label 0.91")},
-        {0.22f,0.61f,0.55f,0.14f,RGB(240,130,60),_T("liquid 0.95")},
-    };
-    CFont f; f.CreatePointFont(60,_T("Tahoma"));
-    CFont* pf=dc.SelectObject(&f);
-    dc.SetBkMode(TRANSPARENT);
-    for (auto& b : boxes) {
-        CRect br((int)(W*b.x),(int)(H*b.y),(int)(W*(b.x+b.w)),(int)(H*(b.y+b.h)));
-        CPen pen(PS_SOLID,1,b.c); CPen* pp=dc.SelectObject(&pen);
-        CBrush* pb=(CBrush*)dc.SelectStockObject(NULL_BRUSH);
-        dc.Rectangle(&br); dc.SelectObject(pp); dc.SelectObject(pb);
-        dc.SetTextColor(b.c);
-        CRect tr(br.left, br.top-12, br.left+80, br.top);
-        dc.DrawText(b.lbl, &tr, DT_LEFT|DT_SINGLELINE);
-    }
-    dc.SelectObject(pf);
-}
-
-void CCameraView::DrawNgBox(CDC& dc, CRect& rc) {
-    if (!m_flash) return;
-    int W=rc.Width(), H=rc.Height();
-    CRect nr((int)(W*0.27f),(int)(H*0.25f),(int)(W*0.53f),(int)(H*0.40f));
-    CPen pen(PS_DASH,2,RGB(255,60,60)); CPen* pp=dc.SelectObject(&pen);
-    CBrush* pb=(CBrush*)dc.SelectStockObject(NULL_BRUSH);
-    dc.Rectangle(&nr); dc.SelectObject(pp); dc.SelectObject(pb);
-    dc.SetBkMode(TRANSPARENT); dc.SetTextColor(RGB(255,140,140));
-    CFont f; f.CreatePointFont(65,_T("Tahoma")); CFont* pf=dc.SelectObject(&f);
-    CString lbl = (m_station==1) ? _T("이상 영역") : QCUtil::DefectName(m_defect);
-    CRect tr(nr.left, nr.top-12, nr.left+120, nr.top);
-    dc.DrawText(lbl, &tr, DT_LEFT|DT_SINGLELINE);
-    dc.SelectObject(pf);
+    // 이미지 있을 때 → 크로스헤어/레이블/내부박스 없이 검은 배경만 유지
 }
 
 void CCameraView::DrawBadge(CDC& dc, CRect& rc) {
@@ -174,18 +138,7 @@ void CCameraView::DrawBadge(CDC& dc, CRect& rc) {
     dc.SelectObject(pf);
 }
 
-void CCameraView::DrawScoreBar(CDC& dc, CRect& rc) {
-    CRect bar(rc.left,rc.top,rc.right,rc.top+14);
-    CBrush b(RGB(0,0,0)); dc.FillRect(&bar,&b);
-    dc.SetBkMode(TRANSPARENT); dc.SetTextColor(RGB(130,180,255));
-    CFont f; f.CreatePointFont(60,_T("Courier New")); CFont* pf=dc.SelectObject(&f);
-    CString s; s.Format(_T("Score:%.2f"),m_score);
-    CRect tl(rc.left+2,rc.top+1,rc.left+90,rc.top+13);
-    dc.DrawText(s,&tl,DT_LEFT|DT_SINGLELINE);
-    dc.SelectObject(pf);
-}
-
-// ── CHeatmapView ─────────────────────────────────────────────────────────────
+// ── CHeatmapView ───────────────────────────────────────────────────────────
 IMPLEMENT_DYNAMIC(CHeatmapView, CStatic)
 BEGIN_MESSAGE_MAP(CHeatmapView, CStatic)
     ON_WM_PAINT()
@@ -227,7 +180,7 @@ void CHeatmapView::OnPaint() {
     mem.SelectObject(pOld);
 }
 
-// ── CPredMaskView ─────────────────────────────────────────────────────────────
+// ── CPredMaskView ──────────────────────────────────────────────────────────
 IMPLEMENT_DYNAMIC(CPredMaskView, CStatic)
 BEGIN_MESSAGE_MAP(CPredMaskView, CStatic)
     ON_WM_PAINT()
@@ -267,7 +220,6 @@ void CPredMaskView::OnPaint() {
     ::EnterCriticalSection(&m_cs);
     draw_bg(mem, rc);
     ::LeaveCriticalSection(&m_cs);
-    // draw_mask_circles 제거 — 서버 수신 Pred Mask 이미지로 대체
     draw_label(mem, rc);
     dc.BitBlt(0, 0, rc.Width(), rc.Height(), &mem, 0, 0, SRCCOPY);
     mem.SelectObject(p_old);
@@ -275,7 +227,7 @@ void CPredMaskView::OnPaint() {
 
 void CPredMaskView::draw_bg(CDC& dc, CRect& rc) {
     dc.FillSolidRect(&rc, RGB(17, 17, 17));
-    // 수신한 Pred Mask PNG가 있으면 배경에 스트레치 렌더링
+    // 원시 Pred Mask PNG가 있으면 배경에 스트레치로 렌더링
     if (!m_img.IsNull()) {
         CameraViewUtil::DrawImageStretched(m_img, dc, rc);
     }
@@ -285,27 +237,6 @@ void CPredMaskView::draw_bg(CDC& dc, CRect& rc) {
     CBrush* p_old_br = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
     dc.Rectangle(&rc);
     dc.SelectObject(p_old_pen);
-    dc.SelectObject(p_old_br);
-}
-
-void CPredMaskView::draw_mask_circles(CDC& dc, CRect& rc) {
-    int W = rc.Width(), H = rc.Height();
-    // 빨간 원 2개 — 이상 영역 마킹 (참조 이미지 기준)
-    struct MaskCircle { double cx, cy; int radius; };
-    MaskCircle circles[] = {
-        { m_cx1, m_cy1, (int)(H * 0.09f) },  // 상단 이상 영역
-        { m_cx2, m_cy2, (int)(H * 0.06f) },  // 중단 이상 영역
-    };
-    CPen red_pen(PS_SOLID, 2, RGB(255, 50, 50));
-    CPen* p_old = dc.SelectObject(&red_pen);
-    CBrush* p_old_br = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
-    for (auto& c : circles) {
-        int cx = (int)(W * c.cx);
-        int cy = (int)(H * c.cy);
-        int r  = c.radius;
-        dc.Ellipse(cx - r, cy - r, cx + r, cy + r);
-    }
-    dc.SelectObject(p_old);
     dc.SelectObject(p_old_br);
 }
 
@@ -330,7 +261,11 @@ void CPredMaskView::draw_label(CDC& dc, CRect& rc) {
     dc.SelectObject(p_old_lf);
 }
 
-// ── CNgHistoryList ───────────────────────────────────────────────────────────
+// ── CNgHistoryList ─────────────────────────────────────────────────────────
+// v0.14.5: 종합현황(PageHome) 리스트와 동일 컨셉 — 텍스트 컬럼만 표시.
+//   [ID | 스테이션 | 시각 | 결과 | 점수] 헤더 + 스크롤 가능한 데이터 행.
+//   썸네일 제거로 CImage 얕은 복사/DC 충돌 이슈 원천 소멸.
+//   실이미지는 상단 3뷰에서 확인 — 이력 리스트는 메타정보만 추적.
 IMPLEMENT_DYNAMIC(CNgHistoryList, CStatic)
 BEGIN_MESSAGE_MAP(CNgHistoryList, CStatic)
     ON_WM_PAINT()
@@ -353,30 +288,30 @@ void CNgHistoryList::PreSubclassWindow() {
 
 void CNgHistoryList::AddEntry(int id, int stationId, double score,
                               const CString& timeLabel,
-                              const std::vector<BYTE>& img,
-                              const std::vector<BYTE>& heat,
-                              const std::vector<BYTE>& mask) {
+                              const std::vector<BYTE>& /*img*/,
+                              const std::vector<BYTE>& /*heat*/,
+                              const std::vector<BYTE>& /*mask*/) {
+    // v0.14.5: 이미지 bytes 는 더이상 이 리스트에서 사용하지 않음.
+    //   상단 3뷰(CCameraView/CHeatmapView/CPredMaskView) 가 책임짐.
+    //   파라미터는 유지 — PageStation1/2 호출부 API 호환.
     Entry e;
     e.id        = id;
     e.stationId = stationId;
     e.score     = score;
     e.time      = timeLabel;
-    CameraViewUtil::LoadImageFromBytes(img,  e.img);
-    CameraViewUtil::LoadImageFromBytes(heat, e.heat);
-    CameraViewUtil::LoadImageFromBytes(mask, e.mask);
 
     ::EnterCriticalSection(&m_cs);
     // 동일 id가 이미 있으면 교체(중복 요청 대비). 없으면 맨 앞에 추가.
     for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
         if (it->id == id) {
-            *it = std::move(e);
+            *it = e;
             ::LeaveCriticalSection(&m_cs);
             UpdateScrollInfo();
             Invalidate();
             return;
         }
     }
-    m_entries.push_front(std::move(e));  // deque: push_front로 맨 앞 추가
+    m_entries.push_front(e);  // deque: push_front 로 맨 앞 추가
     while (static_cast<int>(m_entries.size()) > m_maxEntries) {
         m_entries.pop_back();
     }
@@ -397,7 +332,8 @@ void CNgHistoryList::Clear() {
 void CNgHistoryList::UpdateScrollInfo() {
     if (!GetSafeHwnd()) return;
     CRect rc; GetClientRect(&rc);
-    int viewportH = rc.Height();
+    // v0.14.5: 헤더 영역 제외한 실제 행 표시 영역
+    int viewportH = (std::max)(0, rc.Height() - m_headerH);
     int totalH    = TotalContentHeight();
 
     SCROLLINFO si{};
@@ -407,7 +343,6 @@ void CNgHistoryList::UpdateScrollInfo() {
     si.nMax   = (totalH > 0) ? (totalH - 1) : 0;
     si.nPage  = (viewportH > 0) ? viewportH : 1;
 
-    // 스크롤 범위가 줄어들었으면 현재 위치도 보정
     int maxPos = (totalH > viewportH) ? (totalH - viewportH) : 0;
     if (m_scrollY > maxPos) m_scrollY = maxPos;
     si.nPos = m_scrollY;
@@ -428,7 +363,7 @@ void CNgHistoryList::OnSize(UINT nType, int cx, int cy) {
 
 void CNgHistoryList::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pSB) {
     CRect rc; GetClientRect(&rc);
-    int viewportH = rc.Height();
+    int viewportH = (std::max)(0, rc.Height() - m_headerH);
     int maxPos    = (std::max)(0, TotalContentHeight() - viewportH);
     int delta     = 0;
 
@@ -462,7 +397,7 @@ void CNgHistoryList::OnVScroll(UINT nSBCode, UINT nPos, CScrollBar* pSB) {
 
 BOOL CNgHistoryList::OnMouseWheel(UINT /*fFlags*/, short zDelta, CPoint /*pt*/) {
     CRect rc; GetClientRect(&rc);
-    int viewportH = rc.Height();
+    int viewportH = (std::max)(0, rc.Height() - m_headerH);
     int maxPos    = (std::max)(0, TotalContentHeight() - viewportH);
     // 휠 한 노치(120) = 한 행 분량 스크롤
     int step = (zDelta / WHEEL_DELTA) * m_rowH;
@@ -474,81 +409,71 @@ BOOL CNgHistoryList::OnMouseWheel(UINT /*fFlags*/, short zDelta, CPoint /*pt*/) 
     return TRUE;
 }
 
+// v0.14.5: 컬럼 폭/오프셋 상수 — 헤더와 데이터 행에서 공용
+namespace {
+    constexpr int kPad      = 8;
+    constexpr int kColIdW   = 60;
+    constexpr int kColStaW  = 70;
+    constexpr int kColTimeW = 90;
+    constexpr int kColResW  = 60;
+    constexpr int kColScoreW= 70;
+}
+
+void CNgHistoryList::DrawHeader(CDC& dc, const CRect& rc) {
+    dc.FillSolidRect(&rc, RGB(36, 36, 44));
+    CPen sep(PS_SOLID, 1, RGB(70, 70, 80));
+    CPen* p_old = dc.SelectObject(&sep);
+    dc.MoveTo(rc.left,  rc.bottom - 1);
+    dc.LineTo(rc.right, rc.bottom - 1);
+    dc.SelectObject(p_old);
+
+    dc.SetBkMode(TRANSPARENT);
+    dc.SetTextColor(RGB(210, 210, 220));
+    CFont f; f.CreatePointFont(80, _T("Tahoma"));
+    CFont* p_f = dc.SelectObject(&f);
+
+    int x = rc.left + kPad;
+    auto cell = [&](LPCTSTR text, int w) {
+        CRect cr(x, rc.top, x + w, rc.bottom);
+        dc.DrawText(text, &cr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        x += w;
+    };
+    cell(_T("ID"),       kColIdW);
+    cell(_T("스테이션"), kColStaW);
+    cell(_T("시각"),     kColTimeW);
+    cell(_T("결과"),     kColResW);
+    cell(_T("점수"),     kColScoreW);
+    dc.SelectObject(p_f);
+}
+
 void CNgHistoryList::DrawRow(CDC& dc, const Entry& e, const CRect& rowRc) {
-    // 배경 — NG이면 약간 붉은 톤, 구분선
     dc.FillSolidRect(&rowRc, RGB(22, 22, 26));
-    CPen sep(PS_SOLID, 1, RGB(45, 45, 50));
+    CPen sep(PS_SOLID, 1, RGB(40, 40, 46));
     CPen* p_old = dc.SelectObject(&sep);
     dc.MoveTo(rowRc.left,  rowRc.bottom - 1);
     dc.LineTo(rowRc.right, rowRc.bottom - 1);
     dc.SelectObject(p_old);
 
-    // 레이아웃: [라벨 90px] [img] [heat] [mask], 패딩 4
-    const int pad      = 4;
-    const int labelW   = 90;
-    const int thumbW   = (rowRc.Width() - labelW - pad * 5) / 3;
-    const int thumbH   = rowRc.Height() - pad * 2;
-
-    // 라벨 텍스트 ("#42" / "14:33:21" / "Score 0.87")
     dc.SetBkMode(TRANSPARENT);
-    dc.SetTextColor(RGB(220, 220, 230));
-    CFont f1; f1.CreatePointFont(75, _T("Tahoma"));
-    CFont* p_f1 = dc.SelectObject(&f1);
+    CFont f; f.CreatePointFont(80, _T("Tahoma"));
+    CFont* p_f = dc.SelectObject(&f);
 
-    CString line1; line1.Format(_T("#%d"), e.id);
-    CString line2 = e.time;
-    CString line3; line3.Format(_T("Score %.2f"), e.score);
-
-    CRect tr(rowRc.left + pad, rowRc.top + pad, rowRc.left + pad + labelW, rowRc.top + pad + 14);
-    dc.DrawText(line1, &tr, DT_LEFT | DT_SINGLELINE);
-    dc.SetTextColor(RGB(160, 180, 220));
-    tr.OffsetRect(0, 14);
-    dc.DrawText(line2, &tr, DT_LEFT | DT_SINGLELINE);
-    dc.SetTextColor(RGB(255, 140, 140));
-    tr.OffsetRect(0, 14);
-    dc.DrawText(line3, &tr, DT_LEFT | DT_SINGLELINE);
-    dc.SelectObject(p_f1);
-
-    // 썸네일 3장
-    auto drawThumb = [&](const CImage& img, int colIndex, LPCTSTR caption) {
-        int x = rowRc.left + pad + labelW + pad + (thumbW + pad) * colIndex;
-        int y = rowRc.top + pad;
-        CRect tc(x, y, x + thumbW, y + thumbH);
-        dc.FillSolidRect(&tc, RGB(10, 10, 14));
-        if (!img.IsNull() && thumbW > 4 && thumbH > 4) {
-            // CImage 내부 DC 캐시를 사용하지 않고 별도 DC를 생성해서 충돌 방지
-            HDC hSrcDC = ::CreateCompatibleDC(dc.GetSafeHdc());
-            HBITMAP hOld = (HBITMAP)::SelectObject(hSrcDC, (HBITMAP)img);
-            int oldMode = ::SetStretchBltMode(dc.GetSafeHdc(), HALFTONE);
-            ::SetBrushOrgEx(dc.GetSafeHdc(), 0, 0, nullptr);
-            ::StretchBlt(dc.GetSafeHdc(),
-                         tc.left, tc.top, tc.Width(), tc.Height(),
-                         hSrcDC,
-                         0, 0, img.GetWidth(), img.GetHeight(),
-                         SRCCOPY);
-            ::SetStretchBltMode(dc.GetSafeHdc(), oldMode);
-            ::SelectObject(hSrcDC, hOld);
-            ::DeleteDC(hSrcDC);
-        }
-        // 외곽선 + 캡션
-        CPen pen(PS_SOLID, 1, RGB(68, 68, 78));
-        CPen* p_o = dc.SelectObject(&pen);
-        CBrush* p_ob = (CBrush*)dc.SelectStockObject(NULL_BRUSH);
-        dc.Rectangle(&tc);
-        dc.SelectObject(p_o);
-        dc.SelectObject(p_ob);
-        // 좌상단 캡션
-        dc.SetTextColor(RGB(170, 170, 180));
-        CFont f2; f2.CreatePointFont(60, _T("Tahoma"));
-        CFont* p_f2 = dc.SelectObject(&f2);
-        CRect cr(tc.left + 2, tc.top + 1, tc.left + 90, tc.top + 13);
-        dc.DrawText(caption, &cr, DT_LEFT | DT_SINGLELINE);
-        dc.SelectObject(p_f2);
+    CString s;
+    int x = rowRc.left + kPad;
+    auto cell = [&](COLORREF color, LPCTSTR text, int w) {
+        dc.SetTextColor(color);
+        CRect cr(x, rowRc.top, x + w, rowRc.bottom);
+        dc.DrawText(text, &cr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        x += w;
     };
 
-    drawThumb(e.img,  0, _T("Image"));
-    drawThumb(e.heat, 1, _T("Anomaly Map"));
-    drawThumb(e.mask, 2, _T("Pred Mask"));
+    s.Format(_T("%d"), e.id);           cell(RGB(220, 220, 230), s,            kColIdW);
+    s.Format(_T("#%d"), e.stationId);   cell(RGB(180, 200, 235), s,            kColStaW);
+                                        cell(RGB(170, 190, 220), e.time,       kColTimeW);
+                                        cell(RGB(255, 130, 130), _T("NG"),     kColResW);
+    s.Format(_T("%.2f"), e.score);      cell(RGB(240, 220, 160), s,            kColScoreW);
+
+    dc.SelectObject(p_f);
 }
 
 void CNgHistoryList::OnPaint() {
@@ -563,6 +488,13 @@ void CNgHistoryList::OnPaint() {
 
     mem.FillSolidRect(&rc, RGB(17, 17, 20));
 
+    // (1) 고정 헤더 — 스크롤 영향 없음
+    CRect headerRc(rc.left, rc.top, rc.right, rc.top + m_headerH);
+    DrawHeader(mem, headerRc);
+
+    // (2) 데이터 영역 — 헤더 아래
+    CRect body(rc.left, rc.top + m_headerH, rc.right, rc.bottom);
+
     ::EnterCriticalSection(&m_cs);
     if (m_entries.empty()) {
         mem.SetBkMode(TRANSPARENT);
@@ -570,19 +502,23 @@ void CNgHistoryList::OnPaint() {
         CFont f; f.CreatePointFont(80, _T("Tahoma"));
         CFont* p_f = mem.SelectObject(&f);
         mem.DrawText(_T("NG 이벤트 이력 없음 — 서버 수신 대기"),
-                     &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                     &body, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         mem.SelectObject(p_f);
     } else {
-        int firstIdx = m_scrollY / m_rowH;
-        int offset   = m_scrollY % m_rowH;
-        int y        = -offset;
+        int firstIdx = (m_rowH > 0) ? (m_scrollY / m_rowH) : 0;
+        int offset   = (m_rowH > 0) ? (m_scrollY % m_rowH) : 0;
+        int y        = body.top - offset;
+        // 클리핑 — 데이터 영역 밖은 그리지 않도록 절단
+        mem.SaveDC();
+        mem.IntersectClipRect(&body);
         for (int i = firstIdx; i < static_cast<int>(m_entries.size()); ++i) {
-            CRect rowRc(rc.left, y, rc.right, y + m_rowH);
-            if (rowRc.bottom < rc.top) { y += m_rowH; continue; }
-            if (rowRc.top > rc.bottom) break;
+            CRect rowRc(body.left, y, body.right, y + m_rowH);
+            if (rowRc.bottom < body.top) { y += m_rowH; continue; }
+            if (rowRc.top > body.bottom) break;
             DrawRow(mem, m_entries[i], rowRc);
             y += m_rowH;
         }
+        mem.RestoreDC(-1);
     }
     ::LeaveCriticalSection(&m_cs);
 

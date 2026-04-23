@@ -20,6 +20,32 @@ Factory/
 학습 완료된 가중치(`*.ckpt`, `*.pt`)는 TCP 바이너리 전송으로
 메인서버(130)를 경유하여 추론서버에 배포됩니다 (MODEL_RELOAD_CMD).
 
+**배포 라우팅 (v0.11.0):** MODEL_RELOAD_CMD JSON 에 `station_id` + `model_type`
+(PatchCore/YOLO11) 필드가 포함되어, 추론서버가 자신의 스테이션이 아닌 메시지는 무시하고
+Station2 이중모델(YOLO + PatchCore) 중 해당 슬롯만 교체합니다. 메인서버는
+학습서버 주소를 `network.training_server_host` (기본값 10.10.10.120) 에서 읽어
+별도 PC에 학습서버를 배치할 수 있습니다.
+
+**HealthChecker 동적 감지 (v0.11.0):** `config.json` 의 `health_check.targets.ip`
+를 비워두면 `ConnectionRegistry` 에 태깅된 `server_type` 으로 매칭 →
+추론/학습 서버를 임의의 PC 에 배치해도 자동 감지. 로그에는 실제 접속 IP 표시.
+
+**Pylon 카메라 연동 (v0.11.0):** `AiServer/Common/PylonCamera.py` 가 Basler
+Pylon SDK 를 감싸 실제 프레임 grab. pypylon 미설치/카메라 미연결 환경에서는
+자동으로 더미 이미지 모드로 폴백.
+
+**NG 파이프라인 비동기 분리 (v0.12.0):** 검사 결과 수신 → 검증 → **즉시 ACK 발행**
+후, 이미지 3장 저장 / DB INSERT / GUI 푸시를 `INSPECTION_VALIDATED` 이벤트로
+백그라운드 워커에 위임. AI 서버 ACK 타임아웃을 근본 제거.
+`validate` 에서 `OK/NG` 대소문자 정규화 + score 무한대 범위 허용으로 정합성 확보.
+메인 흐름:
+```
+StationHandler → validate_only → ACK 즉시 + INSPECTION_VALIDATED
+                                        ↓ (EventBus 워커)
+                         InspectionService::on_validated
+                            → save_blob × 3 → INSERT → GUI_PUSH
+```
+
 ## 명명 규칙
 
 | 대상     | 규칙       | 예시 |

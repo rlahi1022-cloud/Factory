@@ -1,9 +1,25 @@
 // ============================================================================
-// LoginDlg.cpp — 로그인/회원가입 다이얼로그 구현부
+// LoginDlg.cpp — 로그인/회원가입 다이얼로그
 // ============================================================================
-// 목적:
-//   서버(MainServer)에 LOGIN_REQ(100) / REGISTER_REQ(104) 패킷을 전송하여
-//   DB 기반 사용자 인증 및 회원가입을 처리합니다.
+// 책임:
+//   앱 최초 기동 시 표시되는 창. 서버 접속 → 인증 → MainTabDlg 전환의
+//   게이트웨이 역할.
+//
+// 프로토콜:
+//   100 LOGIN_REQ      / 101 LOGIN_RES
+//   104 REGISTER_REQ   / 105 REGISTER_RES
+//
+// 모드 전환:
+//   OnBtnSwitch 로 로그인/회원가입 모드를 같은 다이얼로그에서 토글.
+//   컨트롤 가시성만 바꿔 재사용 → 화면 전환 UX 간소화.
+//
+// 서버 연결 수명:
+//   이 창에서 먼저 TCP 접속 후 로그인 시도. 성공 시 MainTabDlg 로
+//   소유권 이전(CNetworkClient 객체 전달) → 창 닫혀도 연결 유지.
+//   실패/취소 시 Disconnect 후 앱 종료.
+//
+// 예외/재연결:
+//   WM_NET_DISCONNECTED 수신 시 에러 메시지 표시 + 입력 필드 리셋.
 // ============================================================================
 
 #include "pch.h"
@@ -156,9 +172,21 @@ void CLoginDlg::OnBtnOK()
         if (pass.IsEmpty()) { SetError(_T("암호를 입력하세요.")); return; }
 
         // 서버에 연결하여 LOGIN_REQ 전송
+        // v0.14.2: 서버가 대용량 브로드캐스트 중일 때 일시적으로 accept 가 지연되어
+        // 첫 Connect 가 실패할 수 있다. 500ms 간격으로 최대 3회 재시도.
         m_loginNet.Disconnect();
-        if (!m_loginNet.Connect(factory_client::ClientConfig::GetServerIp(),
-                                factory_client::ClientConfig::GetServerPort(), m_hWnd)) {
+        bool connected = false;
+        for (int attempt = 1; attempt <= 3; ++attempt) {
+            if (m_loginNet.Connect(factory_client::ClientConfig::GetServerIp(),
+                                   factory_client::ClientConfig::GetServerPort(),
+                                   m_hWnd)) {
+                connected = true;
+                break;
+            }
+            TRACE(_T("[LoginDlg] 연결 시도 %d 실패 — 재시도\n"), attempt);
+            ::Sleep(500);
+        }
+        if (!connected) {
             SetError(_T("서버에 연결할 수 없습니다. 네트워크를 확인하세요."));
             return;
         }

@@ -139,7 +139,8 @@ void AckSender::on_model_reload_requested(const std::any& payload) {
     constexpr int MAX_RETRY  = sizeof(delays) / sizeof(delays[0]);  // 5회
 
     for (int attempt = 0; attempt < MAX_RETRY; ++attempt) {
-        if (send_model_reload(ev.station_id, ev.model_path, ev.version, ev.model_bytes)) {
+        if (send_model_reload(ev.station_id, ev.model_type,
+                              ev.model_path, ev.version, ev.model_bytes)) {
             if (attempt > 0) {
                 log_train("MODEL_RELOAD_CMD 재시도 성공 | attempt=%d/%d",
                           attempt + 1, MAX_RETRY);
@@ -158,10 +159,16 @@ void AckSender::on_model_reload_requested(const std::any& payload) {
 
 // ---------------------------------------------------------------------------
 // send_model_reload — MODEL_RELOAD_CMD(1010) + 모델 바이너리 전송
-// 패킷 구조: [4바이트 헤더] + [JSON(image_size=N)] + [모델 바이너리(N bytes)]
-// ConnectionRegistry에서 모든 연결을 순회하여 해당 station의 추론서버를 찾는다.
+// 패킷 구조: [4바이트 헤더] + [JSON(image_size=N, model_type=...)] + [모델 바이너리(N bytes)]
+//
+// 전송 정책:
+//   ConnectionRegistry는 연결의 station_id를 모르므로 "연결된 모든 추론서버"에
+//   브로드캐스트한다. 각 추론서버(StationRunner)는 JSON의 station_id/model_type을
+//   확인하여 자신과 무관한 리로드는 무시한다 (수신측 필터).
+//   Station2(YOLO+PatchCore 이중모델)의 경우 model_type 필드로 교체 슬롯을 구분한다.
 // ---------------------------------------------------------------------------
 bool AckSender::send_model_reload(int station_id,
+                                   const std::string& model_type,
                                    const std::string& model_path,
                                    const std::string& version,
                                    const std::vector<uint8_t>& model_bytes) {
@@ -175,12 +182,13 @@ bool AckSender::send_model_reload(int station_id,
         return false;
     }
 
-    // JSON 본문 구성 (model_path/version escape 적용)
+    // JSON 본문 구성 (model_type/model_path/version escape 적용)
     std::ostringstream os;
     os << "{"
        << "\"protocol_no\":" << static_cast<int>(ProtocolNo::MODEL_RELOAD_CMD) << ","
        << "\"protocol_version\":\"" << FACTORY_PROTOCOL_VERSION << "\","
        << "\"station_id\":" << station_id << ","
+       << "\"model_type\":\"" << escape_json(model_type) << "\","
        << "\"model_path\":\"" << escape_json(model_path) << "\","
        << "\"version\":\"" << escape_json(version) << "\","
        << "\"image_size\":" << model_bytes.size()
@@ -199,8 +207,8 @@ bool AckSender::send_model_reload(int station_id,
             log_err_train("MODEL_RELOAD_CMD 바이너리 전송 실패 | → %s fd=%d", addr.c_str(), fd);
             continue;
         }
-        log_train("MODEL_RELOAD_CMD 전송 성공 | → %s fd=%d (%zu bytes)",
-                  addr.c_str(), fd, model_bytes.size());
+        log_train("MODEL_RELOAD_CMD 전송 성공 | station=%d type=%s → %s fd=%d (%zu bytes)",
+                  station_id, model_type.c_str(), addr.c_str(), fd, model_bytes.size());
         sent_any = true;
     }
 

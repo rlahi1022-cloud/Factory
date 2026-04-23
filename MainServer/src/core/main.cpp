@@ -83,8 +83,9 @@ int main(int argc, char* argv[]) {
     std::string image_root    = cfg.get_str("storage.image_root", "./storage");
     int         worker_count  = cfg.get_int("limits.event_queue_max", 10000) > 0 ? 4 : 4;
 
+    // 학습서버 주소: network.training_server_host (메인과 다른 PC에 배치 가능)
     // 환경변수 TRAIN_HOST가 있으면 config보다 우선 (배포 유연성)
-    std::string train_host = cfg.get_str("network.main_server_host", "10.10.10.130");
+    std::string train_host = cfg.get_str("network.training_server_host", "10.10.10.120");
     if (const char* env = std::getenv("TRAIN_HOST")) train_host = env;
 
     // 1) EventBus 생성 및 시작 (워커 4개 — DB/이미지/ACK/GUI 병렬 처리)
@@ -102,11 +103,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Service 레이어 — 검증 + DB + 파일 저장을 트랜잭션으로 묶음
-    InspectionService inspection_service(db_pool, image_root);
+    // Service 레이어 — v0.12.0 부터 InspectionService 는 EventBus 에 직접 구독
+    // (StationHandler 가 validate 후 ACK 발행 → INSPECTION_VALIDATED 로 위임)
+    InspectionService inspection_service(event_bus, db_pool, image_root);
+    inspection_service.register_handlers();
+
     TrainService train_service(db_pool);
 
-    // Handler → Service 주입
+    // Handler → Service 주입 (validate_only 호출용)
     Station1Handler station1_handler(event_bus, inspection_service);
     station1_handler.register_handlers();
 

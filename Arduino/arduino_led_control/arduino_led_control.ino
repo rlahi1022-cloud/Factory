@@ -1,168 +1,222 @@
 /*
- * arduino_led_control.ino — WS2812B(네오픽셀) LED 바 점등 테스트
- * ================================================================
+ * arduino_led_control.ino — Factory QC 신호등 (v2 — Python 프로토콜 대응)
+ * =======================================================================
  *
  * 목적:
- *   Python 프로그램(led_test.py)으로부터 시리얼(USB)로 검사 결과를 받아서
- *   WS2812B LED 바(8개)를 색상으로 제어하는 프로그램이다.
- *   실제 공장에서는 이 LED 바가 검사 라인의 경고등 역할을 한다.
+ *   AI 추론서버(Station1/Station2)가 시리얼(USB)로 보내는 검사 결과 명령을 받아
+ *   WS2812B 네오픽셀 LED 바(8개)를 색상으로 제어한다.
+ *
+ * 지원 명령 (v0.14.x Python 프로토콜 — SerialCtrl.py):
+ *   "REJECT:<defect>\n"        Station1 입고검사 NG
+ *                              예: "REJECT:anomaly\n", "REJECT:crack\n"
+ *                              → 빨간색 LED 3초 점등 (리젝트 경고)
+ *
+ *   "ALERT:<d1,d2,..>\n"       Station2 조립검사 NG (복수 결함 가능)
+ *                              예: "ALERT:cap_missing,label_tilt\n"
+ *                              → 주황색 LED 3초 점등 (조립 불량 경고)
+ *
+ *   "OK\n"                     (선택) 정상 판정 직접 통지
+ *                              → 초록색 LED 3초 점등
+ *
+ * 하위호환 (구 프로토콜 — led_test.py 기타):
+ *   '1'  → 초록색 LED (정상)
+ *   '0'  → 빨간색 LED (불량)
  *
  * 동작 규칙:
- *   - '1' 수신 (정상/OK) → 8개 LED 전부 초록색 점등 → 3초 후 소멸
- *   - '0' 수신 (불량/NG) → 8개 LED 전부 빨간색 점등 → 3초 후 소멸
+ *   - 새 명령 수신 시 3초 동안 색상 유지 후 자동 소멸
+ *   - 3초 유지 중 새 명령이 와도 즉시 갱신 (타이머 리셋)
+ *   - Python 으로 응답 메시지 송신 (로그용)
  *
- * 하드웨어 연결 (WS2812B LED 바 ↔ 아두이노):
+ * 하드웨어 연결 (WS2812B LED 바 ↔ Arduino):
  *   빨강 선 (VCC)  → 5V
  *   검정 선 (GND)  → GND
  *   흰색 선 (DIN)  → 디지털 6번 핀
  *
  * 필요 라이브러리:
- *   Adafruit NeoPixel (아두이노 IDE → 스케치 → 라이브러리 관리 → 검색 → 설치)
+ *   Adafruit NeoPixel — 아두이노 IDE 라이브러리 관리자에서 설치
  *
  * 시리얼 통신:
- *   - 통신 속도: 9600 baud
- *   - 수신: '0' 또는 '1' (ASCII 문자 1바이트)
- *   - 응답: "OK", "NG_ON", "NG_OFF"
+ *   9600 baud, 8N1 (Python SerialCtrl 기본값과 동일)
+ *
+ * 향후 확장 (TODO):
+ *   - Station1 서보모터 리젝트 (NG 제품 컨베이어 밀어내기)
+ *   - 부저(passive buzzer) 연동
+ *   - Station2 LCD (I2C 16x2) 에 결함 유형 한글/영문 표시
+ *   - 결함 유형별 다른 색상/점멸 패턴 매핑
  */
 
-// Adafruit_NeoPixel 라이브러리를 포함한다.
-// 이 라이브러리가 WS2812B LED의 색상과 밝기를 제어하는 함수를 제공한다.
-// #include: 외부 라이브러리 파일을 불러오는 C++ 전처리 지시문이다.
 #include <Adafruit_NeoPixel.h>
 
-// ── 설정 상수 ──
+// ============================================================================
+// 설정 상수
+// ============================================================================
 
-// LED 데이터 선이 연결된 아두이노 디지털 핀 번호이다.
-// WS2812B는 데이터 1개 선으로 여러 LED를 제어한다 (직렬 통신 방식).
-const int LED_PIN = 6;
+const int  LED_PIN       = 6;        // WS2812B 데이터 선 핀
+const int  LED_COUNT     = 8;        // LED 개수
+const int  BRIGHTNESS    = 50;       // 밝기 (0~255) — 실공장에선 더 높게
+const unsigned long LED_DURATION = 3000;  // 점등 유지 시간 (3초)
 
-// LED 바에 달린 LED 개수이다.
-// 사진에서 확인한 LED 바는 8개짜리이다.
-const int LED_COUNT = 8;
+// 수신 버퍼 크기 — "ALERT:cap_missing,label_tilt,fill_low\n" 정도 여유 있게
+const int  RX_BUF_SIZE   = 128;
 
-// LED 밝기 (0~255). 255가 최대 밝기이다.
-// 너무 밝으면 눈이 부시므로 50 정도가 적당하다.
-// 실제 공장에서는 밝기를 높여야 멀리서도 보인다.
-const int BRIGHTNESS = 50;
+// ============================================================================
+// 색상 팔레트 (RGB)
+// ============================================================================
 
-// LED가 켜져 있을 시간 (밀리초). 3000ms = 3초.
-const unsigned long LED_DURATION = 3000;
+struct RGB { uint8_t r, g, b; };
+const RGB COLOR_OK     = {  0, 255,   0};   // 초록 — 정상
+const RGB COLOR_REJECT = {255,   0,   0};   // 빨강 — Station1 리젝트
+const RGB COLOR_ALERT  = {255, 120,   0};   // 주황 — Station2 조립 불량
+const RGB COLOR_OFF    = {  0,   0,   0};   // 꺼짐
 
-// ── 상태 변수 ──
+// ============================================================================
+// 상태 변수
+// ============================================================================
 
-// LED가 현재 켜져 있는지 추적하는 변수이다.
 bool led_on = false;
-
-// LED가 켜진 시점의 시간(밀리초)을 저장한다.
 unsigned long led_on_time = 0;
 
-// ── NeoPixel 객체 생성 ──
-// Adafruit_NeoPixel(LED 개수, 핀 번호, LED 타입)
-// NEO_GRB: WS2812B의 색상 순서 (Green-Red-Blue)
-// NEO_KHZ800: WS2812B의 통신 속도 (800KHz)
+// 시리얼 수신 버퍼 — '\n' 까지 누적해 한 줄 단위로 처리
+char rx_buf[RX_BUF_SIZE];
+int  rx_len = 0;
+
+// NeoPixel 스트립
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 
-/*
- * setup() — 아두이노 초기 설정 함수
- *
- * 목적:
- *   전원 켜면 한 번 실행. 시리얼 통신 시작 + LED 바 초기화.
- */
+// ============================================================================
+// setup — 초기화
+// ============================================================================
 void setup() {
-  // 시리얼 통신을 9600 baud로 시작한다.
   Serial.begin(9600);
 
-  // NeoPixel LED 바를 초기화한다.
-  // begin(): 내부적으로 핀 모드 설정과 타이밍 준비를 한다.
   strip.begin();
-
-  // LED 밝기를 설정한다 (0=꺼짐, 255=최대).
   strip.setBrightness(BRIGHTNESS);
+  strip.clear();
+  strip.show();
 
-  // 모든 LED를 끈 상태로 시작한다.
-  // show(): 설정한 색상을 실제 LED에 반영하는 함수이다.
-  // show()를 호출해야 LED가 실제로 바뀐다 (버퍼 → LED 전송).
-  strip.clear();   // 모든 LED 색상을 (0,0,0) = 꺼짐으로 설정
-  strip.show();    // 설정을 LED에 반영 (실제로 꺼짐)
-
-  // Python에게 준비 완료 메시지를 보낸다.
-  Serial.println("Arduino Ready");
+  Serial.println("Arduino Ready (Factory QC v2)");
 }
 
 
-/*
- * setAllLeds() — 모든 LED를 같은 색으로 설정하는 함수
- *
- * 목적:
- *   8개 LED를 한꺼번에 같은 색으로 켜거나 끈다.
- *
- * 매개변수:
- *   r (uint8_t): 빨강 값 (0~255)
- *   g (uint8_t): 초록 값 (0~255)
- *   b (uint8_t): 파랑 값 (0~255)
- *   예: (255, 0, 0) = 빨강, (0, 255, 0) = 초록, (0, 0, 0) = 꺼짐
- *
- * 반환값: 없음
- */
-void setAllLeds(uint8_t r, uint8_t g, uint8_t b) {
-  // 0번부터 7번까지 8개 LED를 순회한다.
+// ============================================================================
+// setAllLeds — 8개 LED 전부 동일 색상으로 점등
+// ============================================================================
+void setAllLeds(const RGB& c) {
   for (int i = 0; i < LED_COUNT; i++) {
-    // i번째 LED의 색상을 (r, g, b)로 설정한다.
-    // strip.Color(r, g, b): RGB 값을 하나의 32비트 색상 코드로 변환한다.
-    strip.setPixelColor(i, strip.Color(r, g, b));
+    strip.setPixelColor(i, strip.Color(c.r, c.g, c.b));
   }
-  // 설정한 색상을 실제 LED에 반영한다.
-  // 이 함수를 호출하기 전까지는 LED가 바뀌지 않는다.
   strip.show();
 }
 
 
-/*
- * loop() — 메인 반복 함수
- *
- * 목적:
- *   시리얼로 '0' 또는 '1'을 받아 LED 색상을 제어하고,
- *   3초 후 자동으로 LED를 끈다.
- */
-void loop() {
+// ============================================================================
+// setLedWithTimer — 색상 점등 + 자동 소멸 타이머 시작
+//   이미 켜진 상태여도 새 명령이 오면 색상 교체 + 타이머 리셋
+// ============================================================================
+void setLedWithTimer(const RGB& c) {
+  setAllLeds(c);
+  led_on      = true;
+  led_on_time = millis();
+}
 
-  // ── 시리얼 데이터 수신 처리 ──
-  if (Serial.available() > 0) {
-    char received = Serial.read();
 
-    // '1' 수신: 정상(OK) → 초록색 점등
-    if (received == '1') {
-      // 8개 LED를 초록색(0, 255, 0)으로 켠다.
-      setAllLeds(0, 255, 0);
-      // LED 상태를 켜짐으로 기록한다.
-      led_on = true;
-      // LED 켜진 시각을 기록한다 (3초 후 자동 소멸용).
-      led_on_time = millis();
-      // Python에게 응답한다.
-      Serial.println("OK");
+// ============================================================================
+// handleCommand — 누적된 한 줄(rx_buf) 을 파싱해서 LED 동작
+// ============================================================================
+void handleCommand(const char* cmd, int len) {
+  // 빈 줄 / 제어문자 단독 → 무시
+  if (len <= 0) return;
+
+  // ── REJECT:<defect> ───────────────────────────────────────────
+  // Station1 입고검사 NG — 빨간 LED 3초
+  if (len >= 6 && strncmp(cmd, "REJECT", 6) == 0) {
+    setLedWithTimer(COLOR_REJECT);
+    // 결함 유형 반환 (디버그 편의 — Python 로그에 echo)
+    Serial.print("NG_REJECT");
+    if (len > 7 && cmd[6] == ':') {
+      Serial.print(' ');
+      Serial.write((const uint8_t*)(cmd + 7), len - 7);
     }
-
-    // '0' 수신: 불량(NG) → 빨간색 점등
-    else if (received == '0') {
-      // 8개 LED를 빨간색(255, 0, 0)으로 켠다.
-      setAllLeds(255, 0, 0);
-      led_on = true;
-      led_on_time = millis();
-      Serial.println("NG_ON");
-    }
-    // 그 외 문자('\n', '\r' 등)는 무시한다.
+    Serial.println();
+    return;
   }
 
-  // ── LED 자동 소멸 (3초 후) ──
-  // LED가 켜진 상태이고 3초가 지났으면 끈다.
-  if (led_on && (millis() - led_on_time >= LED_DURATION)) {
-    // 모든 LED를 끈다 (0, 0, 0) = 검정 = 꺼짐.
-    setAllLeds(0, 0, 0);
-    led_on = false;
+  // ── ALERT:<defects,list> ──────────────────────────────────────
+  // Station2 조립검사 NG — 주황 LED 3초
+  if (len >= 5 && strncmp(cmd, "ALERT", 5) == 0) {
+    setLedWithTimer(COLOR_ALERT);
+    Serial.print("NG_ALERT");
+    if (len > 6 && cmd[5] == ':') {
+      Serial.print(' ');
+      Serial.write((const uint8_t*)(cmd + 6), len - 6);
+    }
+    Serial.println();
+    return;
+  }
 
-    // 불량이었으면 "NG_OFF" 응답을 보낸다.
-    // (정상 초록 소멸 시에도 보내지만, Python 로그에서는 무시됨)
-    Serial.println("NG_OFF");
+  // ── "OK" 문자열 (선택) ────────────────────────────────────────
+  // 명시적 정상 통지 — 초록 LED 3초
+  if (len >= 2 && cmd[0] == 'O' && cmd[1] == 'K') {
+    setLedWithTimer(COLOR_OK);
+    Serial.println("OK");
+    return;
+  }
+
+  // ── 하위호환: 단일 문자 '0'/'1' ─────────────────────────────
+  // 예전 스케치와 동일 (led_test.py 등 구 도구)
+  if (len == 1) {
+    if (cmd[0] == '1') {
+      setLedWithTimer(COLOR_OK);
+      Serial.println("OK");
+      return;
+    }
+    if (cmd[0] == '0') {
+      setLedWithTimer(COLOR_REJECT);
+      Serial.println("NG_ON");
+      return;
+    }
+  }
+
+  // 알 수 없는 명령 — 에코만 (디버깅 용)
+  Serial.print("UNKNOWN: ");
+  Serial.write((const uint8_t*)cmd, len);
+  Serial.println();
+}
+
+
+// ============================================================================
+// loop — 메인 반복
+// ============================================================================
+void loop() {
+  // ── 시리얼 수신 누적 (라인 단위) ────────────────────────────
+  while (Serial.available() > 0) {
+    char ch = Serial.read();
+
+    // 줄바꿈('\n') 또는 CR('\r') → 한 줄 완성 → 명령 처리
+    if (ch == '\n' || ch == '\r') {
+      if (rx_len > 0) {
+        rx_buf[rx_len] = '\0';   // null 종단
+        handleCommand(rx_buf, rx_len);
+        rx_len = 0;              // 버퍼 리셋
+      }
+      continue;
+    }
+
+    // 그 외 문자 — 버퍼에 누적 (overflow 방어)
+    if (rx_len < RX_BUF_SIZE - 1) {
+      rx_buf[rx_len++] = ch;
+    } else {
+      // 버퍼 꽉 참 → 비정상 입력 → 리셋해서 다음 줄 대기
+      rx_len = 0;
+      Serial.println("ERR: rx buffer overflow");
+    }
+  }
+
+  // ── LED 자동 소멸 (3초 후) ──────────────────────────────────
+  if (led_on && (millis() - led_on_time >= LED_DURATION)) {
+    setAllLeds(COLOR_OFF);
+    led_on = false;
+    Serial.println("LED_OFF");
   }
 }

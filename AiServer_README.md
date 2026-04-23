@@ -38,6 +38,9 @@
 - TCP 클라이언트는 끊김 시 자동 재연결 + 백그라운드 receiver가 ACK 라우팅.
 - HEALTH_PING(1200) 수신 시 HEALTH_PONG(1201) 자동 응답.
 - MODEL_RELOAD_CMD(1010) 수신 시 콜백 실행 + MODEL_RELOAD_RES(1011) 응답.
+  - **station_id 필터 (v0.11.0)**: JSON 의 `station_id` 가 자신과 다르면 무시.
+  - **model_type 슬롯 라우팅 (v0.11.0)**: Station2 이중모델에서 `"YOLO11"` → `config.model_path`,
+    `"PatchCore"` → `config.patchcore_model_path` 로 분기 업데이트 후 `Inferencer.load_model()` 호출.
 - 종료는 sentinel 객체를 큐에 주입 → 워커가 자연 종료.
 
 ## 신뢰성 개선 (v0.8.0)
@@ -47,6 +50,37 @@
   - 크기 검증까지 통과해야 최종 파일로 승격
 - **Pending ACK 정리**: 연결 끊김 시 `_pending_acks` 전체 `cancel()` (orphan Future 방지)
 - **`send_with_ack` finally 보장**: 모든 코드 경로에서 `_pending_acks.pop()` 실행
+
+## 학습 데이터 업로드 (v0.13.0)
+
+클라이언트에서 "폴더 선택 → 재학습 실행" 하면 이미지가 실제로 학습서버까지 전달되어
+학습에 사용된다. 경로는 `./data/station{N}/uploads/{session_id}/` 아래.
+
+흐름:
+```
+MFC 클라 ─(RETRAIN_UPLOAD 158, 파일1장)→ 메인서버
+메인     ─(TRAIN_DATA_UPLOAD 1108)    → 학습서버
+학습     ─(TRAIN_DATA_UPLOAD_ACK 1109)→ 메인 → 클라(159)
+...반복...
+클라     ─(RETRAIN_REQ 152, session_id 동봉)→ 메인
+메인     ─(TRAIN_START_REQ 1100, data_path=uploads/{session_id})→ 학습
+학습     — data_path 가 있으면 기본 폴더 대신 이 경로로 학습 실행
+```
+
+`TrainingMain._handle_train_data_upload()` 가 디스크 저장 담당.
+path traversal 방어(basename 화), 50MB 상한, session_id 유효성 검사 포함.
+
+## ACK 타임아웃 (v0.12.0)
+
+`Common/TcpClient.py` 상수:
+- `ACK_TIMEOUT_SEC = 3.0` — NG 패킷 ACK 대기 시간
+- `MAX_SEND_ATTEMPTS = 3` — 실패 시 최대 재전송 횟수
+
+**변경 내역**:
+- v0.11.x: 1.0초 (MainServer 가 이미지 저장 + DB INSERT 를 동기 처리해서
+  정상 부하에서도 자주 타임아웃 발생)
+- v0.12.0: 3.0초 (MainServer 가 validate 후 즉시 ACK 를 발행하므로 실측 수 ms
+  내에 도착. 3초는 네트워크 지연/GC 대비 여유값)
 
 ## inspection_id 발급 규칙
 
@@ -62,10 +96,28 @@
 
 | 코루틴 | 개수 | 역할 |
 |--------|------|------|
-| `_run_grab_producer` | 1 | Pylon 카메라 grab → grab_queue |
+| `_run_grab_producer` | 1 | Pylon 카메라 grab → grab_queue (v0.11.0: 실제 Basler 연동 + 더미 폴백) |
 | `_run_inference_worker` | N (Config) | grab_queue 소비 → 추론 → INSPECT_META 송신 + (NG면 result_queue) |
 | `_run_sender_worker` | N (Config) | result_queue 소비 → STATION_NG 송신 + ACK 대기/재전송 |
 | `_run_ok_count_reporter` | 1 | 5초 주기로 OK/NG 누적 카운트 STATION_OK_COUNT 송신 |
+
+## 카메라 (v0.11.0 Pylon 실제 연동)
+
+`Common/PylonCamera.py` 가 Basler Pylon SDK (pypylon) 를 감싸 다음을 처리:
+- `camera_serial` 로 특정 장치 선택 (빈값이면 첫 번째 발견 카메라)
+- `GrabStrategy_LatestImageOnly` 로 지연 누적 방지
+- `PixelType_BGR8packed` 변환 — OpenCV 호환 ndarray 반환
+- ImportError / 장치 미연결 시 `is_open=False` 로 폴백 → `_run_grab_producer` 가
+  자동으로 더미 이미지(numpy 랜덤) 로 전환. 개발/CI 환경에서도 파이프라인 동작.
+
+**config.json 설정** (`ai_server.station{1,2}` 하위):
+```json
+"camera_enabled": true,     // false 면 강제 더미 모드
+"camera_serial":  "",       // 빈값 → 첫 번째 장치
+"camera_fps":     2.0       // grab 주기(초) = 1/fps
+```
+
+설치: `pip install pypylon` (미설치 시에도 크래시 없이 더미 모드로 실행).
 
 ## 추론 모델
 

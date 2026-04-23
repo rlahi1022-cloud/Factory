@@ -94,6 +94,7 @@ Camera → AI Server → Main Server → DB → MFC Client
 * NG 중심 전송 구조 (트래픽 최적화)
 * inspection_id 기반 end-to-end 추적
 * ACK / 재전송 기반 데이터 신뢰성 확보
+* **v0.12.0: 검증 즉시 ACK → 백그라운드 영속화** (INSPECTION_VALIDATED 이벤트)
 * 모델 바이너리 TCP 전송 (학습서버 → 메인서버 → 추론서버)
 * asyncio.Queue 기반 비동기 처리 (Backpressure 대응)
 
@@ -137,6 +138,159 @@ Camera → AI Server → Main Server → DB → MFC Client
 * **TRAIN_COMPLETE station_id/model_type 필수 포함**: DB INSERT 실패 방지 (이전 버그 수정)
 * **ISO8601 → MySQL DATETIME 자동 변환**: DAO에서 timestamp 파싱 처리
 * **DB 스키마 개선**: `bottle_id`, `model_id` NULL 허용 (AI 시스템 설계상)
+
+### v0.11.0 — 학습·배포 파이프라인 재설계 (이중모델/멀티호스트)
+
+* **학습서버 주소 분리**: `config.json` 에 `network.training_server_host` 키 추가 —
+  학습서버를 메인서버와 별도 PC(기본 10.10.10.120)에 배치 가능.
+  환경변수 `TRAIN_HOST` 는 기존대로 오버라이드 우선순위 유지.
+* **MODEL_RELOAD_CMD (1010) JSON 에 `model_type` 필드 추가**:
+  Station2 이중모델(YOLO + PatchCore) 재학습 시 교체할 슬롯을 명시적으로 전달.
+* **추론서버 수신측 필터 (`StationRunner._handle_model_reload`)**:
+  - `station_id` 불일치 시 조용히 무시 (브로드캐스트 오배송 방지)
+  - `model_type` 기반 슬롯 라우팅:
+    `"YOLO11"` → `config.model_path`, `"PatchCore"` → `config.patchcore_model_path`
+  - Station2 PatchCore 재학습 완료 시 YOLO 슬롯 덮어쓰기 버그 해결
+* **클라이언트 UI (`CPageModel`) — Station2 PatchCore 항목 추가**:
+  콤보박스에 "Station #2 — PatchCore" 옵션 추가, YOLO11 과 독립적으로 재학습 요청 가능.
+* **HealthChecker 동적 서버 감지**: `ConnectionRegistry` 에 `server_type` 필드 추가.
+  Router 가 수신 패킷(`station_id`/TRAIN_*/HEALTH_PONG) 으로 server_type 자동 태깅 →
+  HealthChecker 가 IP 하드코딩 대신 server_type 으로 매칭. `config.json` 의
+  `health_check.targets.ip` 를 비워두면 배포 PC 가 변경되어도 설정 수정 없이 자동 감지.
+  로그에는 실제 접속 IP 가 표시된다.
+* **Pylon 카메라 실제 연동** (`Common/PylonCamera.py` 신규):
+  Basler 카메라를 `StationRunner._run_grab_producer` 에서 실제로 grab. pypylon 미설치
+  또는 카메라 미연결 시 is_open=False 로 떨어져 자동으로 더미 이미지 모드로 폴백 →
+  개발/CI 환경에서도 파이프라인 동작. `config.json` 의 `ai_server.station*.camera_enabled`
+  / `camera_serial` / `camera_fps` 로 스테이션별 카메라 지정 가능.
+* **GuiRouter 진입 로그 추가**: 클라이언트 버튼 액션(재학습/이력/통계/모델목록/이미지)
+  진입 시 fd + 파라미터를 즉시 로그 → 추적성 확보.
+* **재학습 플래그 누수 수정**: `GuiService::request_retrain` 의 소켓 생성/송신 실패
+  경로에서 `is_training_` 해제 누락 2건 수정 (영구 "학습중" 상태 방지).
+* **Station2 PatchCore 학습 데이터 경로 버그 수정**: `_train_patchcore` 가
+  Station2 의 경우 `./data/station2/patchcore/` 를 사용하도록 조건 분기 추가
+  (기존엔 `./data/station{N}/normal` 고정으로 Station2 PatchCore 학습이 실제로 불가).
+
+### v0.12.0 — NG 파이프라인 비동기 분리 (ACK 지연 근본 해결)
+
+* **문제**: v0.11.x 까지 `StationHandler` 가 `InspectionService::process()` 를
+  동기 호출 → 이미지 3장 저장(수 MB 디스크 I/O) + DB INSERT 가 끝나야 ACK 발행.
+  실측 500ms~1s+ 소요 → AI 서버 `ACK_TIMEOUT_SEC=1.0` 이 반복 타임아웃 →
+  재전송 루프 → 연결 끊김 악순환.
+
+* **해결 구조**:
+  ```
+  StationHandler
+    ├─ validate_only(ev)          (<1ms)
+    ├─ publish ACK_SEND_REQUESTED  ← 즉시 ACK
+    └─ publish INSPECTION_VALIDATED ← 백그라운드 위임
+                                     ↓
+                 InspectionService::on_validated  (EventBus 워커 스레드)
+                   ├─ save_blob × 3 (원본/히트맵/마스크)
+                   ├─ INSERT inspections
+                   ├─ INSERT assemblies (Station2)
+                   └─ publish GUI_PUSH_REQUESTED
+  ```
+
+* **신규 이벤트**: `EventType::INSPECTION_VALIDATED` — 검증 통과 후 영속화
+  위임용. EventBus 의 N개 워커가 병렬 처리.
+
+* **Sliced failure 정책**: ACK 가 이미 송신된 뒤 persist 가 실패하면 재전송 불가.
+  `[ERR] [DB] [SLICED-FAILURE] 저장 실패 (ACK 는 이미 송신됨) | id=... err=...`
+  ERROR 레벨로 강하게 남겨 운영자 추적 가능.
+
+* **효과**:
+  - AI 서버 체감 ACK 지연: 500ms+ → **수 ms** (validate_only 만)
+  - `ACK_TIMEOUT_SEC`: 1초 → **3초** (여유)
+  - 고부하(초당 수십건 NG) 에서도 ACK 타임아웃 사라짐
+
+### v0.12.0 기타 안정화
+
+* **검증기 정합성 수정** (`InspectionService::validate`):
+  - `result` 필드: `"OK"/"NG"` 대문자 수용 + 소문자 정규화 (AI서버 송신 형식)
+  - `score` 필드: 0~1 강제 제거 (PatchCore anomaly_score 는 무한대 범위) →
+    `std::isfinite()` 로 NaN/Inf 만 차단
+  - 기존엔 이 두 버그로 모든 NG 가 `invalid_result` / `invalid_score` 로 거부됨
+
+* **INSPECT_NG_ACK_EXT(111) 처리**: 클라이언트가 NG 수신 후 자동 ACK(111) 를
+  보내는데 서버가 "미처리 프로토콜" 로 로깅하던 노이즈 제거. EXT_ACK(190) 와
+  동일하게 silent pass.
+
+### v0.13.0 — 클라이언트 학습 이미지 업로드 End-to-End
+
+**배경**: v0.12.x 까지 클라 "폴더 선택" 은 파일명 수집만 했고, 실제 학습은
+학습서버에 미리 준비된 `./data/station*/...` 폴더로만 이뤄짐 → UI 와 실제
+동작 불일치. 제품 전환 시 학습 데이터 교체가 번거로웠음.
+
+**해결**: 3 컴포넌트(클라/메인/학습) 동시 확장으로 엔드투엔드 업로드 파이프라인
+구현. 신규 프로토콜 4 개 추가:
+
+| 번호 | 이름 | 방향 | 역할 |
+|------|------|------|------|
+| 158 | `RETRAIN_UPLOAD` | 클라→메인 | 학습용 이미지 1장 업로드 (JSON + binary) |
+| 159 | `RETRAIN_UPLOAD_ACK` | 메인→클라 | 파일별 업로드 ACK + 진행률 |
+| 1108 | `TRAIN_DATA_UPLOAD` | 메인→학습 | 이미지 중계 (JSON + binary) |
+| 1109 | `TRAIN_DATA_UPLOAD_ACK` | 학습→메인 | 저장 결과 ACK |
+
+**동작 흐름**:
+```
+① 클라: 폴더 선택 → 파일 개수 + 폴더 경로 보관
+② 클라: "재학습 실행" 클릭 → session_id 생성 (sess-YYYYMMDD-HHMMSS-NNNNN)
+   → 파일별로 RETRAIN_UPLOAD(158) 순차 송신
+③ 메인: 파일 수신 → ./storage/training_upload/{session_id}/{file} 로컬 저장
+   → 학습서버 TCP 로 TRAIN_DATA_UPLOAD(1108) 중계
+④ 학습서버: ./data/station{N}/uploads/{session_id}/{file} 저장 → ACK(1109)
+⑤ 메인: ACK(159) 를 클라에 회신 → 진행률 표시 (0~50%)
+⑥ 클라: 모든 ACK 수신 완료 → RETRAIN_REQ(152) 에 session_id 동봉하여 송신
+⑦ 메인: TRAIN_START_REQ(1100) 에 data_path="./data/station{N}/uploads/{session_id}" 주입
+⑧ 학습서버: data_path 로 학습 실행 (기본 경로 대신 업로드 폴더 사용)
+```
+
+**주요 안전장치**:
+- 파일명 path traversal 차단 (basename 화 + ".." / "/" / "\\" 검사)
+- 파일당 50MB 상한
+- `image_size` > 0 이면 GUI 리스너가 JSON 뒤 바이너리를 추가 수신 (`recv_one_request` 확장)
+- 메인 로컬 저장 실패해도 학습서버 중계는 계속 시도 → 이중 저장으로 복구력 강화
+
+**신규 클래스/함수**:
+- C++  `GuiService::receive_retrain_upload()` — 수신 + 중계 + ACK 파싱
+- C++  `GuiRouter::handle_retrain_upload()` — 요청 분기
+- C++  `GuiTcpListener::recv_one_request(json, binary)` — 바이너리 동반 수신
+- Py   `TrainingServer._handle_train_data_upload()` — 디스크 저장 + ACK
+- MFC  `CPacketBuilder::BuildRetrainUploadFrame()` / `GenerateSessionId()`
+- MFC  `CPageModel::OnRetrainUploadAck()` — ACK 수신 → 진행률 + RETRAIN_REQ 자동 발행
+
+### v0.14.0 — 검사 pause/resume 원격 제어
+
+클라이언트 메뉴 [검사 > 시작/중지] 가 **실제 AI 추론서버의 grab 루프를 중단/재개** 하도록 연결됨.
+이전엔 로컬 시뮬레이션 타이머만 on/off 하는 더미 동작이었음.
+
+**신규 프로토콜**:
+| 번호 | 이름 | 방향 |
+|---|---|---|
+| 160 | `INSPECT_CONTROL_REQ` | 클라 → 메인 |
+| 161 | `INSPECT_CONTROL_RES` | 메인 → 클라 |
+| 1020 | `INFERENCE_CONTROL_CMD` | 메인 → 추론 |
+| 1021 | `INFERENCE_CONTROL_RES` | 추론 → 메인 |
+
+**흐름**:
+```
+MFC 메뉴 [검사 > 중지]
+  ↓ INSPECT_CONTROL_REQ(160) {action:"pause", station_filter:0}
+MainServer: ConnectionRegistry 에서 ai_inference_* 찾아 각각에 중계
+  ↓ INFERENCE_CONTROL_CMD(1020) {action:"pause"}
+추론서버 TcpClient → StationRunner._handle_inference_control
+  ↓ self._pause_event.clear()
+_run_grab_producer: pause_event.wait() 에서 블록 → 카메라 grab 중단
+  → 추론/송신 파이프라인 자연스럽게 멈춤
+  ↓ INFERENCE_CONTROL_RES(1021) ACK
+MainServer → 클라 INSPECT_CONTROL_RES(161) → MessageBox 알림
+```
+
+**구현 특징**:
+- `asyncio.Event` 기반 → resume 시 grab 루프가 **즉시** 깨어남 (poll 없음)
+- station_filter: 0=전체, 1/2=특정 스테이션만
+- HealthChecker 의 server_type 태깅을 그대로 활용 (별도 식별 로직 X)
 
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고
@@ -300,9 +454,9 @@ python -m Station2.Station2Main      # 조립 검사
 ## 향후 계획
 
 ### 하드웨어 연동
-* Pylon 카메라 SDK 연동 (현재 더미 이미지)
+* ✅ Pylon 카메라 SDK 연동 (v0.11.0 — 미연결/미설치 시 자동 더미 폴백)
 * Arduino 시리얼 통신 연동
-* HealthChecker PING/PONG 프로토콜 완성
+* ✅ HealthChecker 동적 서버 감지 (v0.11.0 — server_type 기반 매칭)
 
 ### 확장 기능
 * 모델 정확도 개선 및 최적화

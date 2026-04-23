@@ -68,6 +68,10 @@ from Common.SerialCtrl import SerialCtrl
 # 패킷을 보내고 응답(ACK)을 받거나, 일방적으로 전송(fire-and-forget)하는 기능을 제공합니다.
 from Common.TcpClient import TcpClient
 
+# PylonCamera: Basler 산업용 카메라 래퍼. pypylon 미탑재/미연결 시 is_open=False
+# 로 떨어지므로 호출자가 더미 이미지로 폴백할 수 있다. (v0.11.0)
+from Common.PylonCamera import PylonCamera
+
 
 # 이 모듈 전용 로거(logger)를 생성합니다.
 # __name__은 현재 모듈 이름(예: "Common.StationRunner")이 되어,
@@ -79,6 +83,48 @@ logger = logging.getLogger(__name__)
 # 5초마다 "지금까지 OK 몇 개, NG 몇 개, 평균 추론 시간" 정보를 한 번에 보냅니다.
 # 매번 OK마다 패킷을 보내면 네트워크 부하가 크므로, 일정 주기로 모아서 보내는 것입니다.
 OK_COUNT_REPORT_INTERVAL_SEC = 5.0
+
+
+# ===========================================================================
+# _downscale_for_transport — NG 3장 이미지 전송용 다운스케일 헬퍼 (v0.14.6)
+# ===========================================================================
+# 문제:
+#   카메라 원본 1920x1200 으로 만든 히트맵/마스크 PNG 가 각 2~3 MB 에 달해
+#   TCP 전송 중 부분 유실이 발생하면 MFC 에서 하단이 검정으로 잘려 보임.
+#   (PNG 는 스트림 디코딩 특성상 앞부분부터 복원되기 때문)
+#
+# 해결:
+#   긴 변이 max_side 보다 크면 비율 유지로 축소. 이미지 면적이 크게 줄어
+#   PNG 크기도 ~1/3 이하로 떨어지고 전송 안정성이 크게 향상된다.
+#   AI 추론용 이미지는 건드리지 않고, "전송용 인코딩 직전" 에만 적용한다.
+# ===========================================================================
+def _downscale_for_transport(image, max_side: int = 1280):
+    """이미지의 긴 변이 max_side 이하가 되도록 비율 유지 다운스케일.
+
+    Args:
+        image: BGR ndarray (H, W, 3). None 이면 None 반환.
+        max_side: 긴 변의 최대 픽셀 수 (기본 1280).
+
+    Returns:
+        ndarray: 축소된 이미지. 원본이 이미 작으면 원본 그대로.
+    """
+    if image is None:
+        return None
+    try:
+        import cv2 as _cv2
+    except ImportError:
+        return image  # cv2 없으면 다운스케일 없이 원본 반환 (fail-safe)
+
+    h, w = image.shape[:2]
+    long_side = max(h, w)
+    if long_side <= max_side:
+        return image  # 이미 작음 — 리사이즈 불필요
+
+    scale = max_side / float(long_side)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    # INTER_AREA: 축소 시 가장 품질 좋은 필터 (cv2 권장)
+    return _cv2.resize(image, (new_w, new_h), interpolation=_cv2.INTER_AREA)
 
 
 # ===========================================================================
@@ -225,9 +271,19 @@ class StationRunner:
         # 콜백(callback): 어떤 이벤트가 발생했을 때 자동으로 호출되는 함수를 말합니다.
         self._tcp_client.set_on_model_reload(self._handle_model_reload)
 
+        # v0.14.0: 검사 pause/resume 명령(INFERENCE_CONTROL_CMD 1020) 콜백 등록.
+        # 메인서버가 클라이언트 요청을 중계해 오면 grab 이벤트를 on/off 한다.
+        self._tcp_client.set_on_inference_control(self._handle_inference_control)
+
         # 아두이노와 시리얼 통신할 컨트롤러를 생성합니다.
         # NG 판정 시 아두이노에 명령을 보내 물리적 동작(서보모터 리젝트, LED, 부저)을 수행합니다.
         self._serial_ctrl = SerialCtrl(config.arduino_port, config.arduino_baud)
+
+        # Basler Pylon 카메라 핸들 (v0.11.0).
+        # config.camera_enabled 가 False 이거나 라이브러리/장치가 없으면 open() 에서
+        # False 를 반환해 _run_grab_producer 가 자동으로 더미 이미지 모드로 폴백한다.
+        # 실제 배포(.120 PC) 에서는 카메라가 연결되어 있으므로 진짜 프레임을 사용.
+        self._camera = PylonCamera(serial=getattr(config, "camera_serial", ""))
 
         # grab_queue: 카메라 촬영 이미지(GrabItem)를 저장하는 비동기 큐입니다.
         # maxsize를 설정하면 큐가 가득 찼을 때 프로듀서가 대기합니다(백프레셔).
@@ -246,6 +302,13 @@ class StationRunner:
         # 파이프라인이 현재 실행 중인지를 나타내는 플래그입니다.
         # False로 바뀌면 각 코루틴의 while 루프가 종료됩니다.
         self._is_running = False
+
+        # v0.14.0: 검사 일시정지 플래그. INFERENCE_CONTROL_CMD(1020) 수신 시 토글됨.
+        #   True: grab_producer 가 grab 을 건너뛰고 대기 → 추론/송신 자연스럽게 중단
+        #   False (기본): 정상 grab
+        # 이벤트 기반으로 즉시 반응 (pause 중 sleep → resume 시 즉시 깨어남).
+        self._pause_event: asyncio.Event = asyncio.Event()
+        self._pause_event.set()   # 시작 상태 = 실행 (set=진행, clear=일시정지)
 
         # 프레임 일련번호 카운터입니다. 카메라에서 프레임을 촬영할 때마다 1씩 증가합니다.
         self._frame_seq = 0
@@ -295,6 +358,19 @@ class StationRunner:
 
         # 아두이노와의 시리얼 포트를 엽니다. 이후 NG 판정 시 명령을 보낼 수 있게 됩니다.
         self._serial_ctrl.open()
+
+        # Basler Pylon 카메라를 엽니다 (v0.11.0).
+        #   - config.camera_enabled=False 또는 pypylon 미탑재 → 더미 모드
+        #   - 장치는 있지만 open 실패(타 프로세스 점유 등) → 더미 모드 폴백
+        # 실패해도 예외는 던지지 않고 _camera.is_open 플래그로만 전달 →
+        # _run_grab_producer 가 매 프레임 이 플래그를 확인해 실/더미 분기.
+        if getattr(self._config, "camera_enabled", True):
+            if self._camera.open():
+                logger.info("Pylon 카메라 사용 — 실제 프레임 grab 시작")
+            else:
+                logger.warning("Pylon 카메라 open 실패 — 더미 이미지 모드로 동작")
+        else:
+            logger.info("config.camera_enabled=false — 더미 이미지 모드")
 
         # 현재 실행 중인 asyncio 이벤트 루프를 가져옵니다.
         # 이벤트 루프: 비동기 작업들을 스케줄링하고 실행하는 핵심 엔진입니다.
@@ -361,39 +437,78 @@ class StationRunner:
     # =====================================================================
 
     # -----------------------------------------------------------------------
-    # _run_grab_producer() 메서드
+    # _run_grab_producer() 메서드 — 카메라 프레임 생산자 (v0.11.0)
     # -----------------------------------------------------------------------
-    # 목적: 카메라에서 이미지를 촬영하여 grab_queue에 넣는 생산자(Producer) 코루틴입니다.
-    #       파이프라인의 첫 번째 단계로, 데이터의 원천(source)입니다.
-    # 매개변수: 없음
-    # 반환값: None
-    # 참고: 현재는 TODO 상태로 더미(dummy) 이미지를 사용합니다.
-    #       실제 구현 시 Basler Pylon SDK 등을 사용하여 카메라에서 프레임을 가져옵니다.
+    # 동작:
+    #   self._camera.is_open == True  → Basler Pylon 에서 실제 프레임 grab
+    #   self._camera.is_open == False → 더미 이미지(랜덤 ndarray) 사용 — 개발/CI 용
+    #
+    # 프레임 레이트:
+    #   config.camera_fps (기본 2.0 fps) 로 sleep 주기 결정.
+    #   Pylon 의 GrabStrategy_LatestImageOnly 조합으로 지연 누적 방지.
+    #
+    # 블로킹 주의:
+    #   PylonCamera.grab() 은 동기 블로킹 함수이므로 이벤트 루프를 막지 않도록
+    #   loop.run_in_executor 로 스레드 풀에 위임한다. 그 사이 다른 코루틴
+    #   (sender/reporter/추론) 은 정상 동작.
     # -----------------------------------------------------------------------
     async def _run_grab_producer(self) -> None:
-        # CancelledError를 잡아서 조용히 종료합니다.
-        # try/except 없이 CancelledError가 전파되면 상위에서 에러로 처리될 수 있습니다.
+        loop = asyncio.get_running_loop()
+        import numpy as _np
+
+        # config 의 camera_fps 를 sleep 주기(초) 로 변환. 0 이하면 최저 보장값 사용.
+        fps = max(0.1, float(getattr(self._config, "camera_fps", 2.0)))
+        period = 1.0 / fps
+
+        # v0.14.2: 카메라 미연결 시 사용할 "정상 placeholder" 이미지를 1회만 로드.
+        # 기존에는 랜덤 픽셀(100~200)을 매번 생성했는데, 이 경우 PatchCore 가
+        # 전 영역을 이상으로 판정 → NG 판정된 히트맵/마스크 PNG 가 압축 효율 최악이라
+        # 2~3 MB 급 대용량 패킷이 초당 여러 건 쏟아져 클라이언트 TCP 파싱 경계가 깨지고
+        # MFC CImage assertion(atlimage.h:1629) 발생. 이를 원천 차단한다.
+        #
+        # 해결: 실제 학습 분포(정상 이미지)와 유사한 고정 이미지를 반복 사용하면
+        # PatchCore 가 OK 로 판정 → NG 푸시 자체가 발생하지 않음.
+        placeholder: Optional[_np.ndarray] = None
+        if not self._camera.is_open:
+            placeholder = self._load_placeholder_frame()
+
         try:
-            # _is_running이 True인 동안 계속 반복합니다.
-            # stop()이 호출되면 False가 되어 루프를 빠져나갑니다.
             while self._is_running:
-                # TODO: 실제로는 Pylon 카메라에서 BGR ndarray 이미지를 가져와야 합니다.
-                # 현재는 개발/테스트용으로 랜덤 더미 이미지를 생성합니다.
-                # None이면 추론이 스킵되므로, numpy 배열로 만들어야 실제 추론이 실행됩니다.
-                import numpy as _np
-                dummy_image = _np.random.randint(100, 200, (224, 224, 3), dtype=_np.uint8)
-                # 프레임 일련번호를 1 증가시킵니다. 각 프레임을 고유하게 식별하기 위함입니다.
+                # v0.14.0: pause 상태면 wait — resume 시 즉시 깨어남.
+                # _pause_event.is_set() == True 일 때만 진행.
+                if not self._pause_event.is_set():
+                    logger.info("검사 일시정지 상태 — grab 대기")
+                    await self._pause_event.wait()
+                    logger.info("검사 재개 — grab 루프 복귀")
+
+                frame: Optional[_np.ndarray] = None
+
+                if self._camera.is_open:
+                    # 실제 카메라에서 1프레임 — 블로킹이므로 executor 위임
+                    frame = await loop.run_in_executor(None, self._camera.grab, 1000)
+                    if frame is None:
+                        # 일시적 grab 실패는 로그만 남기고 다음 주기에 재시도
+                        logger.warning("카메라 grab 실패 — 이번 프레임 건너뜀")
+                        await asyncio.sleep(period)
+                        continue
+                else:
+                    # 카메라 미연결/미지원 → placeholder 이미지 반복 사용
+                    # 랜덤 픽셀을 쓰지 않는 이유는 위 placeholder 주석 참조.
+                    # placeholder 로드 실패 시 회색 단색(128) 이미지로 fallback.
+                    if placeholder is not None:
+                        frame = placeholder.copy()  # copy 로 안전하게 per-frame 인스턴스
+                    else:
+                        frame = _np.full((224, 224, 3), 128, dtype=_np.uint8)
+
                 self._frame_seq += 1
-                # GrabItem 객체를 생성합니다. 프레임 번호, 이미지, 촬영 시각을 담습니다.
-                item = GrabItem(self._frame_seq, dummy_image, time.time())
-                # grab_queue에 GrabItem을 넣습니다.
-                # 큐가 가득 차면(maxsize) 공간이 생길 때까지 여기서 대기합니다(백프레셔).
+                item = GrabItem(self._frame_seq, frame, time.time())
+
+                # 큐가 가득 차면(maxsize) 공간이 생길 때까지 대기(백프레셔).
                 await self._grab_queue.put(item)
-                # 0.5초 동안 대기합니다. 카메라 촬영 주기를 시뮬레이션합니다.
-                # 실제 구현에서는 카메라 트리거 신호에 맞춰 동작하므로 sleep이 바뀔 수 있습니다.
-                await asyncio.sleep(0.5)
-        # CancelledError: stop()에서 task.cancel()을 호출하면 발생합니다.
-        # pass로 무시하여 코루틴이 조용히 종료됩니다.
+
+                # 주기 조정 — Pylon 은 자체 trigger 속도가 빠르지만 추론 처리량에 맞춤
+                await asyncio.sleep(period)
+
         except asyncio.CancelledError:
             pass
 
@@ -513,28 +628,42 @@ class StationRunner:
                     raw_anomaly_map = result_dict.get("raw_anomaly_map")
                     pred_mask_arr   = result_dict.get("pred_mask")
 
-                    image_bytes = self._encode_image(item.image)
+                    # v0.14.6: NG 3장 이미지를 동일한 작은 해상도로 다운스케일해서 전송.
+                    # 카메라 원본(1920x1200) 해상도를 그대로 쓰면 히트맵/마스크 PNG가
+                    # 2~3MB 로 커져 TCP 스트림에서 부분 유실이 발생하고 클라이언트에서
+                    # 이미지가 하단부터 잘려 보이는 현상 발생(MFC 디코드 실패).
+                    # 긴 변을 최대 1280px 로 제한하여 PNG 를 작게 유지 + 세 이미지
+                    # 모두 동일 해상도로 통일 → MFC 3분할 뷰의 Aspect 도 자동 일치.
+                    MAX_SIDE = 1280
+
+                    # 원본을 먼저 다운스케일한 뒤 그 축소본을 모든 시각화 입력으로 사용.
+                    # (원본을 줄이면 히트맵/마스크 오버레이도 자동으로 줄어든 크기로 합성됨)
+                    img_small = _downscale_for_transport(item.image, MAX_SIDE) \
+                                if item.image is not None else None
+
+                    image_bytes = self._encode_image(img_small) \
+                                  if img_small is not None else None
                     heatmap_bytes = None
                     pred_mask_bytes = None
 
                     # 시각화는 원본 이미지가 있을 때만 의미 있음
-                    if item.image is not None:
+                    if img_small is not None:
                         try:
                             from Common.Visualizer import (
                                 make_heatmap_overlay,
                                 make_pred_mask_overlay,
                                 encode_image,
                             )
-                            # 히트맵 합성: 원본 + anomaly_map 오버레이
+                            # 히트맵 합성: 축소된 원본 + anomaly_map 오버레이
                             if raw_anomaly_map is not None:
                                 heatmap_img = make_heatmap_overlay(
-                                    item.image, raw_anomaly_map, alpha=0.5
+                                    img_small, raw_anomaly_map, alpha=0.5
                                 )
                                 heatmap_bytes = encode_image(heatmap_img, ".png")
-                            # 마스크 합성: 원본 + pred_mask 빨간 윤곽선
+                            # 마스크 합성: 축소된 원본 + pred_mask 빨간 윤곽선
                             if pred_mask_arr is not None:
                                 mask_img = make_pred_mask_overlay(
-                                    item.image, pred_mask_arr
+                                    img_small, pred_mask_arr
                                 )
                                 pred_mask_bytes = encode_image(mask_img, ".png")
                         except Exception as exc:
@@ -790,27 +919,124 @@ class StationRunner:
     # 목적: 메인 서버에서 MODEL_RELOAD_CMD(모델 재로드 명령)가 수신되었을 때 호출되는
     #       콜백 함수입니다. 새 모델 파일 경로로 AI 모델을 다시 로드합니다.
     #       이를 통해 서버를 재시작하지 않고도 모델을 업데이트할 수 있습니다.
+    #
+    # 필터/라우팅:
+    #   - station_id 가 자신과 다르면 무시 (메인서버는 전 추론서버에 브로드캐스트)
+    #   - Station2 이중모델(YOLO+PatchCore)의 경우 model_type 으로 슬롯 구분:
+    #       model_type="YOLO11"   → self._config.model_path (YOLO 슬롯)
+    #       model_type="PatchCore"→ self._config.patchcore_model_path (PatchCore 슬롯)
+    #   - Station1은 PatchCore 단일이므로 항상 model_path 에 배정
+    #
     # 매개변수:
-    #   cmd_dict (dict): 메인 서버에서 보낸 명령 딕셔너리. "model_path" 키에 새 모델 경로가 담깁니다.
+    #   cmd_dict (dict): {"station_id", "model_type", "model_path", "version", ...}
     # 반환값: None
     # -----------------------------------------------------------------------
     def _handle_model_reload(self, cmd_dict: dict) -> None:
         """MODEL_RELOAD_CMD 수신 시 추론기 모델 재로드."""
-        # 명령 딕셔너리에서 새 모델 파일 경로를 가져옵니다.
-        # .get()을 사용하여 키가 없으면 빈 문자열("")을 기본값으로 반환합니다.
+        # 1) station_id 필터 — 자신의 스테이션이 아니면 무시
+        target_station = int(cmd_dict.get("station_id", 0))
+        my_station = int(getattr(self._config, "station_id", 0))
+        if target_station and target_station != my_station:
+            logger.debug("MODEL_RELOAD 무시 | target=%d my=%d",
+                         target_station, my_station)
+            return
+
+        # 2) 새 모델 경로 / 타입 추출
         model_path = cmd_dict.get("model_path", "")
+        model_type = cmd_dict.get("model_type", "")
+        if not model_path:
+            logger.warning("MODEL_RELOAD: model_path 비어있음 — 재로드만 수행")
+            self._inferencer.load_model()
+            return
 
-        # 모델 경로가 있으면(빈 문자열이 아니면) 설정 객체의 모델 경로를 업데이트합니다.
-        # 빈 문자열이면 기존 경로를 유지합니다 (모델 경로 변경 없이 재로드만 하는 경우).
-        if model_path:
+        # 3) 모델 타입에 따라 올바른 슬롯에 배정
+        #    Station2 + "PatchCore" → patchcore_model_path
+        #    그 외 (Station1 전체, Station2 YOLO11) → model_path
+        is_station2_patchcore = (
+            my_station == 2 and model_type.upper().startswith("PATCHCORE")
+        )
+        if is_station2_patchcore:
+            old = getattr(self._config, "patchcore_model_path", "")
+            self._config.patchcore_model_path = model_path
+            logger.info("Reloading PatchCore slot (station2) | %s → %s",
+                        old, model_path)
+        else:
+            old = getattr(self._config, "model_path", "")
             self._config.model_path = model_path
+            logger.info("Reloading main model slot (station=%d, type=%s) | %s → %s",
+                        my_station, model_type, old, model_path)
 
-        # 모델 재로드 시작을 로그에 기록합니다. 운영 중 언제 모델이 바뀌었는지 추적합니다.
-        logger.info("Reloading inferencer model: %s", model_path)
-
-        # 추론기의 모델을 다시 로드합니다.
-        # 내부적으로 기존 모델을 해제하고 새 모델 파일을 읽어 GPU/CPU에 올립니다.
+        # 4) 추론기가 양쪽 슬롯(model_path + patchcore_model_path)을 모두 재로드한다.
+        #    반대쪽 슬롯은 config 값이 그대로라 동일 파일이 다시 로드될 뿐 영향 없음.
         self._inferencer.load_model()
+
+    # -----------------------------------------------------------------------
+    # _handle_inference_control() 메서드 (v0.14.0)
+    # -----------------------------------------------------------------------
+    # 목적: 메인서버로부터 INFERENCE_CONTROL_CMD(1020) 를 받아 검사 pause/resume.
+    # 매개변수:
+    #   cmd_dict (dict): {"action": "pause"|"resume", "request_id": ...}
+    # 반환값 (bool): 현재 paused 상태 (True=일시정지, False=실행)
+    #
+    # 동작:
+    #   asyncio.Event 기반 — set() 이면 실행, clear() 면 일시정지.
+    #   grab_producer 루프가 _pause_event.wait() 에서 블록됨.
+    # -----------------------------------------------------------------------
+    def _handle_inference_control(self, cmd_dict: dict) -> bool:
+        """검사 pause/resume (v0.14.7 개선).
+
+        중요 순서:
+          resume: ① _pause_event.set() 을 **먼저** 호출 → grab_producer 가 wait() 에서
+                     즉시 깨어나 다음 iteration 에 진입. ② 그 다음 camera.start_grabbing().
+                     만약 start_grabbing 이 예외/지연되더라도 이벤트는 이미 set 돼있어
+                     grab_producer 가 "재개" 상태로 돌아감. camera.grab() 이 None 을
+                     반환하면 다음 주기에 재시도(동일 사이클 반복 로직).
+          pause:  ① _pause_event.clear() 먼저(루프가 더이상 새 grab 시도 못하도록).
+                     ② 그 다음 camera.stop_grabbing() (버퍼 방출).
+
+          전부 try/except 로 감싸 카메라 오류가 이벤트 제어를 막지 않도록 보호.
+        """
+        action = str(cmd_dict.get("action", "")).lower()
+        logger.info("INFERENCE_CONTROL 수신: action=%s", action)
+        if action == "pause":
+            self._pause_event.clear()   # grab_producer 가 다음 주기에 wait 진입
+            try:
+                if self._camera is not None and self._camera.is_open:
+                    self._camera.stop_grabbing()
+            except Exception as exc:
+                logger.error("pause 중 stop_grabbing 예외(무시): %s", exc)
+            logger.info("INFERENCE_CONTROL: pause 적용 (루프 블록 + 카메라 grab 정지)")
+            return True
+        elif action == "resume":
+            # ① 이벤트 먼저 set — grab_producer 가 wait 에서 즉시 깨어남
+            self._pause_event.set()
+            # ② 카메라 재시작 — start_grabbing 실패하면 close → open 으로 완전 재초기화 폴백
+            try:
+                if self._camera is not None:
+                    if not self._camera.is_open:
+                        logger.warning("resume: 카메라 open 상태 아님 — open 재시도")
+                        self._camera.open()
+                    else:
+                        ok = self._camera.start_grabbing()
+                        logger.info("start_grabbing 결과: %s", ok)
+                        if not ok:
+                            # Pylon 상태 꼬임 가능성 → 완전 재초기화
+                            logger.warning("start_grabbing 실패 — close/open 완전 재초기화 시도")
+                            try:
+                                self._camera.close()
+                            except Exception as exc_cl:
+                                logger.warning("재초기화용 close 예외(무시): %s", exc_cl)
+                            if self._camera.open():
+                                logger.info("카메라 완전 재초기화 성공")
+                            else:
+                                logger.error("카메라 완전 재초기화 실패 — placeholder 모드로 진행")
+            except Exception as exc:
+                logger.error("resume 중 카메라 복구 예외(무시, 이벤트는 set 됨): %s", exc)
+            logger.info("INFERENCE_CONTROL: resume 적용 (이벤트 set + 카메라 재개/재초기화)")
+            return False
+        else:
+            logger.warning("INFERENCE_CONTROL: unknown action=%s", action)
+            return not self._pause_event.is_set()
 
     # -----------------------------------------------------------------------
     # _handle_arduino_action() 메서드
@@ -865,6 +1091,62 @@ class StationRunner:
     # 참고: @staticmethod는 self(인스턴스)를 사용하지 않는 메서드입니다.
     #       인스턴스 상태와 무관한 순수 유틸리티 함수에 사용합니다.
     # -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # _load_placeholder_frame() 메서드 (v0.14.2)
+    # -----------------------------------------------------------------------
+    # 목적: 카메라 미연결 시 grab_producer 가 돌려쓸 "정상 이미지" 1장을 로드한다.
+    #
+    # 왜: 기존에는 _np.random.randint 로 매번 랜덤 픽셀을 생성했으나,
+    #     PatchCore 입장에서 랜덤 이미지는 학습 분포와 완전히 동떨어진 OOD 라
+    #     전 영역을 이상으로 판정 → 히트맵/마스크 PNG 압축 효율 최악 → 2~3MB
+    #     대용량 NG 패킷이 초당 여러 건 MFC 로 쏟아져 TCP 파싱 경계/CImage 복사
+    #     이슈를 유발했다.
+    #
+    # 구현: data/station{N}/test/ 에서 첫 .bmp/.jpg/.png 파일 1장을 OpenCV 로
+    #       읽어 caching. 파일이 없으면 None 을 반환하고 호출자가 회색 fallback.
+    #
+    # 보안/성능:
+    #   - 로드는 프로세스 생애 1회만 발생 (caching)
+    #   - config.patchcore_input_size 에 맞춰 리사이즈하지 않고 원본을 사용 —
+    #     실제 카메라 프레임과 동일 크기/채널 유지 (추론 전 Inferencer 가 리사이즈).
+    # -----------------------------------------------------------------------
+    def _load_placeholder_frame(self):
+        import numpy as _np
+        from pathlib import Path as _Path
+        try:
+            import cv2 as _cv2
+        except ImportError:
+            return None
+
+        # v0.14.3: normal/ 우선 탐색 — test/ 에는 NG 이미지가 섞여 있어
+        # 불량 이미지를 placeholder 로 고정하면 실제 현장에 투입 전 혼동을 줌.
+        # normal/ → test/ 순으로 탐색하여 정상 이미지만 placeholder 로 사용.
+        station_id = int(getattr(self._config, "station_id", 1))
+        base_dir = _Path(__file__).resolve().parent.parent / "data" / f"station{station_id}"
+        candidates = [
+            base_dir / "normal",          # 정상 이미지 — OK 판정 보장
+            base_dir / "train" / "normal",  # 일부 레포는 train/normal 구조
+            base_dir / "test",              # 마지막 fallback (혼합 가능)
+        ]
+        exts = (".bmp", ".jpg", ".jpeg", ".png")
+        for dir_path in candidates:
+            if not dir_path.exists():
+                continue
+            for f in sorted(dir_path.iterdir()):
+                if f.suffix.lower() in exts:
+                    # np.fromfile + imdecode: 한글 경로 안전 (cv2.imread 는 한글 경로 실패)
+                    try:
+                        data = _np.fromfile(str(f), dtype=_np.uint8)
+                        img = _cv2.imdecode(data, _cv2.IMREAD_COLOR)
+                        if img is not None and img.size > 0:
+                            logger.info("placeholder 로드: %s (shape=%s)", f.name, img.shape)
+                            return img
+                    except Exception as exc:
+                        logger.warning("placeholder 로드 실패(%s): %s", f.name, exc)
+                        continue
+        logger.warning("placeholder 이미지 없음 — 회색 fallback 사용")
+        return None
+
     @staticmethod
     def _encode_image(image: Any) -> Optional[bytes]:
         """이미지를 JPEG 바이트로 인코딩."""
@@ -927,3 +1209,9 @@ class StationRunner:
         await self._tcp_client.close()
         # 아두이노와의 시리얼 포트를 닫습니다. 동기 방식으로 정리합니다.
         self._serial_ctrl.close()
+        # Pylon 카메라 핸들을 닫습니다 (v0.11.0).
+        # close() 내부에서 예외를 삼키므로 shutdown 경로의 안정성이 보장됩니다.
+        try:
+            self._camera.close()
+        except Exception as exc:
+            logger.warning("카메라 close 중 예외(무시): %s", exc)

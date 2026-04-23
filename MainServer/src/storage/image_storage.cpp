@@ -1,11 +1,22 @@
 // ============================================================================
-// image_storage.cpp — NG 이미지 파일 저장 구현
+// image_storage.cpp — NG 이미지 파일 저장 (비동기 이벤트 구독형)
 // ============================================================================
-// IMAGE_SAVE_REQUESTED 이벤트를 수신하면 InspectionEvent의 image_bytes를
-// 로컬 파일시스템에 JPEG로 저장한다.
+// 책임:
+//   IMAGE_SAVE_REQUESTED 이벤트를 수신하면 InspectionEvent.image_bytes 를
+//   로컬 파일시스템에 JPEG 로 저장한다. DB 저장(InspectionDao) 과 분리되어
+//   별도 워커 스레드에서 병렬 실행될 수 있다.
 //
-// 저장 경로: {root_dir}/station{N}/{YYYYMMDD}/ng_{epoch_ms}.jpg
-// 디렉터리가 없으면 자동 생성한다 (std::filesystem::create_directories).
+// 저장 경로 규칙:
+//   {root_dir}/station{N}/{YYYYMMDD}/ng_{epoch_ms}.jpg
+//     예) ./storage/station1/20260422/ng_1745310000000.jpg
+//   - 날짜 디렉터리가 없으면 create_directories 로 자동 생성
+//   - 파일명은 epoch_ms 로 유니크 (동시각 충돌 방지)
+//
+// 참고:
+//   히트맵(heatmap) 과 마스크(pred_mask) 는 현재 이 모듈이 다루지 않음.
+//   세 이미지 전체를 저장하려면 InspectionService 나 별도 핸들러에서 관리.
+//   (v0.9.0+ 에서 히트맵/마스크 경로는 inspections 테이블에만 기록되고
+//   실제 파일 저장은 서비스 레이어 또는 외부 도구가 담당)
 // ============================================================================
 #include "storage/image_storage.h"
 

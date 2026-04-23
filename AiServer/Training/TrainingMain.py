@@ -167,6 +167,12 @@ class TrainingServer:
           먼저 TCP 연결이 필요하다. 이 함수가 연결을 담당한다.
           연결에 실패하면 5초 후 재시도한다 (운용서버가 아직 시작되지 않았을 수 있으므로).
 
+        v0.14.7: 연결 성공 후 **수신 루프도 함께 시작**.
+          메인서버가 이 채널로 HEALTH_PING(1200) 을 보내면 HEALTH_PONG(1201)+
+          server_type="training" 으로 응답해야 ConnectionRegistry 가 태깅 →
+          HealthChecker 가 "ai_training" 으로 인식 → LED 초록색 전환.
+          이전엔 send-only 였어서 ping 을 무시 → LED 영원히 회색으로 남던 버그.
+
         매개변수:
           없음
 
@@ -185,11 +191,63 @@ class TrainingServer:
                 # 연결 성공 로그를 남긴다.
                 logger.info("Connected to main server %s:%d for notifications",
                             self._config.main_server_host, self._config.main_server_port)
+                # v0.14.7: 수신 루프 백그라운드 태스크로 시작 (HEALTH_PING 응답용)
+                asyncio.create_task(self._notify_recv_loop())
                 return  # 연결 성공 시 함수 종료 (재시도 루프 탈출)
             except OSError as exc:
                 # 연결 실패 시 (운용서버가 아직 안 떴거나 네트워크 오류)
                 logger.warning("Main server connection failed: %s — retry in 5s", exc)
                 await asyncio.sleep(5.0)  # 5초 대기 후 재시도
+
+    async def _notify_recv_loop(self) -> None:
+        """메인서버 → 학습서버(notify 채널) 수신 루프 (v0.14.7).
+
+        메인서버의 HealthChecker 가 주기적으로 HEALTH_PING(1200) 을 이 채널로
+        쏘는데, 이전엔 아무 처리도 안 해서 서버가 "ai_training" 태깅을 받지 못했다.
+        이제 패킷을 파싱해 HEALTH_PING 이면 HEALTH_PONG(server_type="training") 을
+        **같은 채널로** 즉시 회신 → Router 가 태깅 → HealthChecker 생존 판정 → LED 초록.
+
+        종료 조건:
+          - 서버 자체가 종료 (_is_running=False)
+          - reader EOF (main 연결 끊김) → 연결 끊김 처리 후 루프 탈출
+            (_send_to_main 이 다음 패킷 전송 시 재접속 함)
+        """
+        if self._notify_reader is None:
+            return
+        try:
+            while self._is_running:
+                # 4바이트 헤더 읽기
+                header = await self._notify_reader.readexactly(4)
+                body_size = int.from_bytes(header, "big")
+                if body_size <= 0 or body_size > 1024 * 1024:
+                    logger.warning("notify 수신 비정상 크기: %d — 루프 종료", body_size)
+                    return
+                body = await self._notify_reader.readexactly(body_size)
+                try:
+                    msg = json.loads(body.decode("utf-8"))
+                except Exception as exc:
+                    logger.warning("notify 수신 JSON 파싱 실패: %s", exc)
+                    continue
+
+                protocol_no = msg.get("protocol_no")
+                if protocol_no == int(ProtocolNo.HEALTH_PING):
+                    # HEALTH_PONG 조립 후 동일 채널(_notify_writer) 로 회신
+                    pong_body = {
+                        "server_type": "training",
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                    }
+                    pong_pkt = PacketBuilder.build_packet(
+                        protocol_no=int(ProtocolNo.HEALTH_PONG),
+                        body_dict=pong_body,
+                    )
+                    if self._notify_writer is not None and not self._notify_writer.is_closing():
+                        self._notify_writer.write(pong_pkt)
+                        await self._notify_writer.drain()
+                # 그 외 패킷은 무시 (TRAIN_START_REQ 등은 listen_port 채널에서 처리)
+        except asyncio.IncompleteReadError:
+            logger.info("notify 수신 EOF — main 연결 끊김, _send_to_main 이 재연결 시도")
+        except Exception as exc:
+            logger.warning("notify 수신 루프 예외: %s — 루프 종료", exc)
 
     async def _send_to_main(self, packet: bytes) -> bool:
         """운용서버로 패킷(바이트 데이터)을 전송한다.
@@ -259,13 +317,14 @@ class TrainingServer:
                 # 바이트 데이터를 UTF-8 문자열로 디코딩한 후, JSON 파싱하여 딕셔너리로 변환한다.
                 msg = json.loads(body.decode("utf-8"))
 
-                # ── 3단계: 이미지 데이터 소비 (있으면) ──
-                # 일부 프로토콜은 JSON 뒤에 이미지 바이너리 데이터가 붙어있다.
-                # image_size가 0이면 이미지 데이터가 없는 것이다.
+                # ── 3단계: 이미지 바이너리 수신 (있으면) ──
+                # JSON 의 image_size 만큼 뒤에 바이너리가 붙어있다.
+                # 프로토콜별로 쓰임이 달라 여기서는 그냥 "읽기만" 하고 bytes 로 보관
+                # → TRAIN_DATA_UPLOAD(1108) 같은 프로토콜이 실제 파일 바이트로 사용.
                 image_size = int(msg.get("image_size", 0))
+                image_bytes: bytes = b""
                 if image_size > 0:
-                    # 이미지 데이터를 읽되, 여기서는 사용하지 않는다 (버퍼에서 소비만 함).
-                    await reader.readexactly(image_size)
+                    image_bytes = await reader.readexactly(image_size)
 
                 # JSON에서 protocol_no(프로토콜 번호)를 꺼낸다.
                 protocol_no = msg.get("protocol_no", 0)
@@ -277,6 +336,9 @@ class TrainingServer:
                 elif protocol_no == ProtocolNo.TRAIN_START_REQ:
                     # 학습 시작 요청 -> 학습 시작 처리
                     await self._handle_train_start(writer, msg)
+                elif protocol_no == ProtocolNo.TRAIN_DATA_UPLOAD:
+                    # v0.13.0: 메인서버로부터 학습용 이미지 1장 수신 → 디스크 저장 + ACK
+                    await self._handle_train_data_upload(writer, msg, image_bytes)
                 else:
                     # 알 수 없는 프로토콜 번호 -> 디버그 로그만 남김
                     logger.debug("Unknown protocol_no: %d", protocol_no)
@@ -298,6 +360,84 @@ class TrainingServer:
             except Exception:
                 # 이미 닫힌 경우 등의 에러는 무시한다.
                 pass
+
+    # ── TRAIN_DATA_UPLOAD 처리 (v0.13.0: 클라이언트 업로드 이미지 저장) ──
+
+    async def _handle_train_data_upload(self, writer: asyncio.StreamWriter,
+                                         msg: dict, image_bytes: bytes) -> None:
+        """TRAIN_DATA_UPLOAD(1108) 수신 → 파일 저장 + ACK(1109) 회신.
+
+        JSON 필드:
+          session_id: 업로드 세션 식별자 (동일 세션의 파일들을 한 폴더에 모음)
+          station_id: 1 or 2 — 저장 경로 분기
+          model_type: "PatchCore" / "YOLO11" — 저장 경로 분기
+          filename:   원본 파일명 (path traversal 방지용 basename 화)
+          image_size: 뒤따르는 바이너리 크기
+
+        저장 경로:
+          ./data/station{N}/uploads/{session_id}/{sanitized_filename}
+
+        동일 session_id 로 여러 번 호출 가능 (한 장씩 누적 저장).
+        _handle_train_start 가 나중에 data_path 로 이 폴더를 지정받아 학습 실행.
+        """
+        request_id  = msg.get("request_id", "")
+        session_id  = msg.get("session_id", "")
+        station_id  = int(msg.get("station_id", 0))
+        model_type  = msg.get("model_type", "")
+        filename    = msg.get("filename", "")
+
+        # 기본 검증: 세션 ID 필수, station 1/2 만, 파일명 traversal 차단
+        ok = True
+        err_msg = ""
+        saved_path = ""
+
+        if not session_id or station_id not in (1, 2) or not filename:
+            ok = False
+            err_msg = "invalid_upload_request"
+        else:
+            # basename 화로 경로 탐색 공격 차단 + 확장자 허용 목록
+            safe_name = Path(filename).name
+            if ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+                ok = False
+                err_msg = "invalid_filename"
+            elif len(image_bytes) == 0:
+                ok = False
+                err_msg = "empty_image"
+            elif len(image_bytes) > 50 * 1024 * 1024:
+                ok = False
+                err_msg = "image_too_large"
+            else:
+                # station/model_type 별 폴더 분기
+                #   Station1: PatchCore 만 → station1/uploads/{session}/
+                #   Station2: YOLO/PatchCore 구분 위해 세부 폴더 추가 가능하나, 여기서는 통일
+                upload_dir = Path(self._config.data_root) / f"station{station_id}" \
+                             / "uploads" / session_id
+                try:
+                    upload_dir.mkdir(parents=True, exist_ok=True)
+                    dst = upload_dir / safe_name
+                    dst.write_bytes(image_bytes)
+                    saved_path = str(dst)
+                    logger.info("업로드 이미지 저장 | session=%s station=%d type=%s file=%s (%d bytes)",
+                                session_id, station_id, model_type, safe_name, len(image_bytes))
+                except Exception as exc:
+                    ok = False
+                    err_msg = f"save_failed: {exc}"
+                    logger.error("업로드 이미지 저장 실패 | %s", exc)
+
+        # ACK 회신 (1109) — JSON 만 (바이너리 없음)
+        ack_body = {
+            "session_id": session_id,
+            "success": ok,
+            "saved_path": saved_path,
+            "message": err_msg,
+        }
+        packet = PacketBuilder.build_packet(
+            protocol_no=int(ProtocolNo.TRAIN_DATA_UPLOAD_ACK),
+            body_dict=ack_body,
+            request_id=request_id,
+        )
+        writer.write(packet)
+        await writer.drain()
 
     # ── HEALTH_PING 응답 ──
 
@@ -519,8 +659,11 @@ class TrainingServer:
           PatchcoreTrainer.train()의 반환값 (success, model_path, version, accuracy, message)
         """
         # data_path가 비어있으면 기본 데이터 경로를 사용한다.
-        # 예: ./data/station1/normal
-        data_dir = data_path or str(Path(self._config.data_root) / f"station{station_id}" / "normal")
+        # Station1 PatchCore   : ./data/station1/normal      (빈 용기 정상 이미지)
+        # Station2 PatchCore   : ./data/station2/patchcore   (라벨 표면 정상 crop) — SETUP_GUIDE 참조
+        # (Station2 YOLO 는 _train_yolo 에서 별도 처리)
+        subfolder = "patchcore" if station_id == 2 else "normal"
+        data_dir = data_path or str(Path(self._config.data_root) / f"station{station_id}" / subfolder)
 
         # 데이터 증강을 실행한다 (학습 전에 이미지 수를 늘린다).
         try:
@@ -568,9 +711,12 @@ class TrainingServer:
         # YOLO 학습에 필요한 data.yaml 파일의 경로이다.
         data_yaml = str(Path(data_dir) / "data.yaml")
 
-        # data.yaml이 없으면 자동 생성한다.
-        if not Path(data_yaml).exists():
-            data_yaml = create_data_yaml(data_dir, data_yaml)
+        # v0.14.7: 기존 data.yaml 이 있어도 **항상 재생성**.
+        #   이전엔 user/Roboflow 의 data.yaml 을 그대로 썼는데, 상대경로(images/val 등)가
+        #   실제 디스크 레이아웃과 안 맞으면 Ultralytics 가 "images not found" 로 실패.
+        #   create_data_yaml 은 실제 폴더 구조(표준/Roboflow/Flat)를 자동 감지해 올바른
+        #   yaml 을 덮어씀 → 데이터 재배치 없이 그대로 학습 돌아감.
+        data_yaml = create_data_yaml(data_dir, data_yaml)
 
         # YoloTrainer 객체를 생성하고 학습을 실행한다.
         trainer = YoloTrainer(

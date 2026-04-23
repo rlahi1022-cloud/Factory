@@ -3,6 +3,7 @@
     "main_server_host": "10.10.10.130",
     "main_server_ai_port": 9000,
     "main_server_gui_port": 9010,
+    "training_server_host": "10.10.10.120",
     "training_server_port": 9100,
     "allowed_ip_prefixes": ["10.", "192.168.", "172.16.", "127.0.0.1"]
   },
@@ -34,14 +35,16 @@
 
   "health_check": {
     "interval_sec": 5,
+    "_comment": "v0.11.0: ip 는 선택사항. 비어있으면 server_type(=name) 으로 동적 매칭 — 다른 PC 에 배치되어도 자동 감지.",
     "targets": [
-      { "name": "ai_inference_1", "ip": "10.10.10.130", "port": 9000 },
-      { "name": "ai_inference_2", "ip": "10.10.10.130", "port": 9000 },
-      { "name": "ai_training",    "ip": "10.10.10.120", "port": 9000 }
+      { "name": "ai_inference_1", "ip": "", "port": 9000 },
+      { "name": "ai_inference_2", "ip": "", "port": 9000 },
+      { "name": "ai_training",    "ip": "", "port": 9000 }
     ]
   },
 
   "ai_server": {
+    "_comment_camera": "camera_enabled=false → 더미 이미지 모드, camera_serial 빈값 → 첫 번째 Basler 장치 사용",
     "station1": {
       "model_path": "./models/station1_patchcore.ckpt",
       "patchcore_input_size": 224,
@@ -49,7 +52,13 @@
       "device": "auto",
       "grab_queue_max": 16,
       "inference_workers": 1,
-      "sender_workers": 1
+      "sender_workers": 1,
+      "camera_enabled": true,
+      "camera_serial": "",
+      "camera_fps": 2.0,
+      "_comment_arduino": "arduino_port: Windows=\"COM3\" / Linux=\"/dev/ttyUSB0\" / null=미사용",
+      "arduino_port": "COM3",
+      "arduino_baud": 9600
     },
     "station2": {
       "model_path": "./models/station2_yolo.pt",
@@ -61,7 +70,13 @@
       "device": "auto",
       "grab_queue_max": 16,
       "inference_workers": 1,
-      "sender_workers": 1
+      "sender_workers": 1,
+      "camera_enabled": true,
+      "camera_serial": "",
+      "camera_fps": 2.0,
+      "_comment_arduino": "arduino_port: 미사용이면 null. Station2 가 Station1 과 동일 Arduino 공유 시 같은 포트 지정.",
+      "arduino_port": null,
+      "arduino_baud": 9600
     }
   },
 

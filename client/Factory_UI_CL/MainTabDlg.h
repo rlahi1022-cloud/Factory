@@ -32,6 +32,7 @@
 #define IDT_LIVE_UPDATE  1   // 3초: 시뮬레이션 데이터 생성
 #define IDT_STATUSBAR    2   // 1초: 상태바 시각 갱신
 #define IDT_RECONNECT    3   // 10초: 서버 재접속 시도
+#define IDT_HEARTBEAT    4   // v0.13.1: 10초마다 능동 heartbeat 송신 (서버 recv 타임아웃 방지)
 
 class CMainTabDlg : public CDialogEx {
     DECLARE_DYNAMIC(CMainTabDlg)
@@ -57,6 +58,15 @@ protected:
     // 접속 끊기면 false로 리셋되어 재접속 시 다시 로드.
     bool m_initialImagesLoaded = false;
 
+    // v0.14.5: 검사 제어(Start/Stop) 마지막 결과 메시지 — 상태바에 표시.
+    //   모달 MessageBox 대신 하단 상태바에 3~5초 정도 노출해 사용자에게 피드백.
+    CString m_inspectCtrlStatus;
+
+    // v0.14.6: 사용자가 명시적으로 로그아웃/종료했는지 여부.
+    //   true 면 UI 에 "미연결" 표시 허용. false(기본) 면 자동 재접속 루프를 진행 중이라
+    //   보고 항상 "연결" 로 표시 (micro-disconnect 가 사용자에게 노출되지 않게).
+    bool m_userDisconnected = false;
+
     // ── 탭 컨트롤 ────────────────────────────────────────────────────────
     CTabCtrl m_tab;         // 탭 UI 컨트롤
     int m_activeTab;        // 현재 활성 탭 인덱스 (0~4)
@@ -75,9 +85,13 @@ protected:
     int m_tick;     // 타이머 틱 카운터
 
     // ── 서버 상태 ────────────────────────────────────────────────────────
-    bool m_sv0;     // 학습 PC 상태 (true=정상, false=장애)
-    bool m_sv1;     // 추론 PC #1 상태
-    bool m_sv2;     // 추론 PC #2 상태
+    // v0.14.6: Unknown(회색) / Up(초록) / Down(빨강) 3-state.
+    //   서버가 HEALTH_PUSH(170) 로 실상태 알려주기 전까지는 Unknown 으로 표시해
+    //   "아직 모름" 을 시각적으로 명확히 함.
+    enum class ServerState { Unknown, Up, Down };
+    ServerState m_sv0;      // 학습 PC
+    ServerState m_sv1;      // 추론 PC #1
+    ServerState m_sv2;      // 추론 PC #2
 
     // ── 폰트 ─────────────────────────────────────────────────────────────
     CFont m_fNormal;  // 일반 글꼴 (9pt Tahoma)
@@ -103,7 +117,7 @@ protected:
     void DrawTitle(CDC& dc);    // 그래디언트 타이틀바 그리기
     void DrawToolbar(CDC& dc);  // 툴바 + 서버 LED 그리기
     void DrawStatus(CDC& dc);   // 상태바 (TCP, DB, 마지막 검사 시각)
-    void DrawLed(CDC& dc, int x, int y, bool ok, LPCTSTR lbl);  // LED 인디케이터
+    void DrawLed(CDC& dc, int x, int y, ServerState st, LPCTSTR lbl);  // 3-state LED
 
     // ── MFC 오버라이드 ───────────────────────────────────────────────────
     virtual BOOL OnInitDialog() override;

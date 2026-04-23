@@ -164,17 +164,19 @@ IDD_PAGE_HOME DIALOGEX 0, 0, 900, 490
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 9, "Tahoma", 0, 0, 0x1
 BEGIN
-    GROUPBOX        "Summary",             IDC_STATIC,       4,  4,890, 58
-    LTEXT           "Total",               IDC_STATIC,       14, 16, 60,  9
-    LTEXT           "0",                   IDC_STATIC_TOTAL, 14, 26, 60, 18, SS_CENTER
-    LTEXT           "OK",                  IDC_STATIC,       90, 16, 60,  9
-    LTEXT           "0",                   IDC_STATIC_OK,    90, 26, 60, 18, SS_CENTER
-    LTEXT           "NG",                  IDC_STATIC,      165, 16, 60,  9
-    LTEXT           "0",                   IDC_STATIC_NG,   165, 26, 60, 18, SS_CENTER
-    LTEXT           "Defect Rate",         IDC_STATIC,      240, 16, 60,  9
-    LTEXT           "0.00%",               IDC_STATIC_DEFECT_RATE, 240, 26, 60, 18, SS_CENTER
-    LTEXT           "Uptime",              IDC_STATIC,      315, 16, 60,  9
-    LTEXT           "98.7%",               IDC_STATIC_UPTIME,315, 26, 60, 18, SS_CENTER
+    // v0.14.7: Summary 컬럼 정렬 정리 + Uptime 제거.
+    //   - 라벨/값 모두 같은 x/width 로 정렬 (둘 다 SS_CENTER)
+    //   - 컬럼 간격 100px 고정, "Defect Rate" 라벨이 잘리지 않도록 width=90
+    //   - Uptime 라벨/값 삭제 (서버측 실 데이터 없음)
+    GROUPBOX        "Summary",             IDC_STATIC,       4,   4, 890, 58
+    LTEXT           "Total",               IDC_STATIC,      20,  16,  90,  9, SS_CENTER
+    LTEXT           "0",                   IDC_STATIC_TOTAL,20,  26,  90, 18, SS_CENTER
+    LTEXT           "OK",                  IDC_STATIC,     120,  16,  90,  9, SS_CENTER
+    LTEXT           "0",                   IDC_STATIC_OK,  120,  26,  90, 18, SS_CENTER
+    LTEXT           "NG",                  IDC_STATIC,     220,  16,  90,  9, SS_CENTER
+    LTEXT           "0",                   IDC_STATIC_NG,  220,  26,  90, 18, SS_CENTER
+    LTEXT           "Defect Rate",         IDC_STATIC,     320,  16,  90,  9, SS_CENTER
+    LTEXT           "0.00%",               IDC_STATIC_DEFECT_RATE, 320, 26, 90, 18, SS_CENTER
     GROUPBOX        "NG History",          IDC_STATIC,        4, 66,890,200
     CONTROL         "", IDC_LIST_NG, "SysListView32",
                     LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
@@ -218,9 +220,7 @@ BEGIN
     LTEXT    "Backbone:",             IDC_STATIC,         591, 146,  40,  10
     LTEXT    "",                      IDC_STATIC_S1_CFG_BACKBONE,633,146, 154, 10
 
-    PUSHBUTTON "Manual: OK",          IDC_BTN_S1_OK,      583, 180,  66, 14
-    PUSHBUTTON "Manual: NG",          IDC_BTN_S1_NG,      653, 180,  66, 14
-    PUSHBUTTON "Arduino Test",        IDC_BTN_S1_ARDUINO, 723, 180,  66, 14
+    // v0.14.7: Manual OK/NG/Arduino 테스트 버튼 제거 — 실서버 데이터만 사용.
 
     // ── 아두이노 상태바 ───────────────────────────────────────────────────
     GROUPBOX "Arduino - Station1",    IDC_STATIC,           4, 282, 890, 36
@@ -228,7 +228,9 @@ BEGIN
     LTEXT    "Standby",               IDC_STATIC_S1_LED,  130, 294, 220, 10
 
     // ── NG 이벤트 이력 (최대 10건, 세로 리스트, 스크롤) ─────────────────
-    // 각 행: [라벨][원본][히트맵][마스크] — CNgHistoryList가 소유드로우.
+    // v0.14.5: 텍스트 전용 컬럼 [ID|스테이션|시각|결과|점수] — CNgHistoryList가 소유드로우.
+    //  상단 3뷰(CCameraView/CHeatmapView/CPredMaskView)에서 실이미지 확인하므로
+    //  하단 이력은 메타정보만 표시 (종합현황 PageHome 의 NG 리스트와 동일 컨셉).
     LTEXT    "NG 이벤트 이력 (최근 10건)", IDC_STATIC,    10, 324,250, 10
     CONTROL  "", IDC_NG_LIST1, "STATIC",
              SS_BLACKFRAME | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP,
@@ -332,9 +334,10 @@ BEGIN
     LTEXT    "× NG 이벤트 이력",  IDC_STATIC,        542,224, 200,   9
     LTEXT    "금일 0건",           IDC_STATIC_S2_NG_COUNT,
              770,224, 126,   9
-    CONTROL  "", IDC_NG_LIST2,  "SysListView32",
-             LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS |
-             WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+    // v0.15.0: CNgHistoryList(CStatic 파생)로 교체 — 자체 헤더+스크롤 렌더링.
+    // 기존 SysListView32 → "STATIC" 으로 변경 (Station1 IDC_NG_LIST1과 동일 방식).
+    CONTROL  "", IDC_NG_LIST2,  "STATIC",
+             SS_BLACKFRAME | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP,
              542,236, 354, 198
 
     // ══════════════════════════════════════════════════════════════════

@@ -16,6 +16,7 @@
 // ============================================================================
 #include "handler/router.h"
 #include "Protocol.h"
+#include "monitor/connection_registry.h"
 
 #include "core/logger.h"
 
@@ -48,6 +49,34 @@ void Router::on_packet_received(const std::any& payload) {
 
     int protocol_no = extract_int(packet.json_payload, "protocol_no");
     auto no = static_cast<ProtocolNo>(protocol_no);
+
+    // v0.11.0: 연결에 server_type 태깅 (HealthChecker 동적 감지용)
+    //   station_id 가 있는 패킷 → "ai_inference_{N}"
+    //   학습 관련 패킷         → "ai_training"
+    //   HEALTH_PONG            → JSON 의 server_type 필드 그대로
+    // 이미 태깅되어 있으면 set_server_type 내부에서 noop — 매 패킷 호출 안전.
+    {
+        int st = extract_int(packet.json_payload, "station_id");
+        std::string stype;
+        if (no == ProtocolNo::TRAIN_PROGRESS || no == ProtocolNo::TRAIN_COMPLETE
+            || no == ProtocolNo::TRAIN_FAIL) {
+            stype = "ai_training";
+        } else if (no == ProtocolNo::HEALTH_PONG) {
+            std::string srv = extract_str(packet.json_payload, "server_type");
+            if (srv == "training")      stype = "ai_training";
+            else if (srv == "station1") stype = "ai_inference_1";
+            else if (srv == "station2") stype = "ai_inference_2";
+            else if (st == 1)           stype = "ai_inference_1";
+            else if (st == 2)           stype = "ai_inference_2";
+        } else if (st == 1) {
+            stype = "ai_inference_1";
+        } else if (st == 2) {
+            stype = "ai_inference_2";
+        }
+        if (!stype.empty() && !packet.remote_addr.empty()) {
+            ConnectionRegistry::instance().set_server_type(packet.remote_addr, stype);
+        }
+    }
 
     switch (no) {
         // ── NG 검사 결과 (Station1: 입고, Station2: 조립) ──────────────
@@ -113,6 +142,15 @@ void Router::on_packet_received(const std::any& payload) {
         case ProtocolNo::MODEL_RELOAD_RES:
             log_ai("모델 리로드 응답 수신");
             break;
+
+        // ── 검사 제어 응답 (v0.14.0) ────────────────────────────────────
+        case ProtocolNo::INFERENCE_CONTROL_RES: {
+            int st = extract_int(packet.json_payload, "station_id");
+            std::string action = extract_str(packet.json_payload, "action");
+            log_ai("검사 제어 응답 수신 | station=%d action=%s",
+                   st, action.c_str());
+            break;
+        }
 
         // ── 학습 진행률 (epoch/loss 등 실시간 업데이트) ────────────────
         case ProtocolNo::TRAIN_PROGRESS: {
