@@ -19,12 +19,19 @@ public:
                    const std::vector<BYTE>& heatmap,
                    const std::vector<BYTE>& pred_mask);
 
+    // v0.15.0: Station1과 동일하게 NG 이력 리스트 누적 (최대 10건)
+    void AddNgEntry(int id, double score, const CString& timeLabel,
+                    const std::vector<BYTE>& image,
+                    const std::vector<BYTE>& heatmap,
+                    const std::vector<BYTE>& pred_mask);
+
     // v0.14.3: 부모가 네트워크 핸들 주입 — Start/Stop 버튼용
     void SetNetworkClient(CNetworkClient* net) { m_net = net; }
 protected:
-    CCameraView  m_cam;
-    CHeatmapView m_heat;
-    CListCtrl    m_listYolo;
+    CCameraView     m_cam;
+    CHeatmapView    m_heat;
+    CListCtrl       m_listYolo;
+    CNgHistoryList  m_ngList;        // v0.15.0: NG 이력 리스트 (Station1과 동일)
     InspectionRecord m_last;
     CNetworkClient* m_net = nullptr;   // v0.14.3
     void Refresh();

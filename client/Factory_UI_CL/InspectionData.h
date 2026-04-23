@@ -15,8 +15,17 @@
 // Station2(조립): CapLoose~FillLow 사용 (YOLO11이 구체적 결함 분류)
 enum class EDefect { None=0, Anomaly, CapLoose, CapMissing, LabelTilt, LabelTorn, FillLow };
 
+// ── YOLO 디텍션 결과 1건 ─────────────────────────────────────────────────
+// Station2(조립) 전용. 서버 NG_PUSH JSON 의 detections[] 배열 원소에 대응.
+// v0.15.0 추가.
+struct YoloDetection {
+    CString className;        // 검출 클래스 이름 (예: "cap", "label", "liquid_level")
+    double  confidence = 0.0; // 신뢰도 (0.0 ~ 1.0)
+    bool    ok         = true; // 판정 (true=OK, false=NG)
+};
+
 // ── 검사 결과 레코드 ─────────────────────────────────────────────────────
-// 한 건의 검사 결과를 담는 구조체 (서버 수신 또는 시뮬레이션 생성)
+// 한 건의 검사 결과를 담는 구조체 (서버 수신)
 struct InspectionRecord {
     int     id;          // 검사 고유 ID
     int     station;     // 스테이션 번호 (1=입고, 2=조립)
@@ -25,6 +34,10 @@ struct InspectionRecord {
     double  score;       // 이상 점수 (0.0~1.0)
     EDefect defect;      // 결함 유형
     int     latencyMs;   // 추론 소요 시간 (ms)
+    // v0.15.0: Station2 YOLO 디텍션 결과 목록.
+    // Station1 레코드에서는 항상 비어 있음.
+    // OnNetNgPush 에서 서버 JSON detections[] 배열을 파싱하여 채운다.
+    std::vector<YoloDetection> detections;
 };
 
 // ── 사용자 세션 정보 ─────────────────────────────────────────────────────

@@ -86,6 +86,15 @@ public:
     // 주의: ExtractString은 따옴표 없는 값(true/false)을 잘못 파싱하므로 반드시 이것 사용
     static bool ExtractBool(const CStringA& json, const CStringA& key);
 
+    // ExtractSubArray: JSON 배열 필드의 index번째 객체({...}) 추출 (v0.15.0)
+    // 예) {"detections":[{"class":"cap","conf":0.94,"ok":true}, ...]}
+    //     index=0 → {"class":"cap","conf":0.94,"ok":true}
+    // 배열 없거나 index 초과 시 빈 문자열 반환. 1-depth 배열 전용.
+    static CStringA ExtractSubArray(const CStringA& json, const CStringA& key, int index);
+
+    // ExtractArraySize: JSON 배열 원소 개수 반환 (v0.15.0)
+    static int ExtractArraySize(const CStringA& json, const CStringA& key);
+
     // ExtractStringW: UTF-8 JSON에서 문자열 값을 Unicode CString으로 추출
     // ExtractString의 결과(CStringA)를 UTF-8 → CString 변환하여 반환
     // 한글 등 비-ASCII 문자열을 안전하게 표시하려면 반드시 이걸 사용해야 함
