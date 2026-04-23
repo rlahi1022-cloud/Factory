@@ -69,6 +69,7 @@ protected:
     void draw_bg(CDC& dc, CRect& rc);
     void draw_label(CDC& dc, CRect& rc);
     afx_msg void OnPaint();
+    afx_msg BOOL OnEraseBkgnd(CDC* pDC);  // 흰색 깜빡임 방지
     DECLARE_MESSAGE_MAP()
 };
 

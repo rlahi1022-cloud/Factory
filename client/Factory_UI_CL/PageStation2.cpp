@@ -34,10 +34,11 @@ CPageStation2::CPageStation2(CWnd* p) : CDialogEx(IDD_PAGE_STATION2,p), m_last{}
 }
 void CPageStation2::DoDataExchange(CDataExchange* pDX) {
     CDialogEx::DoDataExchange(pDX);
-    DDX_Control(pDX, IDC_CAM2_VIEW,     m_cam);
-    DDX_Control(pDX, IDC_HEATMAP2_VIEW, m_heat);
-    DDX_Control(pDX, IDC_LIST_YOLO,     m_listYolo);
-    DDX_Control(pDX, IDC_NG_LIST2,      m_ngList);  // v0.15.0: NG 이력 리스트
+    DDX_Control(pDX, IDC_CAM2_VIEW,      m_cam);
+    DDX_Control(pDX, IDC_HEATMAP2_VIEW,  m_heat);
+    DDX_Control(pDX, IDC_PREDMASK2_VIEW, m_mask);    // v0.15.0: 검정 배경 통일
+    DDX_Control(pDX, IDC_LIST_YOLO,      m_listYolo);
+    DDX_Control(pDX, IDC_NG_LIST2,       m_ngList);  // v0.15.0: NG 이력 리스트
 }
 BOOL CPageStation2::OnInitDialog() {
     CDialogEx::OnInitDialog();
@@ -67,6 +68,7 @@ void CPageStation2::Tick() { m_cam.Tick(); }
 void CPageStation2::Refresh() {
     m_cam.SetInspection(2, m_last.isNG, m_last.score, m_last.defect);
     m_heat.SetActive(m_last.isNG);
+    m_mask.SetMask(m_last.isNG);  // v0.15.0: NG 시 마스크 활성화 (검정 배경 통일)
     CWnd* w;
     // v0.14.6: s 를 함수 최상단에 선언 — 아래 YOLO 리스트 루프에서도 재사용.
     //   이전 편집에서 if-블록 안에만 선언해 "식별자 s 를 찾을 수 없음" 컴파일 에러 발생.
@@ -122,12 +124,12 @@ void CPageStation2::OnBtnRework()
 }
 
 // SetImages: MainTabDlg::OnNetNgImage 에서 Station2로 라우팅된 이미지 주입.
-// Station2는 pred_mask 뷰가 없어 해당 인자는 사용하지 않음 (Station1 전용 패널).
 void CPageStation2::SetImages(const std::vector<BYTE>& image,
                               const std::vector<BYTE>& heatmap,
-                              const std::vector<BYTE>& /*pred_mask*/) {
+                              const std::vector<BYTE>& pred_mask) {
     m_cam.SetImage(image);
     m_heat.SetImage(heatmap);
+    m_mask.SetImage(pred_mask);  // v0.15.0: Pred Mask 뷰에도 주입
 }
 
 // ============================================================================

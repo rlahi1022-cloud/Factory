@@ -184,6 +184,7 @@ void CHeatmapView::OnPaint() {
 IMPLEMENT_DYNAMIC(CPredMaskView, CStatic)
 BEGIN_MESSAGE_MAP(CPredMaskView, CStatic)
     ON_WM_PAINT()
+    ON_WM_ERASEBKGND()
 END_MESSAGE_MAP()
 
 CPredMaskView::CPredMaskView()
@@ -224,6 +225,8 @@ void CPredMaskView::OnPaint() {
     dc.BitBlt(0, 0, rc.Width(), rc.Height(), &mem, 0, 0, SRCCOPY);
     mem.SelectObject(p_old);
 }
+
+BOOL CPredMaskView::OnEraseBkgnd(CDC* /*pDC*/) { return TRUE; }
 
 void CPredMaskView::draw_bg(CDC& dc, CRect& rc) {
     dc.FillSolidRect(&rc, RGB(17, 17, 17));
