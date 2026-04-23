@@ -48,16 +48,12 @@ protected:
     CNetworkClient* m_net = nullptr;
     std::vector<InspectionRecord> m_recs;
 
-    struct TPoint { CString lbl; double s1, s2; int lat; };
-    struct PItem  { CString name; int cnt; };
-    std::vector<TPoint> m_trend;
-    std::vector<PItem>  m_pareto;
+    // v0.16.0: 이력 테이블 (차트 3개 제거 후 대체)
+    CListCtrl m_listHistory;
+    void RefreshList();  // m_recs → m_listHistory 갱신
 
-    void Rebuild();
-    void DrawTrend(CDC& dc, CRect rc);
-    void DrawPareto(CDC& dc, CRect rc);
-    void DrawLatency(CDC& dc, CRect rc);
-    void DrawGrid(CDC& dc, CRect rc, int rows, int cols);
+    // v0.16.0: 차트 관련 구조체/멤버/함수 제거
+    // (TPoint, PItem, m_trend, m_pareto, DrawTrend, DrawPareto, DrawLatency, DrawGrid)
 
     virtual BOOL OnInitDialog() override;
     virtual void DoDataExchange(CDataExchange* pDX) override;
