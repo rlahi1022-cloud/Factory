@@ -14,12 +14,12 @@ public:
     enum { IDD = IDD_PAGE_STATION2 };
     void Update(const std::vector<InspectionRecord>& recs);
     void Tick();
-    // SetImages: 서버 NG_PUSH 바이너리 주입 (원본/히트맵만 사용, pred_mask는 Station2 미해당)
+    // SetImages: 서버 NG_PUSH 바이너리 주입 (원본/히트맵/pred_mask 모두 사용)
     void SetImages(const std::vector<BYTE>& image,
                    const std::vector<BYTE>& heatmap,
                    const std::vector<BYTE>& pred_mask);
 
-    // v0.15.0: Station1과 동일하게 NG 이력 리스트 누적 (최대 10건)
+    // v0.15.0: NG 이력 리스트 누적
     void AddNgEntry(int id, double score, const CString& timeLabel,
                     const std::vector<BYTE>& image,
                     const std::vector<BYTE>& heatmap,
@@ -30,8 +30,9 @@ public:
 protected:
     CCameraView     m_cam;
     CHeatmapView    m_heat;
+    CPredMaskView   m_mask;      // v0.15.0: Pred Mask 뷰 (검정 배경 통일)
     CListCtrl       m_listYolo;
-    CNgHistoryList  m_ngList;        // v0.15.0: NG 이력 리스트 (Station1과 동일)
+    CNgHistoryList  m_ngList;    // v0.15.0: NG 이력 리스트
     InspectionRecord m_last;
     CNetworkClient* m_net = nullptr;   // v0.14.3
     void Refresh();
