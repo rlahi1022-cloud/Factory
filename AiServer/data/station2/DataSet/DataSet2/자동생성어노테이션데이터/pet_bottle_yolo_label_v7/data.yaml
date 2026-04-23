@@ -1,9 +1,13 @@
-# YOLO11 dataset config (PET bottle QC)
-path: .
+# path에는 Step 1에서 복사한 진짜 절대 경로를 넣어주세요.
+path: /home/lms/바탕화면/ai_project/code/AiServer/data/station2/DataSet/DataSet2/자동생성어노테이션데이터/pet_bottle_yolo_label_v7
+# 2. train/val: images 폴더 안에 분리되어 있으므로 아래와 같이 설정
 train: images/train
 val: images/val
+test: images/test
 
+# 3. 클래스 및 수량 설정
 names:
   0: cap
   1: label
-  2: fill_level
+  2: liquid_level
+nc: 3
