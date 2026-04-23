@@ -206,7 +206,6 @@
     <ClCompile Include="PageStation1.cpp" />
     <ClCompile Include="PageStation2.cpp" />
     <ClCompile Include="PacketBuilder.cpp" />
-    <ClCompile Include="PageStats.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
     </ClCompile>
@@ -223,7 +222,6 @@
     <ClInclude Include="PageModel.h" />
     <ClInclude Include="PageStation1.h" />
     <ClInclude Include="PageStation2.h" />
-    <ClInclude Include="PageStats.h" />
     <ClInclude Include="ClientConfig.h" />
     <ClInclude Include="ClientProtocol.h" />
     <ClInclude Include="NetworkClient.h" />

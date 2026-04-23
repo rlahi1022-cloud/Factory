@@ -66,9 +66,6 @@
     <ClCompile Include="PageHome.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
-    <ClCompile Include="PageStats.cpp">
-      <Filter>소스 파일</Filter>
-    </ClCompile>
     <ClCompile Include="PageModel.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
@@ -84,9 +81,6 @@
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="pch.h">
-      <Filter>헤더 파일</Filter>
-    </ClInclude>
-    <ClInclude Include="PageStats.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
     <ClInclude Include="PageStation2.h">
