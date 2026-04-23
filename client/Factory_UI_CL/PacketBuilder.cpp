@@ -159,6 +159,9 @@ CStringA CPacketBuilder::ExtractString(const CStringA& json, const CStringA& key
     int lastQuote = -1;
     for (int i = firstQuote + 1; i < jsonLen; ++i) {
         if (json[i] == '"') {
+            // 직전 위치에서부터 거꾸로 거슬러 올라가며 `\` 개수(bsCount)를 센다.
+            //   `\\"` → bsCount=2 (짝수) → 이 `"` 는 "리터럴 백슬래시 + 종료 따옴표"
+            //   `\"`  → bsCount=1 (홀수) → 이 `"` 는 이스케이프된 따옴표 (문자열 내부)
             int bsCount = 0;
             for (int j = i - 1; j >= firstQuote + 1 && json[j] == '\\'; --j) bsCount++;
             if ((bsCount % 2) == 0) {

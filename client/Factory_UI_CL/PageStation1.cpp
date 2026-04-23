@@ -242,6 +242,9 @@ void CPageStation1::UpdateModelInfo(const std::string& json)
 {
     CStringA jsonA(json.c_str());
 
+    // 경량 JSON 파서 — PopulateNgHistoryFromJson 과 동일 전략.
+    //   nlohmann/json 의존성을 들이지 않기 위해 "models":[...] 배열만 수동 범위 추출.
+    //   배열 원소는 1-depth 이고 필드가 기본형(문자열/정수) 뿐이라 `{`/`}` 매칭만으로 충분.
     int arrStart = jsonA.Find("\"models\"");
     if (arrStart < 0) return;
     int arrS = jsonA.Find('[', arrStart);
@@ -250,12 +253,14 @@ void CPageStation1::UpdateModelInfo(const std::string& json)
 
     CStringA arr = jsonA.Mid(arrS + 1, arrE - arrS - 1);
 
-    // station_id=1 && is_active=1 인 최초 모델만 사용.
+    // 배열을 순회하면서 station_id=1 && is_active=1 인 **최초** 모델만 채택.
+    //   동일 station 에 활성 모델이 하나라는 제약을 신뢰 (TRAIN_COMPLETE 시 old 는
+    //   is_active=0 으로 내려감). 둘 이상 active 가 있으면 먼저 만난 것만 표시.
     CStringA modelType, version;
     int pos = 0;
     while (pos < arr.GetLength()) {
-        int os = arr.Find('{', pos);
-        int oe = arr.Find('}', os);
+        int os = arr.Find('{', pos);   // 객체 시작 `{`
+        int oe = arr.Find('}', os);    // 객체 종료 `}`  (1-depth 라 중첩 걱정 없음)
         if (os < 0 || oe < 0) break;
         CStringA obj = arr.Mid(os, oe - os + 1);
 
@@ -264,7 +269,7 @@ void CPageStation1::UpdateModelInfo(const std::string& json)
         if (sid == 1 && active == 1) {
             modelType = CPacketBuilder::ExtractString(obj, "model_type");
             version   = CPacketBuilder::ExtractString(obj, "version");
-            break;
+            break;  // 첫 매칭만 사용 — 이후 원소는 과거 비활성 버전
         }
         pos = oe + 1;
     }
