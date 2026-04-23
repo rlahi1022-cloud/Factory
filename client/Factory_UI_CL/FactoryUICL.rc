@@ -181,10 +181,11 @@ BEGIN
     LTEXT           "0",                   IDC_STATIC_NG,  220,  26,  90, 18, SS_CENTER
     LTEXT           "Defect Rate",         IDC_STATIC,     320,  16,  90,  9, SS_CENTER
     LTEXT           "0.00%",               IDC_STATIC_DEFECT_RATE, 320, 26, 90, 18, SS_CENTER
-    GROUPBOX        "NG History",          IDC_STATIC,        4, 66,890,200
-    CONTROL         "", IDC_LIST_NG, "SysListView32",
-                    LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
-                    10, 78,876,182
+    GROUPBOX        "NG History",          IDC_STATIC,        4, 66, 890, 420
+    // v0.16.0: SysListView32 → STATIC (CNgHistoryList 자체렌더링, 검정배경)
+    CONTROL         "", IDC_LIST_NG, "STATIC",
+                    SS_BLACKFRAME | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP,
+                    4, 78, 892, 406
 END
 
 /////////////////////////////////////////////////////////////////////////////
@@ -233,8 +234,10 @@ BEGIN
     PUSHBUTTON "검사 중지",           IDC_BTN_S1_STOP,    689, 180, 100, 16
 
     // ── 아두이노 상태바 ───────────────────────────────────────────────────
+    // v0.16.0: Serial COMx 는 PageStation1::OnInitDialog 에서 실제 포트 탐색 후 동적 갱신
     GROUPBOX "Arduino - Station1",    IDC_STATIC,           4, 282, 890, 36
-    LTEXT    "Serial OK (COM3)",      IDC_STATIC,          12, 294, 110, 10
+    LTEXT    "Serial",                IDC_STATIC,          12, 294,  28, 10
+    LTEXT    "연결 확인 중...",        IDC_STATIC_S1_SERIAL, 42, 294,  80, 10
     LTEXT    "Standby",               IDC_STATIC_S1_LED,  130, 294, 220, 10
 
     // ── NG 이벤트 이력 (최대 10건, 세로 리스트, 스크롤) ─────────────────
@@ -284,21 +287,19 @@ BEGIN
     // ══════════════════════════════════════════════════════════════════
     // [A] 좌측: Station 그룹박스 + 이미지 3분할
     // ══════════════════════════════════════════════════════════════════
-    GROUPBOX "Station 2 - Assembly (YOLO11 + PatchCore)", IDC_STATIC,
+    GROUPBOX "Station 2 - Assembly (YOLO11)", IDC_STATIC,
              4, 4, 534, 430
 
     // 레이블 (y=18)
-    LTEXT    "이미지",          IDC_STATIC,  8,  18, 172,  9
-    LTEXT    "Anomaly Heatmap", IDC_STATIC, 184, 18, 172,  9
-    LTEXT    "Pred Mask",       IDC_STATIC, 360, 18, 172,  9
+    // v0.16.0: 2분할 뷰 — Pred Mask 패널 제거, 나머지 확대
+    LTEXT    "이미지",   IDC_STATIC,  8,  18, 262,  9
+    LTEXT    "YOLOv11", IDC_STATIC, 278, 18, 262,  9
 
-    // 이미지 뷰 3개 (y=28, h=390)
-    CONTROL  "", IDC_CAM2_VIEW,      "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,
-               8, 28, 172, 390
-    CONTROL  "", IDC_HEATMAP2_VIEW,  "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,
-             184, 28, 172, 390
-    CONTROL  "", IDC_PREDMASK2_VIEW, "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,
-             360, 28, 172, 390
+    // 이미지 뷰 2개 (y=28, h=390)
+    CONTROL  "", IDC_CAM2_VIEW,     "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,
+               8, 28, 262, 390
+    CONTROL  "", IDC_HEATMAP2_VIEW, "STATIC", SS_BLACKFRAME | WS_CHILD | WS_VISIBLE,
+             278, 28, 262, 390
 
     // OK/NG 결과 바 (y=422, h=14) — PageStation2.cpp 에서 배경색 변경
     LTEXT    "OK", IDC_STATIC_S2_RESULT,  8, 422, 524, 14, SS_CENTER
@@ -307,68 +308,40 @@ BEGIN
     // [B] 우측: 정보 패널 (x=542, w=354)
     // ══════════════════════════════════════════════════════════════════
 
-    // [B-1] YOLO11 Detections (y=4, h=80)
-    GROUPBOX "YOLO11 Detections",  IDC_STATIC,       542,  4, 354,  80
-    CONTROL  "", IDC_LIST_YOLO,  "SysListView32",
-             LVS_REPORT | LVS_SINGLESEL | WS_BORDER | WS_CHILD | WS_VISIBLE,
-             546, 16, 346,  62
+    // v0.16.0: [B-1] YOLO11 Detections 제거 (사용자 요청)
 
-    // [B-2] PatchCore Label (y=88, h=26)
-    GROUPBOX "PatchCore Label",    IDC_STATIC,       542, 88, 354,  26
+    // [B-2] YOLOv11 Result (y=4, h=26) — v0.16.0: YOLO Detections 제거로 위로 이동
+    GROUPBOX "YOLOv11 Result",     IDC_STATIC,       542,  4, 354,  26
     LTEXT    "PatchCore 이상 점수: 0.00", IDC_STATIC_S2_SCORE,
-             548, 98, 342,  10
+             548, 14, 342,  10
 
-    // [B-3] Final Result (y=118, h=50)
-    GROUPBOX "Final Result",       IDC_STATIC,       542,118, 354,  50
+    // [B-3] Final Result (y=34, h=50) — YOLO Detections 제거로 위로 이동
+    GROUPBOX "Final Result",       IDC_STATIC,       542, 34, 354,  50
     LTEXT    "OK",                 IDC_STATIC_S2_RESULT_PANEL,
-             548,130, 342,  32, SS_CENTER
+             548, 46, 342,  32, SS_CENTER
 
-    // [B-4] 액션 버튼 (y=172)
-    PUSHBUTTON "Select Defect",    IDC_BTN_S2_DEFECT, 542,172, 100,  14
-    PUSHBUTTON "Rework",           IDC_BTN_S2_REWORK, 646,172,  80,  14
+    // v0.16.0: [B-4] Select Defect / Rework 버튼 제거
+    // v0.16.0: [B-5] 이미지 뷰 카테고리 버튼 제거 (전체/YOLO/PatchCore)
+    // v0.16.0: [B-6] 카테고리 설명 레이블 제거
 
-    // [B-5] 구분선 (y=190)
-    LTEXT    "", IDC_STATIC,                           542,190, 354,   1, SS_SUNKEN
+    // 검사 시작/중지 버튼 (y=88으로 위로 이동)
+    PUSHBUTTON "검사 시작",         IDC_BTN_S2_START,   542, 88, 100, 16
+    PUSHBUTTON "검사 중지",         IDC_BTN_S2_STOP,    646, 88, 100, 16
 
-    // [B-6] 카테고리 버튼 (y=194)
-    LTEXT    "이미지 뷰:",         IDC_STATIC,        542,197,  48,  12
-    PUSHBUTTON "전체",             IDC_BTN_S2_CAT_ALL, 592,194,  46,  14
-    PUSHBUTTON "YOLO",             IDC_BTN_S2_CAT_YOLO,642,194,  46,  14
-    PUSHBUTTON "PatchCore",        IDC_BTN_S2_CAT_PC,  692,194,  72,  14
-
-    LTEXT    "현재 검사 결과 이미지 표시 중", IDC_STATIC_S2_CAT_DESC,
-             542,212, 354,   9
-
-    // [B-7] NG 이벤트 이력 리스트 (y=224~430)
-    //  컬럼: 시각(54) | 분류(44) | 불량 유형(160) | 점수(44)
-    LTEXT    "× NG 이벤트 이력",  IDC_STATIC,        542,224, 200,   9
+    // [B-4] NG 이벤트 이력 리스트 (y=108, 높이 = 이미지뷰 끝 418 - y=120 = 298)
+    LTEXT    "× NG 이벤트 이력",  IDC_STATIC,        542,108, 200,   9
     LTEXT    "금일 0건",           IDC_STATIC_S2_NG_COUNT,
-             770,224, 126,   9
-    CONTROL  "", IDC_NG_LIST2,  "SysListView32",
-             LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS |
-             WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
-             542,236, 354, 198
-
-    // v0.15.2: 2공정 검사 Start/Stop 버튼 (INSPECT_CONTROL_REQ station_filter=2)
-    //   Station1 과 동일 패턴. DEFECT/REWORK 자리 상단(y=154) 에 가로 2개.
-    //   핸들러: CPageStation2::OnBtnS2Start / OnBtnS2Stop
-    PUSHBUTTON "검사 시작",         IDC_BTN_S2_START,   542, 154, 100, 16
-    PUSHBUTTON "검사 중지",         IDC_BTN_S2_STOP,    646, 154, 100, 16
+             770,108, 126,   9
+    CONTROL  "", IDC_NG_LIST2,  "STATIC",
+             SS_BLACKFRAME | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP,
+             542,120, 354, 298
 
     // ══════════════════════════════════════════════════════════════════
-    // [C] 아두이노 상태바 (y=438, h=24, 전체 폭)
-    // ══════════════════════════════════════════════════════════════════
+    // v0.16.0: Arduino 상태바 간소화 — Serial COMx 동적 표시만 유지
+    // (상태/마지막신호/Solenoid/Sensor 제거 — 하드코딩 미사용)
     GROUPBOX "Arduino - Station2", IDC_STATIC,          4,438, 892,  26
-    LTEXT    "Serial",             IDC_STATIC,           10,450,  28,   9
-    LTEXT    "● OK (COM5)",       IDC_STATIC_S2_SERIAL,  40,450,  70,   9
-    LTEXT    "상태",               IDC_STATIC,           118,450,  24,   9
-    LTEXT    "대기중",             IDC_STATIC_S2_LED,    144,450,  50,   9
-    LTEXT    "마지막 신호",        IDC_STATIC,           202,450,  52,   9
-    LTEXT    "--:--:--",           IDC_STATIC_S2_LAST,   256,450,  52,   9
-    LTEXT    "Solenoid",           IDC_STATIC,           316,450,  40,   9
-    LTEXT    "OFF",                IDC_STATIC_S2_SOL,    358,450,  30,   9
-    LTEXT    "Sensor",             IDC_STATIC,           396,450,  32,   9
-    LTEXT    "● Ready",           IDC_STATIC_S2_SENS,   430,450,  60,   9
+    LTEXT    "Serial",             IDC_STATIC,          10,450,  28,   9
+    LTEXT    "연결 확인 중...",    IDC_STATIC_S2_SERIAL, 40,450, 100,   9
 END
 
 /////////////////////////////////////////////////////////////////////////////

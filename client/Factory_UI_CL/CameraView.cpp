@@ -184,7 +184,6 @@ void CHeatmapView::OnPaint() {
 IMPLEMENT_DYNAMIC(CPredMaskView, CStatic)
 BEGIN_MESSAGE_MAP(CPredMaskView, CStatic)
     ON_WM_PAINT()
-    ON_WM_ERASEBKGND()
 END_MESSAGE_MAP()
 
 CPredMaskView::CPredMaskView()
@@ -225,8 +224,6 @@ void CPredMaskView::OnPaint() {
     dc.BitBlt(0, 0, rc.Width(), rc.Height(), &mem, 0, 0, SRCCOPY);
     mem.SelectObject(p_old);
 }
-
-BOOL CPredMaskView::OnEraseBkgnd(CDC* /*pDC*/) { return TRUE; }
 
 void CPredMaskView::draw_bg(CDC& dc, CRect& rc) {
     dc.FillSolidRect(&rc, RGB(17, 17, 17));
@@ -315,6 +312,32 @@ void CNgHistoryList::AddEntry(int id, int stationId, double score,
         }
     }
     m_entries.push_front(e);  // deque: push_front 로 맨 앞 추가
+    while (static_cast<int>(m_entries.size()) > m_maxEntries) {
+        m_entries.pop_back();
+    }
+    ::LeaveCriticalSection(&m_cs);
+    UpdateScrollInfo();
+    Invalidate();
+}
+
+// v0.16.0: Entry 직접 주입 오버로드 — Station2 YOLO 디텍션 포함
+void CNgHistoryList::AddEntry(int /*id*/, int /*stationId*/, double /*score*/,
+                              const CString& /*timeLabel*/,
+                              const std::vector<BYTE>& /*img*/,
+                              const std::vector<BYTE>& /*heat*/,
+                              const std::vector<BYTE>& /*mask*/,
+                              const Entry& entryOverride) {
+    ::EnterCriticalSection(&m_cs);
+    for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
+        if (it->id == entryOverride.id) {
+            *it = entryOverride;
+            ::LeaveCriticalSection(&m_cs);
+            UpdateScrollInfo();
+            Invalidate();
+            return;
+        }
+    }
+    m_entries.push_front(entryOverride);
     while (static_cast<int>(m_entries.size()) > m_maxEntries) {
         m_entries.pop_back();
     }
@@ -413,13 +436,18 @@ BOOL CNgHistoryList::OnMouseWheel(UINT /*fFlags*/, short zDelta, CPoint /*pt*/) 
 }
 
 // v0.14.5: 컬럼 폭/오프셋 상수 — 헤더와 데이터 행에서 공용
+// v0.16.0b: 876px 너비 꽉 채우도록 확대
+// 합계: 8 + 80+80+110+60+70+100+80+60 = 648 → 여백 포함 876px 활용
 namespace {
-    constexpr int kPad      = 8;
-    constexpr int kColIdW   = 60;
-    constexpr int kColStaW  = 70;
-    constexpr int kColTimeW = 90;
-    constexpr int kColResW  = 60;
-    constexpr int kColScoreW= 70;
+    constexpr int kPad       = 8;
+    constexpr int kColIdW    = 80;
+    constexpr int kColStaW   = 80;
+    constexpr int kColTimeW  = 110;
+    constexpr int kColResW   = 60;
+    constexpr int kColScoreW = 70;
+    constexpr int kColDetClsW  = 100;  // v0.16.0: YOLO 클래스
+    constexpr int kColDetConfW = 80;   // v0.16.0: YOLO 신뢰도
+    constexpr int kColDetOkW   = 60;   // v0.16.0: YOLO 판정
 }
 
 void CNgHistoryList::DrawHeader(CDC& dc, const CRect& rc) {
@@ -432,7 +460,7 @@ void CNgHistoryList::DrawHeader(CDC& dc, const CRect& rc) {
 
     dc.SetBkMode(TRANSPARENT);
     dc.SetTextColor(RGB(210, 210, 220));
-    CFont f; f.CreatePointFont(80, _T("Tahoma"));
+    CFont f; f.CreatePointFont(110, _T("Tahoma")); // v0.16.0b: 90 → 110 (글자 큰 화면)
     CFont* p_f = dc.SelectObject(&f);
 
     int x = rc.left + kPad;
@@ -446,6 +474,10 @@ void CNgHistoryList::DrawHeader(CDC& dc, const CRect& rc) {
     cell(_T("시각"),     kColTimeW);
     cell(_T("결과"),     kColResW);
     cell(_T("점수"),     kColScoreW);
+    // v0.16.0: Station2 YOLO 디텍션 컬럼
+    cell(_T("클래스"),   kColDetClsW);
+    cell(_T("신뢰도"),   kColDetConfW);
+    cell(_T("판정"),     kColDetOkW);
     dc.SelectObject(p_f);
 }
 
@@ -458,7 +490,7 @@ void CNgHistoryList::DrawRow(CDC& dc, const Entry& e, const CRect& rowRc) {
     dc.SelectObject(p_old);
 
     dc.SetBkMode(TRANSPARENT);
-    CFont f; f.CreatePointFont(80, _T("Tahoma"));
+    CFont f; f.CreatePointFont(110, _T("Tahoma")); // v0.16.0b: 90 → 110 (글자 큰 화면)
     CFont* p_f = dc.SelectObject(&f);
 
     CString s;
@@ -475,6 +507,17 @@ void CNgHistoryList::DrawRow(CDC& dc, const Entry& e, const CRect& rowRc) {
                                         cell(RGB(170, 190, 220), e.time,       kColTimeW);
                                         cell(RGB(255, 130, 130), _T("NG"),     kColResW);
     s.Format(_T("%.2f"), e.score);      cell(RGB(240, 220, 160), s,            kColScoreW);
+    // v0.16.0: YOLO 디텍션 컬럼 — Station1은 비어있으면 "-" 표시
+    if (!e.detClass.IsEmpty()) {
+                                        cell(RGB(160, 220, 180), e.detClass,   kColDetClsW);
+        s.Format(_T("%.2f"), e.detConf);cell(RGB(160, 220, 180), s,            kColDetConfW);
+                                        cell(e.detOk ? RGB(100,200,100) : RGB(255,100,100),
+                                             e.detOk ? _T("OK") : _T("NG"),   kColDetOkW);
+    } else {
+                                        cell(RGB(100, 100, 110), _T("-"),      kColDetClsW);
+                                        cell(RGB(100, 100, 110), _T("-"),      kColDetConfW);
+                                        cell(RGB(100, 100, 110), _T("-"),      kColDetOkW);
+    }
 
     dc.SelectObject(p_f);
 }

@@ -64,6 +64,7 @@
 #define IDC_BTN_S1_NG                   2205
 #define IDC_BTN_S1_ARDUINO              2206
 #define IDC_STATIC_S1_LED               2207
+#define IDC_STATIC_S1_SERIAL            2208    // v0.16.0: "● OK (COMx)" — 동적 갱신
 #define IDC_BTN_S1_START                1201    // v0.14.3: 1공정 검사 시작 (INSPECT_CONTROL_REQ filter=1 resume)
 #define IDC_BTN_S1_STOP                 1202    // v0.14.3: 1공정 검사 중지 (filter=1 pause)
 
@@ -73,25 +74,20 @@
 #define IDC_LIST_YOLO                   2302
 #define IDC_STATIC_S2_RESULT            2303    // 좌측 이미지 하단 OK/NG 바
 #define IDC_STATIC_S2_SCORE             2304
-#define IDC_BTN_S2_DEFECT               2305
-#define IDC_BTN_S2_REWORK               2306
+// v0.16.0: IDC_BTN_S2_DEFECT(2305), IDC_BTN_S2_REWORK(2306) 제거 — Select Defect/Rework 버튼 삭제
 #define IDC_STATIC_S2_LED               2307    // 아두이노 상태 "대기중"/"검사중"
+#define IDC_STATIC_S2_SERIAL            2308    // v0.16.0: "● OK (COMx)" — 동적 갱신
 #define IDC_BTN_S2_START                1203    // v0.14.3: 2공정 검사 시작
 #define IDC_BTN_S2_STOP                 1204    // v0.14.3: 2공정 검사 중지
 
 // ── 스테이션 2 (v0.14 신규) ───────────────────────────────────────────────
-#define IDC_PREDMASK2_VIEW              2310    // Pred Mask 뷰 (3번째 이미지)
+// v0.16.0: IDC_PREDMASK2_VIEW(2310) 제거 — Pred Mask 패널 삭제
 #define IDC_STATIC_S2_RESULT_PANEL      2313    // 우측 Final Result 텍스트
-#define IDC_BTN_S2_CAT_ALL              2314    // [전체] 버튼
-#define IDC_BTN_S2_CAT_YOLO             2315    // [YOLO] 버튼
-#define IDC_BTN_S2_CAT_PC               2316    // [PatchCore] 버튼
-#define IDC_STATIC_S2_CAT_DESC          2317    // 카테고리 설명 레이블
-#define IDC_NG_LIST2                    2318    // NG 이벤트 이력 CListCtrl
+// v0.16.0: IDC_BTN_S2_CAT_ALL(2314), IDC_BTN_S2_CAT_YOLO(2315), IDC_BTN_S2_CAT_PC(2316) 제거 — 이미지 뷰 버튼 삭제
+// v0.16.0: IDC_STATIC_S2_CAT_DESC(2317) 제거 — 카테고리 설명 레이블 삭제
+#define IDC_NG_LIST2                    2318    // NG 이벤트 이력 CNgHistoryList
 #define IDC_STATIC_S2_NG_COUNT          2319    // "금일 N건" 레이블
-#define IDC_STATIC_S2_SERIAL            2324    // "● OK (COM5)"
-#define IDC_STATIC_S2_LAST              2325    // 마지막 신호 시각
-#define IDC_STATIC_S2_SOL               2326    // Solenoid ON/OFF
-#define IDC_STATIC_S2_SENS              2327    // Sensor Ready/Fault
+// v0.16.0: IDC_STATIC_S2_SERIAL(2324), IDC_STATIC_S2_LAST(2325), IDC_STATIC_S2_SOL(2326), IDC_STATIC_S2_SENS(2327) 제거 — Arduino 상태바 삭제
 #define IDC_LIST_HISTORY                2330    // 이력 조회용 리스트 컨트롤 ID 추가
 
 // ── 통계 페이지 ───────────────────────────────────────────────────────────

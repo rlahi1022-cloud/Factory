@@ -9,9 +9,9 @@
 //   MainTabDlg 가 STATION2_NG(1002) 수신 → SetImages(원본/히트맵/마스크)
 //                                       → UpdateDetections(cap_ok, label_ok, fill_ok)
 //
-// 수동 버튼:
-//   OnBtnDefect/OnBtnRework — 로컬 더미 결과 주입(개발/데모용).
-//   실제 환경에서는 버튼 없이 추론서버의 결과만 표시됨.
+
+
+
 // ============================================================================
 #include "pch.h"
 #include "PageStation2.h"
@@ -20,8 +20,6 @@
 
 IMPLEMENT_DYNAMIC(CPageStation2, CDialogEx)
 BEGIN_MESSAGE_MAP(CPageStation2, CDialogEx)
-    ON_BN_CLICKED(IDC_BTN_S2_DEFECT, OnBtnDefect)
-    ON_BN_CLICKED(IDC_BTN_S2_REWORK, OnBtnRework)
     ON_BN_CLICKED(IDC_BTN_S2_START,  OnBtnS2Start)   // v0.14.3 2공정 시작
     ON_BN_CLICKED(IDC_BTN_S2_STOP,   OnBtnS2Stop)    // v0.14.3 2공정 중지
 END_MESSAGE_MAP()
@@ -36,23 +34,19 @@ void CPageStation2::DoDataExchange(CDataExchange* pDX) {
     CDialogEx::DoDataExchange(pDX);
     DDX_Control(pDX, IDC_CAM2_VIEW,      m_cam);
     DDX_Control(pDX, IDC_HEATMAP2_VIEW,  m_heat);
-    DDX_Control(pDX, IDC_PREDMASK2_VIEW, m_mask);    // v0.15.0: 검정 배경 통일
-    DDX_Control(pDX, IDC_LIST_YOLO,      m_listYolo);
     DDX_Control(pDX, IDC_NG_LIST2,       m_ngList);  // v0.15.0: NG 이력 리스트
+    // v0.16.0: IDC_LIST_YOLO 제거 — YOLO Detections 패널 삭제
 }
 BOOL CPageStation2::OnInitDialog() {
     CDialogEx::OnInitDialog();
-    m_listYolo.SetExtendedStyle(LVS_EX_FULLROWSELECT|LVS_EX_GRIDLINES);
-    m_listYolo.InsertColumn(0,_T("클래스"), LVCFMT_LEFT,80);
-    m_listYolo.InsertColumn(1,_T("신뢰도"), LVCFMT_LEFT,60);
-    m_listYolo.InsertColumn(2,_T("판정"),   LVCFMT_LEFT,50);
+    // v0.16.0: m_listYolo 초기화 제거 — YOLO Detections 패널 삭제
 
     // v0.14.3: Start/Stop 버튼 초기 상태 — 기본 검사중 가정
     if (CWnd* w = GetDlgItem(IDC_BTN_S2_START)) w->EnableWindow(FALSE);
     if (CWnd* w = GetDlgItem(IDC_BTN_S2_STOP))  w->EnableWindow(TRUE);
 
-    // v0.15.2.1: 사용자 요청으로 DEFECT/REWORK 버튼 복원 — 이전 커밋에서 숨겼던 것 복구.
-    //   핸들러는 여전히 "서버 REWORK_REQ 프로토콜 확정 후 구현" 안내 팝업 상태.
+    // v0.16.0: Arduino Serial 포트 동적 탐색 — Station1과 동일 방식
+    UpdateSerialPortLabel();
 
     Refresh(); return TRUE;
 }
@@ -71,7 +65,6 @@ void CPageStation2::Tick() { m_cam.Tick(); }
 void CPageStation2::Refresh() {
     m_cam.SetInspection(2, m_last.isNG, m_last.score, m_last.defect);
     m_heat.SetActive(m_last.isNG);
-    m_mask.SetMask(m_last.isNG);  // v0.15.0: NG 시 마스크 활성화 (검정 배경 통일)
     CWnd* w;
     // v0.14.6: s 를 함수 최상단에 선언 — 아래 YOLO 리스트 루프에서도 재사용.
     //   이전 편집에서 if-블록 안에만 선언해 "식별자 s 를 찾을 수 없음" 컴파일 에러 발생.
@@ -88,51 +81,15 @@ void CPageStation2::Refresh() {
         if ((w = GetDlgItem(IDC_STATIC_S2_SCORE)))  w->SetWindowText(_T(""));
         if ((w = GetDlgItem(IDC_STATIC_S2_LED)))    w->SetWindowText(_T("대기중"));
     }
-    // v0.15.0: YOLO 리스트 — 서버 수신 실데이터 사용.
-    // detections 가 비어있으면 리스트를 비움 (더미 데이터 표시 안 함).
-    // 데이터는 MainTabDlg::OnNetNgPush 에서 detections[] 파싱 후 rec.detections 에 저장됨.
-    m_listYolo.DeleteAllItems();
-    for (int i = 0; i < (int)m_last.detections.size(); ++i) {
-        const auto& det = m_last.detections[i];
-        m_listYolo.InsertItem(i, det.className);
-        s.Format(_T("%.2f"), det.confidence);
-        m_listYolo.SetItemText(i, 1, s);
-        m_listYolo.SetItemText(i, 2, det.ok ? _T("OK") : _T("NG"));
-    }
+    // v0.16.0: YOLO 리스트 제거 — m_listYolo 코드 삭제
 }
-// v0.15.0: 불량 유형 선택 / 재작업 지시 — 서버 재작업 프로토콜(REWORK_REQ) 미확정.
-// 확정 후 CPacketBuilder::BuildReworkReq() 추가 및 아래 TODO 구현 예정.
-void CPageStation2::OnBtnDefect()
-{
-    if (!m_net || !m_net->IsConnected()) {
-        MessageBox(_T("서버에 연결되어 있지 않습니다."),
-                   _T("불량 처리"), MB_OK | MB_ICONWARNING);
-        return;
-    }
-    // TODO: 서버 REWORK_REQ 프로토콜 확정 후 구현
-    MessageBox(_T("불량 유형 선택 기능은 서버 프로토콜 확정 후 구현됩니다."),
-               _T("알림"), MB_OK | MB_ICONINFORMATION);
-}
-
-void CPageStation2::OnBtnRework()
-{
-    if (!m_net || !m_net->IsConnected()) {
-        MessageBox(_T("서버에 연결되어 있지 않습니다."),
-                   _T("재작업 지시"), MB_OK | MB_ICONWARNING);
-        return;
-    }
-    // TODO: 서버 REWORK_REQ 프로토콜 확정 후 구현
-    MessageBox(_T("재작업 지시 기능은 서버 프로토콜 확정 후 구현됩니다."),
-               _T("재작업"), MB_OK | MB_ICONINFORMATION);
-}
-
 // SetImages: MainTabDlg::OnNetNgImage 에서 Station2로 라우팅된 이미지 주입.
+// v0.16.0: Pred Mask 패널 제거로 pred_mask 인자 미사용.
 void CPageStation2::SetImages(const std::vector<BYTE>& image,
                               const std::vector<BYTE>& heatmap,
-                              const std::vector<BYTE>& pred_mask) {
+                              const std::vector<BYTE>& /*pred_mask*/) {
     m_cam.SetImage(image);
     m_heat.SetImage(heatmap);
-    m_mask.SetImage(pred_mask);  // v0.15.0: Pred Mask 뷰에도 주입
 }
 
 // ============================================================================
@@ -173,5 +130,58 @@ void CPageStation2::AddNgEntry(int id, double score, const CString& timeLabel,
                                const std::vector<BYTE>& image,
                                const std::vector<BYTE>& heatmap,
                                const std::vector<BYTE>& pred_mask) {
-    m_ngList.AddEntry(id, 2 /*stationId*/, score, timeLabel, image, heatmap, pred_mask);
+    // v0.16.0: YOLO 디텍션 중 첫 번째 NG 항목을 Entry에 주입
+    CNgHistoryList::Entry e;
+    e.id        = id;
+    e.stationId = 2;
+    e.score     = score;
+    e.time      = timeLabel;
+
+    // m_last.detections 에서 첫 NG 디텍션 추출
+    for (const auto& det : m_last.detections) {
+        if (!det.ok) {
+            e.detClass = det.className;
+            e.detConf  = det.confidence;
+            e.detOk    = false;
+            break;
+        }
+    }
+    // NG 디텍션이 없으면 첫 번째 항목 표시
+    if (e.detClass.IsEmpty() && !m_last.detections.empty()) {
+        e.detClass = m_last.detections[0].className;
+        e.detConf  = m_last.detections[0].confidence;
+        e.detOk    = m_last.detections[0].ok;
+    }
+
+    m_ngList.AddEntry(id, 2, score, timeLabel, image, heatmap, pred_mask, e);
+}
+
+// ============================================================================
+// UpdateSerialPortLabel (v0.16.0) — 실제 COM 포트 탐색 → Serial 레이블 갱신
+// ============================================================================
+void CPageStation2::UpdateSerialPortLabel(int labelId)
+{
+    CWnd* w = GetDlgItem(labelId);
+    if (!w) return;
+
+    CString portText = _T("● 미연결");
+
+    HKEY hKey = nullptr;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE,
+                     _T("HARDWARE\\DEVICEMAP\\SERIALCOMM"),
+                     0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        TCHAR valueName[64] = {}, portName[64] = {};
+        DWORD idx = 0, vnSize = 64, pnSize = 64, type = 0;
+        if (RegEnumValue(hKey, idx, valueName, &vnSize,
+                         nullptr, &type,
+                         reinterpret_cast<BYTE*>(portName), &pnSize) == ERROR_SUCCESS)
+        {
+            portText.Format(_T("● (%s)"), portName);
+        }
+        RegCloseKey(hKey);
+    }
+
+    w->SetWindowText(portText);
+    TRACE(_T("[PageStation2] Serial 포트 탐색 결과: %s\n"), (LPCTSTR)portText);
 }

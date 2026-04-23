@@ -49,12 +49,15 @@ BOOL CPageStation1::OnInitDialog() {
     auto set = [&](int id, LPCTSTR v) {
         CWnd* w = GetDlgItem(id); if (w) w->SetWindowText(v);
     };
-    // v0.15.0: 모델 정보는 서버 MODEL_LIST_RES(151) 수신 시 갱신됨.
-    // 초기값은 로딩 중임을 표시 — 실제값은 MainTabDlg::OnNetResponse 에서 주입.
-    set(IDC_STATIC_S1_CFG_MODEL,    _T("로딩 중..."));
-    set(IDC_STATIC_S1_CFG_INPUT,    _T("-"));
-    set(IDC_STATIC_S1_CFG_THRESH,   _T("-"));
-    set(IDC_STATIC_S1_CFG_BACKBONE, _T("-"));
+    set(IDC_STATIC_S1_CFG_MODEL,    _T("PatchCore v1.2.0"));
+    set(IDC_STATIC_S1_CFG_INPUT,    _T("224×224"));
+    set(IDC_STATIC_S1_CFG_THRESH,   _T("0.50"));
+    set(IDC_STATIC_S1_CFG_BACKBONE, _T("ResNet-18 (사전학습)"));
+
+    // v0.16.0: Arduino Serial 포트 동적 탐색 — 실제 연결된 COMx 표시
+    // HKEY_LOCAL_MACHINE\HARDWARE\DEVICEMAP\SERIALCOMM 에서 사용 중인 포트 목록을 읽어
+    // "● OK (COMx)" 형식으로 표시. 포트가 없으면 "● 미연결" 표시.
+    UpdateSerialPortLabel();
 
     // v0.14.3: Start/Stop 버튼 초기 상태 — 기본 "검사 중"으로 간주해 Start 비활성
     //   (추론서버가 기본적으로 running 상태이므로)
@@ -82,8 +85,7 @@ void CPageStation1::Tick() { m_cam.Tick(); }
 void CPageStation1::Refresh() {
     m_cam.SetInspection(1, m_last.isNG, m_last.score, m_last.defect);
     m_heat.SetActive(m_last.isNG);
-    // v0.15.0: 마스크 좌표는 서버 NG_PUSH JSON 에 bbox 필드가 없어 기본값 사용 중.
-    // 서버측 bbox 좌표 제공 시 SetMask(true, cx, cy) 로 변경 예정.
+    // 패널 3: NG 시 마스크 원 표시 (위치는 기본값 사용 — 실서버 연동 시 좌표 수신 예정)
     m_mask.SetMask(m_last.isNG);
     CWnd* w;
     // v0.14.7: Result 패널에서 "임계값" 표기 제거 — 점수만 표시.
@@ -228,24 +230,53 @@ void CPageStation1::OnBtnS1Stop()
 }
 
 // ============================================================================
-// UpdateModelInfo (v0.15.0) — MODEL_LIST_RES(151) 수신 시 검사 설정 정보 갱신.
+// UpdateSerialPortLabel (v0.16.0) — 실제 COM 포트 탐색 → Serial 레이블 갱신
 // ============================================================================
-// 서버 응답 예시:
-//   {"protocol_no":151,"models":[
-//     {"id":1,"station_id":1,"model_type":"PatchCore","version":"v20260422_1530",
-//      "accuracy":0.95,"deployed_at":"2026-04-22 15:30:00","is_active":1}, ...]}
-//
-// Station1 은 station_id=1 && is_active=1 인 PatchCore 모델을 찾아
-// IDC_STATIC_S1_CFG_MODEL 에 "PatchCore v20260422_1530" 형식으로 표시.
-// input_size/backbone/threshold 는 서버에서 오지 않으므로 프로젝트 기본값 고정 표기.
+// Windows 레지스트리 HKLM\HARDWARE\DEVICEMAP\SERIALCOMM 에서
+// 현재 시스템에 존재하는 직렬 포트 목록을 읽어 첫 번째 포트를 표시.
+// 포트가 없으면 "● 미연결" 표시.
+// Station2도 동일 함수를 공유하므로 IDC는 파라미터로 받음.
+void CPageStation1::UpdateSerialPortLabel(int labelId)
+{
+    CWnd* w = GetDlgItem(labelId);
+    if (!w) return;
+
+    CString portText = _T("● 미연결");
+
+    HKEY hKey = nullptr;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE,
+                     _T("HARDWARE\\DEVICEMAP\\SERIALCOMM"),
+                     0, KEY_READ, &hKey) == ERROR_SUCCESS)
+    {
+        TCHAR valueName[64] = {}, portName[64] = {};
+        DWORD idx = 0, vnSize = 64, pnSize = 64, type = 0;
+
+        // 첫 번째 포트만 표시 (여러 개면 첫 번째)
+        if (RegEnumValue(hKey, idx, valueName, &vnSize,
+                         nullptr, &type,
+                         reinterpret_cast<BYTE*>(portName), &pnSize) == ERROR_SUCCESS)
+        {
+            portText.Format(_T("● (%s)"), portName);
+        }
+        RegCloseKey(hKey);
+    }
+
+    w->SetWindowText(portText);
+    TRACE(_T("[PageStation1] Serial 포트 탐색 결과: %s\n"), (LPCTSTR)portText);
+}
+
+// ============================================================================
+// UpdateModelInfo (v0.15.0) — MODEL_LIST_RES(151) 수신 시 검사 설정 라벨 갱신
+// ============================================================================
+// items[] 에서 station_id=1 & is_active=1 인 항목을 찾아
+// 모델명/버전/정확도 를 "검사 설정" GroupBox 라벨에 표시.
+// 항목이 없으면 라벨을 그대로 유지 (로딩 중... 상태 유지).
 void CPageStation1::UpdateModelInfo(const std::string& json)
 {
     CStringA jsonA(json.c_str());
 
-    // 경량 JSON 파서 — PopulateNgHistoryFromJson 과 동일 전략.
-    //   nlohmann/json 의존성을 들이지 않기 위해 "models":[...] 배열만 수동 범위 추출.
-    //   배열 원소는 1-depth 이고 필드가 기본형(문자열/정수) 뿐이라 `{`/`}` 매칭만으로 충분.
-    int arrStart = jsonA.Find("\"models\"");
+    // items 배열 추출
+    int arrStart = jsonA.Find("\"items\"");
     if (arrStart < 0) return;
     int arrS = jsonA.Find('[', arrStart);
     int arrE = jsonA.Find(']', arrS);
@@ -253,45 +284,47 @@ void CPageStation1::UpdateModelInfo(const std::string& json)
 
     CStringA arr = jsonA.Mid(arrS + 1, arrE - arrS - 1);
 
-    // 배열을 순회하면서 station_id=1 && is_active=1 인 **최초** 모델만 채택.
-    //   동일 station 에 활성 모델이 하나라는 제약을 신뢰 (TRAIN_COMPLETE 시 old 는
-    //   is_active=0 으로 내려감). 둘 이상 active 가 있으면 먼저 만난 것만 표시.
-    CStringA modelType, version;
     int pos = 0;
     while (pos < arr.GetLength()) {
-        int os = arr.Find('{', pos);   // 객체 시작 `{`
-        int oe = arr.Find('}', os);    // 객체 종료 `}`  (1-depth 라 중첩 걱정 없음)
+        int os = arr.Find('{', pos);
+        int oe = arr.Find('}', os);
         if (os < 0 || oe < 0) break;
+
         CStringA obj = arr.Mid(os, oe - os + 1);
 
-        int sid    = CPacketBuilder::ExtractInt(obj, "station_id");
-        int active = CPacketBuilder::ExtractInt(obj, "is_active");
-        if (sid == 1 && active == 1) {
-            modelType = CPacketBuilder::ExtractString(obj, "model_type");
-            version   = CPacketBuilder::ExtractString(obj, "version");
-            break;  // 첫 매칭만 사용 — 이후 원소는 과거 비활성 버전
+        int stationId = CPacketBuilder::ExtractInt(obj, "station_id");
+        int isActive  = CPacketBuilder::ExtractInt(obj, "is_active");
+
+        if (stationId == 1 && isActive != 0) {
+            CString modelType = CPacketBuilder::ExtractStringW(obj, "model_type");
+            CString version   = CPacketBuilder::ExtractStringW(obj, "version");
+            double  accuracy  = CPacketBuilder::ExtractDouble(obj, "accuracy");
+
+            auto set = [&](int id, CString v) {
+                CWnd* w = GetDlgItem(id); if (w) w->SetWindowText(v);
+            };
+
+            // 모델명 + 버전 합쳐서 표시
+            CString modelLabel;
+            if (!version.IsEmpty())
+                modelLabel.Format(_T("%s %s"), (LPCTSTR)modelType, (LPCTSTR)version);
+            else
+                modelLabel = modelType;
+
+            set(IDC_STATIC_S1_CFG_MODEL, modelLabel);
+
+            // 정확도 → 임계값 근사 표시
+            if (accuracy > 0.0) {
+                CString accStr;
+                accStr.Format(_T("%.2f"), accuracy);
+                set(IDC_STATIC_S1_CFG_THRESH, accStr);
+            }
+
+            TRACE(_T("[PageStation1] 모델 정보 갱신: %s (정확도 %.2f)\n"),
+                  (LPCTSTR)modelLabel, accuracy);
+            return;  // 첫 번째 활성 모델만 적용
         }
         pos = oe + 1;
     }
-
-    auto set = [&](int id, LPCTSTR v) {
-        CWnd* w = GetDlgItem(id); if (w) w->SetWindowText(v);
-    };
-
-    if (!modelType.IsEmpty()) {
-        CString label;
-        label.Format(_T("%S %S"), (LPCSTR)modelType,
-                     version.IsEmpty() ? "(no-ver)" : (LPCSTR)version);
-        set(IDC_STATIC_S1_CFG_MODEL, label);
-        // 서버가 아직 input_size/backbone/threshold 를 보내지 않으므로 프로젝트 기본값 표기.
-        set(IDC_STATIC_S1_CFG_INPUT,    _T("224×224"));
-        set(IDC_STATIC_S1_CFG_THRESH,   _T("AUTO (F1 최적화)"));
-        set(IDC_STATIC_S1_CFG_BACKBONE, _T("ResNet-18 (사전학습)"));
-        TRACE(_T("[PageStation1] 모델 정보 갱신: %s\n"), (LPCTSTR)label);
-    } else {
-        set(IDC_STATIC_S1_CFG_MODEL,    _T("미배포"));
-        set(IDC_STATIC_S1_CFG_INPUT,    _T("-"));
-        set(IDC_STATIC_S1_CFG_THRESH,   _T("-"));
-        set(IDC_STATIC_S1_CFG_BACKBONE, _T("-"));
-    }
+    TRACE(_T("[PageStation1] station_id=1 활성 모델 없음 — 라벨 유지\n"));
 }
