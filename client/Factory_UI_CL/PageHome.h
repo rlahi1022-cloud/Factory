@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "Resource.h"
 #include "InspectionData.h"
+#include "CameraView.h"   // CNgHistoryList
 #include <functional>
 #include <string>
 #include <vector>
@@ -36,15 +37,15 @@ public:
     // v0.14.6: 네트워크 핸들 + 탭 전환 콜백 주입.
     //   더블클릭 시 해당 행의 inspection_id 로 서버에 이미지 요청 + 해당 Station 탭으로 전환.
     void SetNetworkClient(CNetworkClient* net) { m_net = net; }
-
-    // v0.15.0: 서버 MODEL_LIST_RES(151) 수신 시 MainTabDlg 가 호출하여 모델 정보 갱신
-    void SetModelInfo(const CString& s1Info, const CString& s2Info);
     void SetOnRequestShowImage(std::function<void(int station_id, int inspection_id)> cb) {
         m_onRequestShowImage = std::move(cb);
     }
 
 protected:
-    CListCtrl m_listNG;
+    // v0.16.0: CListCtrl → CNgHistoryList 교체
+    // 검정 배경 자체렌더링, 깜빡임 없음, Station1 NG 리스트와 동일 스타일
+    CNgHistoryList m_listNG;
+    // v0.16.0: CImageList 제거 (CNgHistoryList는 행 높이 자체 관리)
 
     // NG 리스트 상한 — 스크롤 가능하며 상한 초과 시 가장 오래된 것을 제거
     static constexpr int MAX_NG_ROWS = 200;
@@ -68,7 +69,7 @@ protected:
     virtual BOOL OnInitDialog() override;
     virtual void DoDataExchange(CDataExchange* pDX) override;
     afx_msg void OnPaint();
-    // v0.14.6: NG 리스트 더블클릭 → 해당 inspection 이미지 요청
-    afx_msg void OnLvnDoubleClickNgList(NMHDR* pNMHDR, LRESULT* pResult);
+    afx_msg BOOL OnEraseBkgnd(CDC* pDC);  // v0.16.0: 깜빡임 방지
+    // v0.16.0: OnLvnDoubleClickNgList 제거 — CNgHistoryList 자체 클릭 처리로 전환
     DECLARE_MESSAGE_MAP()
 };

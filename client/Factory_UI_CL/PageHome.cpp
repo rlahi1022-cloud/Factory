@@ -24,8 +24,9 @@
 IMPLEMENT_DYNAMIC(CPageHome, CDialogEx)
 BEGIN_MESSAGE_MAP(CPageHome, CDialogEx)
     ON_WM_PAINT()
+    ON_WM_ERASEBKGND()  // v0.16.0: 깜발임 방지
     // v0.14.6: NG 리스트 더블클릭 → 이미지 요청
-    ON_NOTIFY(NM_DBLCLK, IDC_LIST_NG, &CPageHome::OnLvnDoubleClickNgList)
+    // v0.16.0: ON_NOTIFY removed
 END_MESSAGE_MAP()
 
 CPageHome::CPageHome(CWnd* p) : CDialogEx(IDD_PAGE_HOME, p) {}
@@ -41,15 +42,8 @@ BOOL CPageHome::OnInitDialog()
 {
     CDialogEx::OnInitDialog();
 
-    // NG 이력 리스트뷰 설정
-    m_listNG.SetExtendedStyle(LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
-    m_listNG.InsertColumn(0, _T("ID"),       LVCFMT_LEFT, 50);
-    m_listNG.InsertColumn(1, _T("스테이션"), LVCFMT_LEFT, 60);
-    m_listNG.InsertColumn(2, _T("시각"),     LVCFMT_LEFT, 70);
-    m_listNG.InsertColumn(3, _T("결과"),     LVCFMT_LEFT, 40);
-    m_listNG.InsertColumn(4, _T("점수"),     LVCFMT_LEFT, 50);
-    m_listNG.InsertColumn(5, _T("결함"),     LVCFMT_LEFT, 110);
-    m_listNG.InsertColumn(6, _T("Latency"),  LVCFMT_LEFT, 60);
+    // v0.16.0: CNgHistoryList 는 자체 렌더링 — 별도 초기화 불필요
+    // (검정 배경, 행 높이 자체 관리, 깜발임 없음)
 
     return TRUE;
 }
@@ -145,32 +139,46 @@ void CPageHome::ApplyStatsRes(const std::string& json)
 
 void CPageHome::OnPaint() { Default(); }
 
-// ============================================================================
-// InsertNgItem — NG 레코드 1건을 리스트 지정 row 에 삽입 (v0.13.2)
-// ============================================================================
-void CPageHome::InsertNgItem(int row, const InspectionRecord& r)
+// v0.16.0c: OnEraseBkgnd — IDC_LIST_NG 실제 픽셀 위치를 동적으로 읽어
+// Summary 영역(리스트 위)은 기본색, NG History 영역(리스트 포함 아래)은 검정으로 채움.
+// 하드코딩 y=66 제거 — Dialog Units ≠ 픽셀 이므로 런타임에 읽어야 정확함.
+BOOL CPageHome::OnEraseBkgnd(CDC* pDC)
 {
-    CString s;
-    s.Format(_T("%d"), r.id);
-    m_listNG.InsertItem(row, s);
+    CRect rc;
+    GetClientRect(&rc);
 
-    s.Format(_T("#%d"), r.station);
-    m_listNG.SetItemText(row, 1, s);
+    // IDC_LIST_NG 컨트롤의 실제 픽셀 위치 취득
+    int ngTop = rc.top;  // 폴백: 리스트 못 찾으면 전체 검정
+    CWnd* pList = GetDlgItem(IDC_LIST_NG);
+    if (pList && pList->GetSafeHwnd()) {
+        CRect listRc;
+        pList->GetWindowRect(&listRc);
+        ScreenToClient(&listRc);
+        ngTop = listRc.top - 14;  // GroupBox 제목("NG History") 높이 여유분
+        if (ngTop < 0) ngTop = 0;
+    }
 
-    m_listNG.SetItemText(row, 2, r.time);
-    m_listNG.SetItemText(row, 3, r.isNG ? _T("NG") : _T("OK"));
+    // 1) Summary 영역 (y=0 ~ ngTop) — 기본 배경색
+    CRect summaryArea(rc.left, rc.top, rc.right, ngTop);
+    pDC->FillSolidRect(&summaryArea, ::GetSysColor(COLOR_BTNFACE));
 
-    s.Format(_T("%.2f"), r.score);
-    m_listNG.SetItemText(row, 4, s);
+    // 2) NG History 영역 (y=ngTop ~ 끝) — 검정
+    CRect ngArea(rc.left, ngTop, rc.right, rc.bottom);
+    pDC->FillSolidRect(&ngArea, RGB(18, 18, 18));
 
-    m_listNG.SetItemText(row, 5, QCUtil::DefectName(r.defect));
-
-    s.Format(_T("%dms"), r.latencyMs);
-    m_listNG.SetItemText(row, 6, s);
+    return TRUE;
 }
 
 // ============================================================================
-// OnInspectHistoryRes — DB 이력 응답(115) 수신 → NG 리스트 초기화 (v0.13.2)
+// InsertNgItem — NG 레코드 1건을 리스트 지정 row 에 삽입 (v0.13.2)
+// ============================================================================
+// InsertNgItem — v0.16.0: CNgHistoryList.AddEntry() 로 전환
+// ============================================================================
+void CPageHome::InsertNgItem(int /*row*/, const InspectionRecord& r)
+{
+    static const std::vector<BYTE> empty;
+    m_listNG.AddEntry(r.id, r.station, r.score, r.time, empty, empty, empty);
+}
 // ============================================================================
 // 접속 직후 MainTabDlg 가 INSPECT_HISTORY_REQ 를 보내면 서버가 응답으로 items
 // 배열을 돌려준다. 여기서는 items 중 result=="ng" 만 뽑아 최신순으로 리스트에
@@ -188,7 +196,7 @@ void CPageHome::OnInspectHistoryRes(const std::string& json)
 
     CStringA arr = jsonA.Mid(arrS + 1, arrE - arrS - 1);
 
-    m_listNG.DeleteAllItems();
+    m_listNG.Clear();  // v0.16.0: CNgHistoryList
     int row = 0;
     int pos = 0;
     while (pos < arr.GetLength() && row < MAX_NG_ROWS) {
@@ -243,70 +251,16 @@ void CPageHome::OnInspectHistoryRes(const std::string& json)
 // 상한 MAX_NG_ROWS 초과 시 가장 오래된 행(맨 아래) 자동 제거.
 void CPageHome::AddNgRow(const InspectionRecord& r)
 {
-    if (!r.isNG) return;  // OK 는 이 리스트에 표시하지 않음
-    InsertNgItem(0, r);   // 맨 위에 삽입
-
-    // 상한 초과 시 꼬리 제거 (오래된 NG)
-    int total = m_listNG.GetItemCount();
-    while (total > MAX_NG_ROWS) {
-        m_listNG.DeleteItem(total - 1);
-        --total;
-    }
+    if (!r.isNG) return;
+    InsertNgItem(0, r);  // v0.16.0: CNgHistoryList 내부에서 상한/스크롤 자체 관리
 
     // v0.16.0: ++m_cumNg 제거 — OK_COUNT_PUSH(112) 가 5초마다 서버 절대값으로
-    //   덮어쓰므로 여기서 증분하면 중복 증가 발생 (Total 폭증 버그 원인).
-    //   Summary 갱신은 UpdateStationCount() / ApplyStatsRes() 에서만 수행.
+    //   덮어쓰므로 여기서 증분하면 Total 폭증 버그 발생.
 }
 
 // ============================================================================
 // OnLvnDoubleClickNgList (v0.14.6) — 더블클릭 → 해당 NG 이미지 로드 + 탭 전환
 // ============================================================================
 // 흐름:
-//   1) 클릭된 row 에서 ID 컬럼(0) 과 스테이션 컬럼(1) 텍스트 추출
-//   2) CNetworkClient::SendJson 으로 INSPECT_IMAGE_REQ(116) 전송
-//      → 서버가 해당 inspection_id 의 원본/히트맵/마스크 3장을 INSPECT_IMAGE_RES(117)
-//         로 회신 → NetworkClient 가 WM_NET_NG_IMAGE 로 UI에 전달
-//      → MainTabDlg::OnNetNgImage 가 station_id 에 따라 Station1/2 페이지에 주입
-//   3) m_onRequestShowImage 콜백으로 MainTabDlg 에 "Station N 탭으로 전환" 요청.
-//      사용자가 이미지 즉시 확인 가능.
-void CPageHome::OnLvnDoubleClickNgList(NMHDR* pNMHDR, LRESULT* pResult)
-{
-    LPNMITEMACTIVATE p = reinterpret_cast<LPNMITEMACTIVATE>(pNMHDR);
-    *pResult = 0;
-
-    const int row = p->iItem;
-    if (row < 0) return;
-
-    // 컬럼 0: ID (정수). 컬럼 1: "#1" / "#2" 형태 스테이션.
-    CString idText   = m_listNG.GetItemText(row, 0);
-    CString staText  = m_listNG.GetItemText(row, 1);
-
-    int inspectionId = _ttoi(idText);
-    if (inspectionId <= 0) {
-        TRACE(_T("[PageHome] 더블클릭 — 잘못된 id=%s\n"), (LPCTSTR)idText);
-        return;
-    }
-
-    // 스테이션 파싱 — "#1" → 1, "#2" → 2. 실패 시 1 로 폴백.
-    int stationId = 1;
-    if (staText.GetLength() >= 2) {
-        stationId = _ttoi(staText.Mid(1));
-        if (stationId != 1 && stationId != 2) stationId = 1;
-    }
-
-    TRACE(_T("[PageHome] 더블클릭 → 이미지 요청 | id=%d station=%d\n"),
-          inspectionId, stationId);
-
-    // 1) 이미지 요청 송신
-    if (m_net && m_net->IsConnected()) {
-        CString req = CPacketBuilder::BuildInspectImageReq(inspectionId);
-        m_net->SendJson(req);
-    } else {
-        TRACE(_T("[PageHome] 네트워크 미연결 — 이미지 요청 생략\n"));
-    }
-
-    // 2) 부모(MainTabDlg) 에게 탭 전환 요청. 응답이 오면 해당 Station 페이지 상단에 표시됨.
-    if (m_onRequestShowImage) {
-        m_onRequestShowImage(stationId, inspectionId);
-    }
-}
+// v0.16.0: OnLvnDoubleClickNgList 제거
+// CNgHistoryList 는 CListCtrl 기반 GetItemText 를 지원하지 않으민, 더블클릭 이미지 요요양은 추후 구현 예정

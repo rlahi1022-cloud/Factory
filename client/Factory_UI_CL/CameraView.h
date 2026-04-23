@@ -69,7 +69,6 @@ protected:
     void draw_bg(CDC& dc, CRect& rc);
     void draw_label(CDC& dc, CRect& rc);
     afx_msg void OnPaint();
-    afx_msg BOOL OnEraseBkgnd(CDC* pDC);  // 흰색 깜빡임 방지
     DECLARE_MESSAGE_MAP()
 };
 
@@ -98,6 +97,10 @@ public:
         int     stationId = 0;
         double  score     = 0.0;
         CString time;                // "HH:MM:SS" 또는 "#id"
+        // v0.16.0: Station2 YOLO 디텍션 결과 (클래스/신뢰도/판정) — Station1은 비어있음
+        CString detClass;            // 첫 번째 NG 디텍션 클래스명 (없으면 빈 문자열)
+        double  detConf   = 0.0;     // 신뢰도
+        bool    detOk     = true;    // 판정
     };
 
     // 새 NG 1건을 리스트 맨 위에 추가. 초과분은 꼬리부터 버림.
@@ -109,6 +112,14 @@ public:
                   const std::vector<BYTE>& heat,
                   const std::vector<BYTE>& mask);
 
+    // v0.16.0: YOLO 디텍션 포함 Entry 직접 주입 오버로드 (Station2 전용)
+    void AddEntry(int id, int stationId, double score,
+                  const CString& timeLabel,
+                  const std::vector<BYTE>& img,
+                  const std::vector<BYTE>& heat,
+                  const std::vector<BYTE>& mask,
+                  const Entry& entryOverride);
+
     void Clear();
     int  Count() const { return static_cast<int>(m_entries.size()); }
 
@@ -116,8 +127,8 @@ protected:
     std::deque<Entry>  m_entries;   // deque: 앞뒤 삽입/제거 O(1), 이터레이터 안정
     CRITICAL_SECTION   m_cs;        // m_entries 스레드 보호
     int m_maxEntries = 10;
-    int m_rowH       = 22;           // v0.14.5: 텍스트 전용 — 행 높이 축소
-    int m_headerH    = 22;           // 고정 헤더 영역 높이
+    int m_rowH       = 36;           // v0.16.0b: 행 높이 확대 (28 → 36)
+    int m_headerH    = 32;           // v0.16.0b: 헤더 높이 확대 (26 → 32)
     int m_scrollY    = 0;            // 현재 세로 스크롤 오프셋 (px, 헤더 아래 기준)
 
     void UpdateScrollInfo();
