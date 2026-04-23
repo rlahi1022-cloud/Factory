@@ -754,8 +754,12 @@ class Station2Inferencer(BaseInferencer):
         return {
             "result": "NG" if is_ng else "OK",
             "score": round(total_score, 4),
-            "defect": defects[0] if defects else "",   # 대표 결함 (첫 번째)
-            "defects": defects,                         # 전체 결함 목록
+            # v0.14.11: 모든 결함을 쉼표로 join 해서 전달 → MainServer 의 defect_type
+            #   컬럼에 전부 저장되고 MFC 에도 그대로 표시된다.
+            #   예: "cap_missing,label_misaligned" — 여러 불량이 동시에 있는 경우.
+            #   기존엔 defects[0] 만 보내서 DB 에 첫 번째 결함만 남는 문제가 있었다.
+            "defect": ",".join(defects) if defects else "",
+            "defects": defects,                         # 전체 결함 목록 (배열 형태도 유지)
             "detections": detections,                   # YOLO 탐지 결과
             "patchcore_score": round(patchcore_score, 4),
             "cap_ok": cap_ok,
