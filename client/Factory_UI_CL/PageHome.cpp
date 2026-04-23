@@ -73,8 +73,9 @@ void CPageHome::Update(const std::vector<InspectionRecord>& /*recs*/)
         CWnd* w = GetDlgItem(id);
         if (w) w->SetWindowText(v);
     };
-    set(IDC_STATIC_S1_MODEL_INFO, _T("모델: PatchCore v1.2.0 | Latency: ~52ms"));
-    set(IDC_STATIC_S2_MODEL_INFO, _T("모델: YOLO11 v1.0.0 + PatchCore v1.1.0"));
+    // v0.15.0: 모델 정보는 서버 MODEL_LIST_RES(151) 수신 시 SetModelInfo()로 주입.
+    // 초기 하드코딩 제거 — 로딩 전까지 빈 문자열 유지.
+    // (기존: "모델: PatchCore v1.2.0 | Latency: ~52ms" 등 하드코딩)
 
     // 누적 카운터로 Summary/스테이션 박스 다시 그림
     RefreshSummary();
@@ -312,4 +313,17 @@ void CPageHome::OnLvnDoubleClickNgList(NMHDR* pNMHDR, LRESULT* pResult)
     if (m_onRequestShowImage) {
         m_onRequestShowImage(stationId, inspectionId);
     }
+}
+
+// ============================================================================
+// SetModelInfo (v0.15.0) — 서버 MODEL_LIST_RES(151) 수신 시 모델 정보 갱신
+// ============================================================================
+// MainTabDlg::OnNetResponse 에서 MODEL_LIST_RES 파싱 후 호출.
+// s1Info 예: "PatchCore v1.2.0 | Latency: ~52ms"
+// s2Info 예: "YOLO11 v1.0.0 + PatchCore v1.1.0"
+void CPageHome::SetModelInfo(const CString& s1Info, const CString& s2Info)
+{
+    CWnd* w;
+    if ((w = GetDlgItem(IDC_STATIC_S1_MODEL_INFO))) w->SetWindowText(s1Info);
+    if ((w = GetDlgItem(IDC_STATIC_S2_MODEL_INFO))) w->SetWindowText(s2Info);
 }

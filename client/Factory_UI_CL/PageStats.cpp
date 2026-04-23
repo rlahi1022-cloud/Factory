@@ -32,13 +32,10 @@ BOOL CPageStats::OnInitDialog(){CDialogEx::OnInitDialog();Rebuild();return TRUE;
 void CPageStats::Update(const std::vector<InspectionRecord>& recs){m_recs=recs;Rebuild();Invalidate();}
 
 void CPageStats::Rebuild(){
-    m_trend.clear();
-    for(int h=8;h<20;++h){
-        TPoint p;p.lbl.Format(_T("%d:00"),h);
-        p.s1=(rand()%150)/100.0;p.s2=(rand()%200)/100.0;p.lat=40+rand()%60;
-        m_trend.push_back(p);
-    }
-    m_pareto={{_T("라벨기울어짐"),5},{_T("캡미체결"),3},{_T("이물질"),2},{_T("크랙"),1},{_T("미충전"),1}};
+    // v0.15.0: rand() 기반 더미 추세 데이터 및 하드코딩 파레토 항목 제거.
+    // m_trend / m_pareto 는 OnStatsRes() / OnInspectHistoryRes() 가
+    // 서버 응답을 받은 후에만 채워진다.
+    // 서버 데이터가 없는 상태에서는 빈 차트를 표시.
 }
 
 // v0.14.6: 통계 차트 영역 더블버퍼링 — 갱신 시 깜빡임 제거.
@@ -162,9 +159,9 @@ void CPageStats::OnBtnQuery(){
         CString statsReq = CPacketBuilder::BuildStatsReq(0, _T(""), _T(""));
         m_net->SendJson(statsReq);
     } else {
-        // 서버 미연결 시 로컬 더미 데이터로 갱신
-        Rebuild();
-        Invalidate();
+        // v0.15.0: 서버 미연결 시 더미 Rebuild() 제거 → 경고 안내
+        MessageBox(_T("서버에 연결되어 있지 않습니다.\n연결 후 다시 조회하세요."),
+                   _T("통계 조회"), MB_OK | MB_ICONWARNING);
     }
 }
 void CPageStats::OnBtnExportCSV(){

@@ -334,9 +334,10 @@ BEGIN
     LTEXT    "× NG 이벤트 이력",  IDC_STATIC,        542,224, 200,   9
     LTEXT    "금일 0건",           IDC_STATIC_S2_NG_COUNT,
              770,224, 126,   9
-    CONTROL  "", IDC_NG_LIST2,  "SysListView32",
-             LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS |
-             WS_BORDER | WS_CHILD | WS_VISIBLE | WS_VSCROLL,
+    // v0.15.0: CNgHistoryList(CStatic 파생)로 교체 — 자체 헤더+스크롤 렌더링.
+    // 기존 SysListView32 → "STATIC" 으로 변경 (Station1 IDC_NG_LIST1과 동일 방식).
+    CONTROL  "", IDC_NG_LIST2,  "STATIC",
+             SS_BLACKFRAME | WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP,
              542,236, 354, 198
 
     // ══════════════════════════════════════════════════════════════════

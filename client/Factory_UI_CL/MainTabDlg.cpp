@@ -574,17 +574,15 @@ void CMainTabDlg::OnViewRefresh()  { PushUpdate(); }
 
 // v0.14.0: 검사 시작/중지 — 실제 AI 추론서버에 pause/resume 명령 전송.
 // station_filter=0 (전체) 로 모든 추론서버에 적용. 응답(161)은 OnNetResponse 에서 처리.
-// 로컬 시뮬레이션 타이머(IDT_LIVE_UPDATE)는 서버 미연결 시 보조용으로 유지.
+// v0.15.0: 서버 미연결 시 시뮬레이션 타이머 분기 제거 — 실서버 전용.
 void CMainTabDlg::OnInspectStart()
 {
     if (m_net.IsConnected()) {
         CString req = CPacketBuilder::BuildInspectControlReq(0, _T("resume"));
         m_net.SendJson(req);
         TRACE(_T("[MainTabDlg] 검사 재개 요청 송신 (action=resume)\n"));
-    } else {
-        // 서버 미연결 → 시뮬레이션 모드 타이머만 재가동
-        SetTimer(IDT_LIVE_UPDATE, 3000, nullptr);
     }
+    // v0.15.0: 미연결 시 아무것도 하지 않음 (시뮬레이션 타이머 제거)
 }
 
 void CMainTabDlg::OnInspectStop()
@@ -593,9 +591,8 @@ void CMainTabDlg::OnInspectStop()
         CString req = CPacketBuilder::BuildInspectControlReq(0, _T("pause"));
         m_net.SendJson(req);
         TRACE(_T("[MainTabDlg] 검사 일시정지 요청 송신 (action=pause)\n"));
-    } else {
-        KillTimer(IDT_LIVE_UPDATE);
     }
+    // v0.15.0: 미연결 시 아무것도 하지 않음 (시뮬레이션 타이머 제거)
 }
 
 void CMainTabDlg::OnHelpAbout()
@@ -815,6 +812,21 @@ LRESULT CMainTabDlg::OnNetNgPush(WPARAM, LPARAM lParam)
         else if (defectA == "label_torn")   rec.defect = EDefect::LabelTorn;
         else if (defectA == "fill_low")     rec.defect = EDefect::FillLow;
         else                                rec.defect = EDefect::Anomaly;
+
+        // v0.15.0: Station2 전용 — detections[] 배열 파싱
+        // 서버 JSON 예시: "detections":[{"class":"cap","conf":0.94,"ok":true}, ...]
+        if (rec.station == 2) {
+            int detCount = CPacketBuilder::ExtractArraySize(jsonA, "detections");
+            for (int i = 0; i < detCount; ++i) {
+                CStringA obj = CPacketBuilder::ExtractSubArray(jsonA, "detections", i);
+                if (obj.IsEmpty()) continue;
+                YoloDetection det;
+                det.className  = CPacketBuilder::ExtractStringW(obj, "class");
+                det.confidence = CPacketBuilder::ExtractDouble(obj, "conf");
+                det.ok         = CPacketBuilder::ExtractBool(obj, "ok");
+                rec.detections.push_back(det);
+            }
+        }
 
         // 이력에 추가 (스레드 보호)
         EnterCriticalSection(&m_csRecs);
@@ -1061,6 +1073,9 @@ LRESULT CMainTabDlg::OnNetNgImage(WPARAM, LPARAM lParam)
                               pkt->image, pkt->heatmap, pkt->pred_mask);
         } else if (pkt->station_id == 2 && m_st2) {
             m_st2->SetImages(pkt->image, pkt->heatmap, pkt->pred_mask);
+            // v0.15.0: Station1과 동일하게 NG 이력 리스트 누적
+            m_st2->AddNgEntry(pkt->inspection_id, score, timeLabel,
+                              pkt->image, pkt->heatmap, pkt->pred_mask);
         }
     } catch (const std::exception& e) {
         TRACE(_T("[MainTabDlg] OnNetNgImage 예외: %hs\n"), e.what());
