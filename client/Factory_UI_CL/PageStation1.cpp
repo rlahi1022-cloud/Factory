@@ -49,13 +49,12 @@ BOOL CPageStation1::OnInitDialog() {
     auto set = [&](int id, LPCTSTR v) {
         CWnd* w = GetDlgItem(id); if (w) w->SetWindowText(v);
     };
-    set(IDC_STATIC_S1_CFG_MODEL,    _T("PatchCore v1.2.0"));
-    set(IDC_STATIC_S1_CFG_INPUT,    _T("224×224"));
-    // v0.14.9: 하드코딩 "0.50" 제거. 추론서버가 F1-score 최적화로 학습 후
-    // 자동 계산한 임계값(station1_patchcore_threshold.json) 을 사용하므로
-    // 클라이언트는 고정값을 표기하지 않고 "AUTO (F1 최적화)" 로 표시한다.
-    set(IDC_STATIC_S1_CFG_THRESH,   _T("AUTO (F1 최적화)"));
-    set(IDC_STATIC_S1_CFG_BACKBONE, _T("ResNet-18 (사전학습)"));
+    // v0.15.0: 모델 정보는 서버 MODEL_LIST_RES(151) 수신 시 갱신됨.
+    // 초기값은 로딩 중임을 표시 — 실제값은 MainTabDlg::OnNetResponse 에서 주입.
+    set(IDC_STATIC_S1_CFG_MODEL,    _T("로딩 중..."));
+    set(IDC_STATIC_S1_CFG_INPUT,    _T("-"));
+    set(IDC_STATIC_S1_CFG_THRESH,   _T("-"));
+    set(IDC_STATIC_S1_CFG_BACKBONE, _T("-"));
 
     // v0.14.3: Start/Stop 버튼 초기 상태 — 기본 "검사 중"으로 간주해 Start 비활성
     //   (추론서버가 기본적으로 running 상태이므로)
@@ -83,7 +82,8 @@ void CPageStation1::Tick() { m_cam.Tick(); }
 void CPageStation1::Refresh() {
     m_cam.SetInspection(1, m_last.isNG, m_last.score, m_last.defect);
     m_heat.SetActive(m_last.isNG);
-    // 패널 3: NG 시 마스크 원 표시 (위치는 기본값 사용 — 실서버 연동 시 좌표 수신 예정)
+    // v0.15.0: 마스크 좌표는 서버 NG_PUSH JSON 에 bbox 필드가 없어 기본값 사용 중.
+    // 서버측 bbox 좌표 제공 시 SetMask(true, cx, cy) 로 변경 예정.
     m_mask.SetMask(m_last.isNG);
     CWnd* w;
     // v0.14.7: Result 패널에서 "임계값" 표기 제거 — 점수만 표시.

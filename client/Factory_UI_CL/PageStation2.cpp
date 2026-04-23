@@ -37,6 +37,7 @@ void CPageStation2::DoDataExchange(CDataExchange* pDX) {
     DDX_Control(pDX, IDC_CAM2_VIEW,     m_cam);
     DDX_Control(pDX, IDC_HEATMAP2_VIEW, m_heat);
     DDX_Control(pDX, IDC_LIST_YOLO,     m_listYolo);
+    DDX_Control(pDX, IDC_NG_LIST2,      m_ngList);  // v0.15.0: NG 이력 리스트
 }
 BOOL CPageStation2::OnInitDialog() {
     CDialogEx::OnInitDialog();
@@ -82,18 +83,43 @@ void CPageStation2::Refresh() {
         if ((w = GetDlgItem(IDC_STATIC_S2_SCORE)))  w->SetWindowText(_T(""));
         if ((w = GetDlgItem(IDC_STATIC_S2_LED)))    w->SetWindowText(_T("대기중"));
     }
-    // YOLO list
+    // v0.15.0: YOLO 리스트 — 서버 수신 실데이터 사용.
+    // detections 가 비어있으면 리스트를 비움 (더미 데이터 표시 안 함).
+    // 데이터는 MainTabDlg::OnNetNgPush 에서 detections[] 파싱 후 rec.detections 에 저장됨.
     m_listYolo.DeleteAllItems();
-    struct Det{LPCTSTR cls;double conf;bool ok;};
-    Det dets[]={{_T("cap"),0.94,!m_last.isNG},{_T("label"),0.91,!m_last.isNG||(rand()%3!=0)},{_T("liquid_level"),0.96,true}};
-    for(int i=0;i<3;++i){
-        m_listYolo.InsertItem(i,dets[i].cls);
-        s.Format(_T("%.2f"),dets[i].conf); m_listYolo.SetItemText(i,1,s);
-        m_listYolo.SetItemText(i,2,dets[i].ok?_T("OK"):_T("NG"));
+    for (int i = 0; i < (int)m_last.detections.size(); ++i) {
+        const auto& det = m_last.detections[i];
+        m_listYolo.InsertItem(i, det.className);
+        s.Format(_T("%.2f"), det.confidence);
+        m_listYolo.SetItemText(i, 1, s);
+        m_listYolo.SetItemText(i, 2, det.ok ? _T("OK") : _T("NG"));
     }
 }
-void CPageStation2::OnBtnDefect(){MessageBox(_T("불량 유형 선택\n(구현 예정)"),_T("알림"),MB_OK);}
-void CPageStation2::OnBtnRework(){MessageBox(_T("재작업 지시 전송"),_T("재작업"),MB_OK|MB_ICONWARNING);}
+// v0.15.0: 불량 유형 선택 / 재작업 지시 — 서버 재작업 프로토콜(REWORK_REQ) 미확정.
+// 확정 후 CPacketBuilder::BuildReworkReq() 추가 및 아래 TODO 구현 예정.
+void CPageStation2::OnBtnDefect()
+{
+    if (!m_net || !m_net->IsConnected()) {
+        MessageBox(_T("서버에 연결되어 있지 않습니다."),
+                   _T("불량 처리"), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    // TODO: 서버 REWORK_REQ 프로토콜 확정 후 구현
+    MessageBox(_T("불량 유형 선택 기능은 서버 프로토콜 확정 후 구현됩니다."),
+               _T("알림"), MB_OK | MB_ICONINFORMATION);
+}
+
+void CPageStation2::OnBtnRework()
+{
+    if (!m_net || !m_net->IsConnected()) {
+        MessageBox(_T("서버에 연결되어 있지 않습니다."),
+                   _T("재작업 지시"), MB_OK | MB_ICONWARNING);
+        return;
+    }
+    // TODO: 서버 REWORK_REQ 프로토콜 확정 후 구현
+    MessageBox(_T("재작업 지시 기능은 서버 프로토콜 확정 후 구현됩니다."),
+               _T("재작업"), MB_OK | MB_ICONINFORMATION);
+}
 
 // SetImages: MainTabDlg::OnNetNgImage 에서 Station2로 라우팅된 이미지 주입.
 // Station2는 pred_mask 뷰가 없어 해당 인자는 사용하지 않음 (Station1 전용 패널).
@@ -133,4 +159,14 @@ void CPageStation2::OnBtnS2Stop()
     TRACE(_T("[PageStation2] 검사 중지 요청 (station=2, pause)\n"));
     if (CWnd* w = GetDlgItem(IDC_BTN_S2_START)) w->EnableWindow(TRUE);
     if (CWnd* w = GetDlgItem(IDC_BTN_S2_STOP))  w->EnableWindow(FALSE);
+}
+
+// ============================================================================
+// AddNgEntry (v0.15.0) — NG 이력 리스트 누적 (Station1과 동일)
+// ============================================================================
+void CPageStation2::AddNgEntry(int id, double score, const CString& timeLabel,
+                               const std::vector<BYTE>& image,
+                               const std::vector<BYTE>& heatmap,
+                               const std::vector<BYTE>& pred_mask) {
+    m_ngList.AddEntry(id, 2 /*stationId*/, score, timeLabel, image, heatmap, pred_mask);
 }

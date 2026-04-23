@@ -36,6 +36,9 @@ public:
     // v0.14.6: 네트워크 핸들 + 탭 전환 콜백 주입.
     //   더블클릭 시 해당 행의 inspection_id 로 서버에 이미지 요청 + 해당 Station 탭으로 전환.
     void SetNetworkClient(CNetworkClient* net) { m_net = net; }
+
+    // v0.15.0: 서버 MODEL_LIST_RES(151) 수신 시 MainTabDlg 가 호출하여 모델 정보 갱신
+    void SetModelInfo(const CString& s1Info, const CString& s2Info);
     void SetOnRequestShowImage(std::function<void(int station_id, int inspection_id)> cb) {
         m_onRequestShowImage = std::move(cb);
     }

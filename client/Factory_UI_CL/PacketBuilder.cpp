@@ -718,3 +718,72 @@ CString CPacketBuilder::BuildInspectControlReq(int stationFilter, const CString&
 
     return CString(json);
 }
+
+// ============================================================================
+// ExtractSubArray / ExtractArraySize (v0.15.0)
+// ============================================================================
+// JSON 배열 필드에서 n번째 객체({...})를 통째로 추출.
+// 외부 JSON 라이브러리 미사용 — 중괄호 매칭 방식, 1-depth 배열 전용.
+// ============================================================================
+CStringA CPacketBuilder::ExtractSubArray(const CStringA& json,
+                                          const CStringA& key, int index)
+{
+    // 1) "key" 위치 탐색
+    CStringA searchKey = "\"" + key + "\"";
+    int keyPos = json.Find(searchKey);
+    if (keyPos < 0) return "";
+
+    // 2) ':' → '[' 탐색
+    int colonPos = json.Find(':', keyPos + searchKey.GetLength());
+    if (colonPos < 0) return "";
+    int arrStart = json.Find('[', colonPos);
+    if (arrStart < 0) return "";
+
+    // 3) index번째 '{...}' 추출 (중괄호 depth 카운팅)
+    int cur = arrStart + 1;
+    int len = json.GetLength();
+    int found = 0;
+    while (cur < len) {
+        // '{' 또는 배열 끝 ']' 탐색
+        while (cur < len && json[cur] != '{' && json[cur] != ']') ++cur;
+        if (cur >= len || json[cur] == ']') break;
+
+        // '{' 발견 — 매칭 '}' 찾기
+        int depth = 0, start = cur;
+        while (cur < len) {
+            if      (json[cur] == '{') ++depth;
+            else if (json[cur] == '}') { --depth; if (depth == 0) break; }
+            ++cur;
+        }
+        if (found == index)
+            return json.Mid(start, cur - start + 1);
+        ++found;
+        ++cur;
+    }
+    return "";
+}
+
+int CPacketBuilder::ExtractArraySize(const CStringA& json, const CStringA& key)
+{
+    CStringA searchKey = "\"" + key + "\"";
+    int keyPos = json.Find(searchKey);
+    if (keyPos < 0) return 0;
+    int colonPos = json.Find(':', keyPos + searchKey.GetLength());
+    if (colonPos < 0) return 0;
+    int arrStart = json.Find('[', colonPos);
+    if (arrStart < 0) return 0;
+
+    int cur = arrStart + 1, len = json.GetLength(), count = 0;
+    while (cur < len) {
+        while (cur < len && json[cur] != '{' && json[cur] != ']') ++cur;
+        if (cur >= len || json[cur] == ']') break;
+        int depth = 0;
+        while (cur < len) {
+            if      (json[cur] == '{') ++depth;
+            else if (json[cur] == '}') { --depth; if (depth == 0) break; }
+            ++cur;
+        }
+        ++count; ++cur;
+    }
+    return count;
+}
