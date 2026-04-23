@@ -49,15 +49,18 @@ mysql -u factorymanager -p1234 Factory -e \
    VALUES ('EMP-001', 'admin01', '\$2b\$12\$...', 'Admin');"
 ```
 
-## 화면 구성 (5개 탭)
+## 화면 구성 (4개 탭, v0.15.2)
 
 | 탭 | 클래스 | 기능 |
 |----|--------|------|
-| 종합 현황 | CPageHome | OK/NG 누적, 불량률, 스테이션별 현황, NG 이력 리스트 |
-| 입고 검사 | CPageStation1 | PatchCore 결과 (카메라뷰 + 히트맵 + 이상점수) |
-| 조립 검사 | CPageStation2 | YOLO11 결과 (카메라뷰 + 디텍션 + 히트맵) |
-| 통계/이력 | CPageStats | 시간대별 추세, 파레토 차트, 레이턴시 분포 |
+| 종합 현황 | CPageHome | OK/NG 누적, 불량률, 스테이션별 현황, NG 이력 리스트 (Summary 값은 로그인 직후 `STATS_RES(131)` 수신 시 초기화) |
+| ① 입고 검사 | CPageStation1 | PatchCore 결과 (카메라뷰 + 히트맵 + 이상점수) + 검사 설정 정보 서버값 자동 갱신 (v0.15.0) |
+| ② 조립 검사 | CPageStation2 | YOLO11 결과 (카메라뷰 + 디텍션 + 히트맵) |
 | 모델 관리 | CPageModel | 배포 모델 목록, 재학습 요청/진행률 (v0.11.0: Station2 PatchCore 선택 추가, v0.15.0: 재학습 중복 클릭 차단) |
+
+> **v0.15.2 변경**: 기존 "통계/이력" (CPageStats) 탭이 완전 제거되어 탭 구성이 5개 → 4개로 축소됨.
+> 통계 요약 정보는 CPageHome 의 Summary 영역이 계속 표시. 검사 이력 리스트도 CPageHome +
+> CPageStation1 이 분담. `STATS_REQ(130)` / `INSPECT_HISTORY_REQ(114)` 프로토콜은 그대로 유지.
 
 ## 디렉터리 구조
 
@@ -74,7 +77,7 @@ client/
 │   ├── PageHome.h/cpp                # 종합 현황 페이지
 │   ├── PageStation1.h/cpp            # 입고 검사 페이지
 │   ├── PageStation2.h/cpp            # 조립 검사 페이지
-│   ├── PageStats.h/cpp               # 통계/이력 페이지
+│   │                                 # (v0.15.2: PageStats.h/cpp 삭제됨 — 통계 탭 제거)
 │   ├── PageModel.h/cpp               # 모델 관리 페이지
 │   ├── CameraView.h/cpp              # 카메라/히트맵 커스텀 뷰
 │   ├── Factory_UI_CL.h/cpp           # MFC 앱 클래스

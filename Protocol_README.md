@@ -38,8 +38,8 @@
 | 112 | INSPECT_OK_COUNT_PUSH | 운용 → MFC | ✅ 완성 (GuiNotifier) |
 | 114 | INSPECT_HISTORY_REQ | MFC → 운용 | ✅ 완성 (DB 조회) |
 | 115 | INSPECT_HISTORY_RES | 운용 → MFC | ✅ 완성 |
-| 130 | STATS_REQ | MFC → 운용 | ✅ 완성 (DB 집계) |
-| 131 | STATS_RES | 운용 → MFC | ✅ 완성 |
+| 130 | STATS_REQ | MFC → 운용 | ✅ 완성 (DB 집계) — v0.15.2 이후 PageHome Summary 초기화 전용 |
+| 131 | STATS_RES | 운용 → MFC | ✅ 완성 — PageHome::ApplyStatsRes 에서만 처리 (PageStats 제거) |
 | 150 | MODEL_LIST_REQ | MFC → 운용 | ✅ 완성 (DB 조회) |
 | 151 | MODEL_LIST_RES | 운용 → MFC | ✅ 완성 (v0.15.0: PageStation1 검사설정 정보 자동 갱신에 사용) |
 | 152 | RETRAIN_REQ | MFC → 운용 | ✅ 완성 (v0.13.0: session_id 필드 추가) |

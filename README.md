@@ -312,7 +312,7 @@ MainServer → 클라 INSPECT_CONTROL_RES(161) → MessageBox 알림
 * Arduino 빨강/초록 LED 로직 단순화 (`arduino_led_control.ino` 통합)
 * MFC PageStation1 임계값 "0.50" 하드코딩 제거 → "AUTO (F1 최적화)" 표기
 
-### v0.15.0 — 통신 경로 정합성 (현재)
+### v0.15.0 — 통신 경로 정합성
 
 * **MODEL_LIST_RES(151) → PageStation1 연결**: v0.14.9 에서 하드코딩 제거 후 "로딩 중..." 만
   표시되던 것을 실제 서버값으로 자동 갱신 (`MainTabDlg::OnNetResponse` 에서 주입)
@@ -327,6 +327,28 @@ MainServer → 클라 INSPECT_CONTROL_RES(161) → MessageBox 알림
 * **`Inferencer.active_model_id` 도입**: `INSPECT_META` 의 `model_id=0` 하드코딩 제거.
   `MODEL_RELOAD_CMD` 에 `model_db_id` 필드 포함 시 자동 세팅 (현재 서버는 미동봉 → 0 유지)
 * **`ConnectionPool` 주석 보강**: nullptr 저장의 의도(shutdown double-close 회피)를 명확화
+
+### v0.15.1 — Hotfix: DB 컬럼 정합성
+
+* **`dao.cpp` SQL 컬럼명 `model_path` → `file_path`**: 기획서 v0.12 ERD 및 실제 운영 DB 가
+  `file_path` 를 쓰는데 코드가 `model_path` 로 INSERT 시도 → "Unknown column" 에러로 학습 완료
+  배포 파이프라인 전부 실패하던 문제 수정.
+* **`schema.sql` 을 기획서 ERD 에 맞춰 재정의**: `ENUM('PatchCore','YOLO11')`, `VARCHAR(20)`,
+  `file_path`, `trained_by FK → users.id`.
+* **`ModelInfo` 구조체에 `file_path` 필드 추가** (외부 사용처 영향 없는 확장).
+
+### v0.15.2 — PageStats (통계/이력) 탭 완전 제거 (현재)
+
+* **5개 탭 → 4개 탭**: 종합 현황 / ① 입고 검사 / ② 조립 검사 / 모델 관리
+* admin 의 `5c821f3 통계 제거 필요` 후속 작업 — `CPageStats` 클래스와 리소스 참조 완전 삭제
+  (`PageStats.cpp/h` 삭제 + `MainTabDlg` 에서 `m_stats` 참조 7곳 제거 + vcxproj 엔트리 제거)
+* **기능 이관**:
+  - Summary 누적값 초기화: `PageHome::ApplyStatsRes` (변경 없음)
+  - DB 검사 이력 리스트: `PageHome::OnInspectHistoryRes` + `PageStation1::PopulateNgHistoryFromJson`
+  - NG_IMAGE 의 timestamp/score: 패킷(`pkt->timestamp_iso`, `pkt->score`) 에서 직접 추출
+    (v0.14.7 에서 이미 패킷에 담김)
+* **유지**: `STATS_REQ(130)` / `STATS_RES(131)`, `INSPECT_HISTORY_REQ(114)` / `_RES(115)`
+  프로토콜 자체는 그대로. **MainServer / AiServer 재빌드 불필요**.
 
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고

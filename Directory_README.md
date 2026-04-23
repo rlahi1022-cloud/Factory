@@ -228,9 +228,9 @@ client/
 │   ├── ClientProtocol.h               # 프로토콜 번호 + fallback 기본값
 │   ├── PacketBuilder.h/cpp            # JSON 빌더 (ExtractBool, Utf8ToWide, EscapeJson, v0.15.0 백슬래시 카운팅)
 │   ├── NetworkClient.h/cpp            # TCP 통신 + silent drop 감지
-│   ├── MainTabDlg.h/cpp               # 5개 탭 + IDT_STATUSBAR 실시간 동기화
+│   ├── MainTabDlg.h/cpp               # 4개 탭 (v0.15.2: 통계 탭 제거) + IDT_STATUSBAR 실시간 동기화
 │   ├── LoginDlg.h/cpp                 # 로그인/회원가입 (서버 DB 인증)
-│   ├── PageHome/Station1/Station2/Stats/Model.cpp
+│   ├── PageHome/Station1/Station2/Model.cpp   # v0.15.2: PageStats.cpp/h 삭제됨
 │   ├── CameraView.cpp                 # ⭐ v0.14.7 CRITICAL_SECTION race 방지
 │   ├── res/                           # 아이콘 + 리소스 바이너리
 │   │   ├── FactoryUICL.rc2

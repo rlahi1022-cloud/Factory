@@ -218,6 +218,9 @@ double CPacketBuilder::ExtractDouble(const CStringA& json, const CStringA& key)
     char* endptr = nullptr;
     double val = strtod((LPCSTR)json + colon + 1, &endptr);
     if (endptr == (LPCSTR)json + colon + 1) return 0.0;  // 숫자 없음
+    // v0.15.2: NaN / Inf 차단 — 악의적 또는 손상된 JSON 이 "score": NaN 같은 값을 보내면
+    //   후속 연산에서 NaN 전파 + UI 표시 깨짐. 0.0 으로 방어.
+    if (!_finite(val)) return 0.0;
     return val;
 }
 

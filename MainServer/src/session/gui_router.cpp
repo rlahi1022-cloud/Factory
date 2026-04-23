@@ -549,9 +549,13 @@ bool GuiRouter::send_json(int fd, const std::string& json_body) {
 // extract_str — "key":"value" 에서 value 문자열 추출
 // 한계:
 //   - 중첩 객체/배열 미지원 — 1-depth 평탄 JSON 전용
-//   - 이스케이프된 따옴표(\") 미지원 — 현재 프로토콜에서는 문제없음
 // 보안:
 //   512자 상한 — 비정상 대용량 입력으로 인한 메모리 폭주 방지
+// v0.15.2 하드닝:
+//   MFC CPacketBuilder::ExtractString 과 동일한 **백슬래시 카운팅 로직** 적용.
+//   `\\"` 같이 백슬래시가 짝수 개 연속되면 그 뒤의 `"` 는 진짜 종료 따옴표이고,
+//   홀수 개면 escape 된 따옴표. 이전 `lq = find('"', fq+1)` 구현은 모든 escape 를
+//   무시해 조기 종료하는 버그가 있었음(현재 프로토콜은 escape 드물어 실질 영향은 낮았음).
 // ---------------------------------------------------------------------------
 std::string GuiRouter::extract_str(const std::string& json, const std::string& key) {
     std::string needle = "\"" + key + "\"";
@@ -561,8 +565,18 @@ std::string GuiRouter::extract_str(const std::string& json, const std::string& k
     if (colon == std::string::npos) return "";
     auto fq = json.find('"', colon);        // 값의 시작 따옴표
     if (fq == std::string::npos) return "";
-    auto lq = json.find('"', fq + 1);       // 값의 끝 따옴표
+
+    // 종료 따옴표 탐색 (백슬래시 카운팅)
+    std::size_t lq = std::string::npos;
+    for (std::size_t i = fq + 1; i < json.size(); ++i) {
+        if (json[i] == '"') {
+            std::size_t bs = 0;
+            for (std::size_t j = i; j > fq + 1 && json[j - 1] == '\\'; --j) ++bs;
+            if ((bs % 2) == 0) { lq = i; break; }
+        }
+    }
     if (lq == std::string::npos) return "";
+
     std::string value = json.substr(fq + 1, lq - fq - 1);
     if (value.size() > 512) value.resize(512);
     return value;
