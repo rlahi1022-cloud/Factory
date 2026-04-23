@@ -51,10 +51,8 @@ BOOL CPageStation2::OnInitDialog() {
     if (CWnd* w = GetDlgItem(IDC_BTN_S2_START)) w->EnableWindow(FALSE);
     if (CWnd* w = GetDlgItem(IDC_BTN_S2_STOP))  w->EnableWindow(TRUE);
 
-    // v0.15.2: 불량 유형 선택 / 재작업 지시 버튼은 서버 REWORK_REQ 프로토콜 미확정으로
-    //   시연 단계에서 혼란 방지 위해 **숨김 처리**. 프로토콜 확정 후 SW_SHOW 로 되돌린다.
-    if (CWnd* w = GetDlgItem(IDC_BTN_S2_DEFECT)) w->ShowWindow(SW_HIDE);
-    if (CWnd* w = GetDlgItem(IDC_BTN_S2_REWORK)) w->ShowWindow(SW_HIDE);
+    // v0.15.2.1: 사용자 요청으로 DEFECT/REWORK 버튼 복원 — 이전 커밋에서 숨겼던 것 복구.
+    //   핸들러는 여전히 "서버 REWORK_REQ 프로토콜 확정 후 구현" 안내 팝업 상태.
 
     Refresh(); return TRUE;
 }
