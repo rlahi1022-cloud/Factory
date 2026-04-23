@@ -92,6 +92,7 @@
 #define IDC_STATIC_S2_LAST              2325    // 마지막 신호 시각
 #define IDC_STATIC_S2_SOL               2326    // Solenoid ON/OFF
 #define IDC_STATIC_S2_SENS              2327    // Sensor Ready/Fault
+#define IDC_LIST_HISTORY                2330    // 이력 조회용 리스트 컨트롤 ID 추가
 
 // ── 통계 페이지 ───────────────────────────────────────────────────────────
 #define IDC_DATE_FROM                   2400
@@ -138,7 +139,7 @@
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        310
-#define _APS_NEXT_CONTROL_VALUE         2330    // 다음 신규 컨트롤은 2330부터
+#define _APS_NEXT_CONTROL_VALUE         2331    // 2330을 사용했으므로 다음 값인 2331로 변경
 #define _APS_NEXT_SYMED_VALUE           101
 #define _APS_NEXT_COMMAND_VALUE         32771
 #endif
