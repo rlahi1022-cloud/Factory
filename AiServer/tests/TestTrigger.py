@@ -16,12 +16,15 @@ from Common.Protocol import ProtocolNo
 from Common.Packet import PacketBuilder
 
 async def run_test():
-    host = '127.0.0.1'
+    host = '10.10.10.120'
     port = 9100  # 학습 서버 포트
 
     # 1. 메인 서버가 보낼 규격과 똑같이 데이터 구성
-    # 회원님의 실제 데이터 폴더 절대 경로를 입력합니다.
-    target_data_path = "/home/lms/바탕화면/ai_project/code/AiServer/data/station2/DataSet/DataSet2/자동생성어노테이션데이터/pet_bottle_yolo_label_v7"
+    # 실제 데이터 폴더 절대 경로 (학습서버가 열 수 있어야 함).
+    # 주의: 이 경로는 "학습서버 PC 의 로컬 절대경로" 여야 한다 —
+    #   본 스크립트를 어디서 실행하든 학습서버가 파일을 열 때 쓰는 경로이기 때문.
+    # 학습서버(10.10.10.120, 네이티브 Ubuntu) 로컬:
+    target_data_path = "/mnt/hdd/factory/code/AiServer/data/station2/yolo"
     
     body = {
         "request_id": "test_req_001",

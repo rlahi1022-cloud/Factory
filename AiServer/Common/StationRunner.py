@@ -469,8 +469,27 @@ class StationRunner:
         # 해결: 실제 학습 분포(정상 이미지)와 유사한 고정 이미지를 반복 사용하면
         # PatchCore 가 OK 로 판정 → NG 푸시 자체가 발생하지 않음.
         placeholder: Optional[_np.ndarray] = None
+
+        # v0.14.10: 카메라 미연결 상태에서 config.test_image_dir 가 지정되어 있으면
+        # 해당 폴더의 이미지들을 카메라 대신 순환 재생 (MFC 실시간 테스트용).
+        # - 폴더 비어있거나 경로 잘못되면 placeholder 로 폴백.
+        # - 각 이미지가 한 번씩 카메라 프레임처럼 파이프라인에 들어감.
+        test_image_paths: list = []
+        test_image_idx = 0
+
         if not self._camera.is_open:
-            placeholder = self._load_placeholder_frame()
+            test_dir = str(getattr(self._config, "test_image_dir", "") or "").strip()
+            if test_dir:
+                test_image_paths = self._collect_test_images(test_dir)
+                if test_image_paths:
+                    logger.info("[테스트 모드] 이미지 폴더 순환 재생 — %s (%d장)",
+                                test_dir, len(test_image_paths))
+                else:
+                    logger.warning("[테스트 모드] test_image_dir 지정됐으나 이미지 없음: %s",
+                                   test_dir)
+            # 폴더 비어있거나 미지정 → 기존 placeholder 1장 반복
+            if not test_image_paths:
+                placeholder = self._load_placeholder_frame()
 
         try:
             while self._is_running:
@@ -492,10 +511,18 @@ class StationRunner:
                         await asyncio.sleep(period)
                         continue
                 else:
-                    # 카메라 미연결/미지원 → placeholder 이미지 반복 사용
-                    # 랜덤 픽셀을 쓰지 않는 이유는 위 placeholder 주석 참조.
-                    # placeholder 로드 실패 시 회색 단색(128) 이미지로 fallback.
-                    if placeholder is not None:
+                    # 카메라 미연결/미지원 — 이미지 공급 전략 (우선순위):
+                    #   1) test_image_dir 지정됨 → 폴더 이미지 순환 재생 (v0.14.10)
+                    #   2) placeholder 이미지 1장 반복 (v0.14.2)
+                    #   3) 회색 단색 (fallback)
+                    if test_image_paths:
+                        frame = self._load_test_image(test_image_paths[test_image_idx])
+                        test_image_idx = (test_image_idx + 1) % len(test_image_paths)
+                        if frame is None:
+                            # 파일 손상/디코드 실패 시 다음 프레임으로 skip
+                            await asyncio.sleep(period)
+                            continue
+                    elif placeholder is not None:
                         frame = placeholder.copy()  # copy 로 안전하게 per-frame 인스턴스
                     else:
                         frame = _np.full((224, 224, 3), 128, dtype=_np.uint8)
@@ -666,6 +693,17 @@ class StationRunner:
                                     img_small, pred_mask_arr
                                 )
                                 pred_mask_bytes = encode_image(mask_img, ".png")
+
+                            # v0.14.10: Station2(YOLO) 의 경우 raw_anomaly_map/pred_mask 가
+                            # 없으니 bbox_overlay(YOLO 탐지 박스 그려진 이미지)를
+                            # MFC 3분할 뷰의 "Anomaly Map" 슬롯으로 재활용한다.
+                            # → 검사원이 "어떤 요소가 NG 판정됐는지" 즉시 확인 가능.
+                            if heatmap_bytes is None:
+                                bbox_overlay = result_dict.get("bbox_overlay")
+                                if bbox_overlay is not None:
+                                    import cv2 as _cv2
+                                    bbox_small = _downscale_for_transport(bbox_overlay, MAX_SIDE)
+                                    heatmap_bytes = encode_image(bbox_small, ".png")
                         except Exception as exc:
                             logger.warning("시각화 생성 실패: %s", exc)
 
@@ -1100,6 +1138,47 @@ class StationRunner:
     #   - config.patchcore_input_size 에 맞춰 리사이즈하지 않고 원본을 사용 —
     #     실제 카메라 프레임과 동일 크기/채널 유지 (추론 전 Inferencer 가 리사이즈).
     # -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # _collect_test_images() 메서드 (v0.14.10)
+    # -----------------------------------------------------------------------
+    # 목적: test_image_dir 폴더에서 이미지 파일 목록을 수집한다.
+    #       카메라 없이 MFC 실시간 테스트를 위한 순환 재생 모드 지원.
+    # 반환값: 이미지 파일 경로 리스트 (정렬됨, 확장자 .bmp/.jpg/.jpeg/.png 만)
+    # -----------------------------------------------------------------------
+    def _collect_test_images(self, dir_path: str) -> list:
+        from pathlib import Path as _Path
+        p = _Path(dir_path)
+        # 상대경로인 경우 AiServer 루트 기준으로 해석 (config.json 편의)
+        if not p.is_absolute():
+            p = _Path(__file__).resolve().parent.parent / dir_path
+        if not p.is_dir():
+            return []
+        exts = (".bmp", ".jpg", ".jpeg", ".png")
+        return sorted(f for f in p.iterdir() if f.suffix.lower() in exts)
+
+    # -----------------------------------------------------------------------
+    # _load_test_image() 메서드 (v0.14.10)
+    # -----------------------------------------------------------------------
+    # 목적: 순환 재생 중인 테스트 이미지 1장을 cv2 로 읽어 BGR ndarray 로 반환.
+    #       한글 경로 안전하도록 np.fromfile + cv2.imdecode 사용.
+    # 반환값: ndarray 또는 None (로드 실패 시)
+    # -----------------------------------------------------------------------
+    def _load_test_image(self, path):
+        import numpy as _np
+        try:
+            import cv2 as _cv2
+        except ImportError:
+            return None
+        try:
+            data = _np.fromfile(str(path), dtype=_np.uint8)
+            img = _cv2.imdecode(data, _cv2.IMREAD_COLOR)
+            if img is None or img.size == 0:
+                return None
+            return img
+        except Exception as exc:
+            logger.warning("테스트 이미지 로드 실패 %s: %s", path, exc)
+            return None
+
     def _load_placeholder_frame(self):
         import numpy as _np
         from pathlib import Path as _Path

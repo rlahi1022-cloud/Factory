@@ -25,6 +25,8 @@ import sys
 import time
 # Path: 파일 경로를 객체로 다루기 위한 라이브러리
 from pathlib import Path
+# Any: make_anomalib_visualization 의 model 파라미터 타입힌트 (누락되어 있던 import)
+from typing import Any
 
 # AiServer 루트를 파이썬 모듈 검색 경로에 추가
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -524,38 +526,78 @@ def batch_test_station2(folder: Path, yolo_path: str, patchcore_path: str,
         # 출력
         print(f"  {idx:>4} | {name:<35} | {verdict:>4} | {cap_ok:>5} | {label_ok:>5} | {fill_ok:>5} | {defects:<30}")
 
-        # ── 시각화 이미지 저장 (Station2) ──
+        # ── 시각화 이미지 저장 (Station2, v0.14.10 — Station1 스타일 3분할) ──
         if save_vis and vis_output_dir is not None:
-            # Station2는 bbox_overlay(YOLO 박스 그려진 이미지)를 활용
-            # patchcore_score로 히트맵 대용 점수 제공
-            bbox_overlay = result.get("bbox_overlay")
-            patchcore_score = result.get("patchcore_score", 0.0)
+            bbox_overlay     = result.get("bbox_overlay")       # YOLO bbox 그려진 이미지
+            patchcore_score  = result.get("patchcore_score", 0.0)
+            patchcore_heat   = result.get("heatmap")            # 없으면 None
+            patchcore_mask   = result.get("pred_mask")          # 없으면 None
 
-            # bbox 오버레이가 있으면 그걸 사용, 없으면 원본
-            display_img = bbox_overlay if bbox_overlay is not None else img.copy()
+            # 3패널 공통 높이/폭으로 리사이즈 — 가로 3분할 레이아웃
+            PANEL_H, PANEL_W = 360, 360
 
-            # YOLO + PatchCore 정보를 이미지 하단에 텍스트로 추가
-            h, w = display_img.shape[:2]
-            info_h = 80
-            info_panel = np.full((info_h, w, 3), (30, 30, 30), dtype=np.uint8)
+            def _resize_panel(arr, fallback_color=(18, 18, 18), text=None):
+                """이미지를 패널 크기로 리사이즈. None 이면 회색 placeholder + 텍스트."""
+                if arr is None:
+                    panel = np.full((PANEL_H, PANEL_W, 3), fallback_color, dtype=np.uint8)
+                    if text:
+                        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+                        cv2.putText(panel, text,
+                                    ((PANEL_W - tw) // 2, (PANEL_H + th) // 2),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
+                    return panel
+                return cv2.resize(arr, (PANEL_W, PANEL_H))
+
+            # 패널 1: 원본
+            panel_orig = _resize_panel(img)
+            # 패널 2: YOLO bbox 오버레이 (탐지 결과)
+            panel_yolo = _resize_panel(bbox_overlay, text="YOLO bbox N/A")
+            # 패널 3: PatchCore 히트맵 (모델 없으면 placeholder)
+            if patchcore_heat is not None:
+                panel_mask = _resize_panel(patchcore_heat)
+            elif patchcore_mask is not None:
+                # binary mask → uint8 변환 후 원본과 합성
+                bm = (patchcore_mask.astype(np.float32) > 0.5).astype(np.uint8) * 255
+                bm_rgb = cv2.cvtColor(bm, cv2.COLOR_GRAY2BGR) if bm.ndim == 2 else bm
+                panel_mask = _resize_panel(bm_rgb)
+            else:
+                panel_mask = _resize_panel(None, text="PatchCore N/A")
+
+            # 각 패널 상단에 라벨 텍스트 (Station1 스타일)
+            def _add_label(panel, label):
+                bar = np.full((22, panel.shape[1], 3), (0, 0, 0), dtype=np.uint8)
+                cv2.putText(bar, label, (6, 16), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5, (230, 230, 230), 1)
+                return np.vstack([bar, panel])
+
+            panel_orig = _add_label(panel_orig, "Image")
+            panel_yolo = _add_label(panel_yolo, "Image + YOLO Detection")
+            panel_mask = _add_label(panel_mask, "Image + Pred Mask")
+
+            # 가로로 3분할 결합
+            panels = np.hstack([panel_orig, panel_yolo, panel_mask])
+
+            # 상단 판정 배너 (녹색=OK, 빨강=NG)
+            banner_h = 40
+            banner_color = (0, 180, 0) if verdict == "OK" else (0, 0, 220)
+            banner = np.full((banner_h, panels.shape[1], 3), banner_color, dtype=np.uint8)
+            banner_text = f"{verdict}  |  Score: {score:.4f}"
+            cv2.putText(banner, banner_text, (12, 28),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+            # 하단 정보 패널 (결함 유형/필드별 상태)
+            info_h = 54
+            info_panel = np.full((info_h, panels.shape[1], 3), (28, 28, 28), dtype=np.uint8)
             info_lines = [
-                f"cap: {cap_ok}  label: {label_ok}  fill: {fill_ok}",
-                f"PatchCore score: {patchcore_score:.4f}  Threshold: {threshold:.4f}",
+                f"cap: {cap_ok}   label: {label_ok}   fill: {fill_ok}   PatchCore: {patchcore_score:.3f}",
                 f"Defects: {defects}",
             ]
             for i, line in enumerate(info_lines):
-                cv2.putText(info_panel, line, (15, 25 + i * 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            display_img = np.vstack([display_img, info_panel])
+                cv2.putText(info_panel, line, (12, 20 + i * 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (235, 235, 235), 1)
 
-            # 상단 판정 배너 추가 (녹색/빨강)
-            banner_h = 50
-            banner_color = (0, 180, 0) if verdict == "OK" else (0, 0, 220)
-            banner = np.full((banner_h, display_img.shape[1], 3), banner_color, dtype=np.uint8)
-            banner_text = f"{verdict}  |  Score: {score:.4f}  |  Station2 (Assembly)"
-            cv2.putText(banner, banner_text, (20, 35), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.9, (255, 255, 255), 2)
-            vis_img = np.vstack([banner, display_img])
+            # 최종 이미지: 배너 + 3분할 + 정보
+            vis_img = np.vstack([banner, panels, info_panel])
 
             # 파일 저장
             safe_name = img_path.stem.replace(" ", "_")[:40]

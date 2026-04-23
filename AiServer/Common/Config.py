@@ -49,6 +49,11 @@ class StationConfig:
     camera_enabled: bool = True
     camera_fps: float = 2.0
 
+    # v0.14.10: 테스트 모드 — camera_enabled=false 인 상태에서 이 경로가 설정돼 있으면
+    #   해당 폴더의 이미지들을 카메라 대신 순환 재생한다. MFC/Arduino 실운영 파이프라인을
+    #   카메라 없이 검증할 때 사용. 예: "./data/station2/yolo/images/test"
+    test_image_dir: str = ""
+
     # ── AI 모델 경로 ──
     model_path: str = ""                          # 메인 모델 파일 경로 (Station1: PatchCore .ckpt / Station2: YOLO11 .pt)
     patchcore_model_path: str = ""                # Station2 전용: 라벨 표면 품질 검사용 PatchCore 모델 경로
@@ -131,6 +136,9 @@ class StationConfig:
             camera_serial=ConfigLoader.get(f"{prefix}.camera_serial", ""),
             camera_enabled=ConfigLoader.get_bool(f"{prefix}.camera_enabled", True),
             camera_fps=ConfigLoader.get_float(f"{prefix}.camera_fps", 2.0),
+
+            # v0.14.10: 카메라 미연결 시 테스트 이미지 폴더 순환
+            test_image_dir=ConfigLoader.get(f"{prefix}.test_image_dir", ""),
 
             # Arduino 시리얼 통신 설정 (v0.14.8: config.json 에서 로드 누락되던 버그 수정)
             # NG 판정 시 REJECT/ALERT 명령을 시리얼로 Arduino 에 전송한다.
