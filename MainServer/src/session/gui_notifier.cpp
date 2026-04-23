@@ -30,6 +30,7 @@
 #include "session/gui_notifier.h"
 #include "session/session_manager.h"
 #include "security/json_safety.h"
+#include "storage/dao.h"   // v0.15.6: AssemblyDao::extract_array/int 재사용 (Station2 detections 주입)
 
 #include "core/logger.h"
 
@@ -126,6 +127,18 @@ void GuiNotifier::on_gui_push(const std::any& payload) {
         return;
     }
 
+    // v0.15.6: Station2 전용 YOLO 디텍션/구조판정 필드를 NG_PUSH JSON 에 포함.
+    //   이전엔 detections / cap_ok / label_ok / fill_ok 가 ev.raw_json 에는 있지만
+    //   gui_notifier 가 JSON 조립 시 누락 → MFC PageStation2 의 YOLO 리스트 영구 빈 상태.
+    //   AssemblyDao::extract_* static 유틸 재사용으로 최소 침습 추가.
+    //   Station1(PatchCore 단독) 에서는 해당 키가 raw_json 에 없으므로 안전한 기본값
+    //   ("[]" / 0) 으로 주입 — MFC 수신측에 지장 없음.
+    std::string detections_arr = (ev.station_id == 2)
+        ? AssemblyDao::extract_array(ev.raw_json, "detections") : std::string("[]");
+    int cap_ok   = (ev.station_id == 2) ? AssemblyDao::extract_int(ev.raw_json, "cap_ok")   : 0;
+    int label_ok = (ev.station_id == 2) ? AssemblyDao::extract_int(ev.raw_json, "label_ok") : 0;
+    int fill_ok  = (ev.station_id == 2) ? AssemblyDao::extract_int(ev.raw_json, "fill_ok")  : 0;
+
     std::ostringstream os;
     os << "{\"protocol_no\":110"
        << ",\"id\":" << ev.db_id                      // v0.14.7: DB row id (MFC 리스트 중복방지 키)
@@ -139,6 +152,11 @@ void GuiNotifier::on_gui_push(const std::any& payload) {
        << ",\"image_size\":"     << ev.image_bytes.size()
        << ",\"heatmap_size\":"   << ev.heatmap_bytes.size()
        << ",\"pred_mask_size\":" << ev.pred_mask_bytes.size()
+       // v0.15.6: Station2 YOLO 디텍션/구조판정 (Station1 은 "[]"/0)
+       << ",\"detections\":" << (detections_arr.empty() ? std::string("[]") : detections_arr)
+       << ",\"cap_ok\":"     << cap_ok
+       << ",\"label_ok\":"   << label_ok
+       << ",\"fill_ok\":"    << fill_ok
        << "}";
 
     // 세 바이너리를 순서대로 이어붙여 하나의 연속 블록으로 전송.
