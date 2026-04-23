@@ -68,6 +68,7 @@ public:
         std::string model_type;
         std::string version;
         double accuracy;
+        std::string file_path;      // v0.15.1: 모델 바이너리 파일 경로
         std::string deployed_at;
         int is_active;
     };

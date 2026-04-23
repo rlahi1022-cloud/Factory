@@ -299,15 +299,21 @@ long long AssemblyDao::insert(const InspectionEvent& ev, long long inspection_id
 // ============================================================================
 // ModelDao — models 테이블 (학습된 모델 이력 + 배포 상태)
 // ---------------------------------------------------------------------------
-// 스키마 (요약):
+// 스키마 (기획서 v0.12 ERD 기준, 실제 DB 와 일치):
 //   id           PK AUTO_INCREMENT
 //   station_id   TINYINT (1 or 2)
-//   model_type   VARCHAR ('PatchCore' | 'YOLO11')
-//   version      VARCHAR (예: 'v20260422_1530')
-//   accuracy     FLOAT   (AUROC 또는 mAP50)
-//   model_path   VARCHAR (메인서버 로컬 저장 경로)
-//   deployed_at  DATETIME (NOW())
-//   is_active    TINYINT (1=활성, 0=과거 버전)
+//   model_type   ENUM('PatchCore','YOLO11')
+//   version      VARCHAR(20)  (예: 'v20260422_1530')
+//   accuracy     FLOAT        (AUROC 또는 mAP50)
+//   file_path    VARCHAR(255) (메인서버 로컬 저장 경로) — 기획서 ERD 컬럼명
+//   deployed_at  DATETIME     (NOW())
+//   is_active    TINYINT      (1=활성, 0=과거 버전)
+//   trained_by   INT NULL FK → users.id
+//
+// v0.15.1: 컬럼명을 기획서 ERD 기준 `file_path` 로 통일.
+//   이전 코드가 `model_path` 로 INSERT 시도 → "Unknown column" 에러로
+//   학습 완료 배포 파이프라인이 전부 실패하던 문제 수정.
+//   C++ 내부 변수명은 `ev.model_path` 유지(범위 최소화) — SQL 컬럼에만 `file_path`.
 //
 // insert() 는 학습 완료 시 호출되어 is_active=1 로 삽입.
 // 같은 (station_id, model_type) 의 과거 행을 0 으로 내리는 로직은 현재 없음 —
@@ -321,8 +327,10 @@ bool ModelDao::insert(const TrainCompleteEvent& ev) {
     MYSQL_STMT* stmt = mysql_stmt_init(conn);
     if (!stmt) return false;
 
+    // v0.15.1: 컬럼명 `file_path` (기획서 ERD / 실제 DB 와 일치).
+    //   C++ 변수는 여전히 ev.model_path — 의미는 동일(모델 파일 경로).
     const char* sql =
-        "INSERT INTO models (station_id, model_type, version, accuracy, model_path, deployed_at, is_active) "
+        "INSERT INTO models (station_id, model_type, version, accuracy, file_path, deployed_at, is_active) "
         "VALUES (?, ?, ?, ?, ?, NOW(), 1)";
 
     if (mysql_stmt_prepare(stmt, sql, static_cast<unsigned long>(strlen(sql))) != 0) {
@@ -378,8 +386,11 @@ std::vector<ModelDao::ModelInfo> ModelDao::list_all() {
     PooledConnection conn(pool_);
     if (!conn.get()) return result;
 
+    // v0.15.1: file_path 컬럼도 함께 SELECT — 클라이언트 PageStation1 이
+    //   "어떤 파일이 배포됐는가" 까지 표시할 수 있도록 확장.
+    //   Station1/Station2 + PatchCore/YOLO11 구분은 station_id + model_type 조합.
     const char* sql =
-        "SELECT id, station_id, model_type, version, accuracy, deployed_at, is_active "
+        "SELECT id, station_id, model_type, version, accuracy, file_path, deployed_at, is_active "
         "FROM models ORDER BY id DESC";
 
     if (mysql_query(conn, sql) != 0) return result;
@@ -395,8 +406,9 @@ std::vector<ModelDao::ModelInfo> ModelDao::list_all() {
         m.model_type = row[2] ? row[2] : "";
         m.version = row[3] ? row[3] : "";
         m.accuracy = row[4] ? std::atof(row[4]) : 0;
-        m.deployed_at = row[5] ? row[5] : "";
-        m.is_active = row[6] ? std::atoi(row[6]) : 0;
+        m.file_path = row[5] ? row[5] : "";            // v0.15.1
+        m.deployed_at = row[6] ? row[6] : "";
+        m.is_active = row[7] ? std::atoi(row[7]) : 0;
         result.push_back(m);
     }
     mysql_free_result(res);

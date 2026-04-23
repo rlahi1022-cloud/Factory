@@ -128,9 +128,10 @@ VALUES ('EMP-001', 'admin01', '$2b$12$...해시값...', 'Admin');
 
 학습서버 TRAIN_COMPLETE(1104) 수신 시 DbManager가 자동 INSERT.
 
-> ⚠️ **기획서 v0.12 ERD 대비 누락 컬럼**: `trained_by INT NULL FK → users.id` 가 기획서엔
-> 있으나 실제 `schema.sql` 에는 없음. "누가 학습한 모델인가" 추적 기능 미구현 상태.
-> 향후 `models` 테이블에 컬럼 추가 시 호환성 고려.
+> ✅ **v0.15.1 정합성 수정**: 기획서 v0.12 ERD 가 정본. 실제 운영 DB 와 `schema.sql` /
+> `dao.cpp` 모두 **`file_path`** 컬럼명, `ENUM('PatchCore','YOLO11')`, `trained_by FK → users.id`
+> 구조로 통일됨. 이전에 `dao.cpp` 가 `model_path` 로 INSERT 시도하다가 "Unknown column"
+> 에러로 학습 완료 배포 파이프라인이 전부 실패하던 문제를 수정함.
 
 ### bottles (용기 상태 추적)
 

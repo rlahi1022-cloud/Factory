@@ -54,17 +54,25 @@ CREATE TABLE IF NOT EXISTS assemblies (
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- models (AI 모델 버전 관리)
+--   기획서 v0.12 ERD 기준. v0.15.1 에서 DB 와 schema.sql 정합성 맞춤.
+--   - file_path (이전 model_path 아님)
+--   - model_type 은 ENUM 으로 값 범위 DB 레벨 검증
+--   - trained_by FK: 누가 이 모델을 학습 등록했는가 (NULL 허용 — AI 자동 학습)
 -- ─────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS models (
     id           INT AUTO_INCREMENT PRIMARY KEY,
     station_id   INT NOT NULL,
-    model_type   VARCHAR(50) NOT NULL,
-    version      VARCHAR(50) NOT NULL,
-    accuracy     DOUBLE NOT NULL,
-    model_path   VARCHAR(255) NULL,
-    deployed_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    is_active    TINYINT(1) NOT NULL DEFAULT 1,
-    INDEX idx_station_active (station_id, is_active)
+    model_type   ENUM('PatchCore','YOLO11') NOT NULL,
+    version      VARCHAR(20) NOT NULL,
+    accuracy     FLOAT NULL,
+    file_path    VARCHAR(255) NOT NULL,
+    deployed_at  DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
+    is_active    TINYINT(1) NOT NULL DEFAULT 0,
+    trained_by   INT NULL,
+    INDEX idx_station_active (station_id, is_active),
+    INDEX idx_trained_by (trained_by),
+    CONSTRAINT fk_models_trained_by
+        FOREIGN KEY (trained_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
 -- ─────────────────────────────────────────────────────────────────────────
