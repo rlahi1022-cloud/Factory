@@ -337,18 +337,52 @@ MainServer → 클라 INSPECT_CONTROL_RES(161) → MessageBox 알림
   `file_path`, `trained_by FK → users.id`.
 * **`ModelInfo` 구조체에 `file_path` 필드 추가** (외부 사용처 영향 없는 확장).
 
-### v0.15.2 — PageStats (통계/이력) 탭 완전 제거 (현재)
+### v0.15.2 — PageStats (통계/이력) 탭 완전 제거
 
 * **5개 탭 → 4개 탭**: 종합 현황 / ① 입고 검사 / ② 조립 검사 / 모델 관리
 * admin 의 `5c821f3 통계 제거 필요` 후속 작업 — `CPageStats` 클래스와 리소스 참조 완전 삭제
-  (`PageStats.cpp/h` 삭제 + `MainTabDlg` 에서 `m_stats` 참조 7곳 제거 + vcxproj 엔트리 제거)
-* **기능 이관**:
-  - Summary 누적값 초기화: `PageHome::ApplyStatsRes` (변경 없음)
-  - DB 검사 이력 리스트: `PageHome::OnInspectHistoryRes` + `PageStation1::PopulateNgHistoryFromJson`
-  - NG_IMAGE 의 timestamp/score: 패킷(`pkt->timestamp_iso`, `pkt->score`) 에서 직접 추출
-    (v0.14.7 에서 이미 패킷에 담김)
-* **유지**: `STATS_REQ(130)` / `STATS_RES(131)`, `INSPECT_HISTORY_REQ(114)` / `_RES(115)`
-  프로토콜 자체는 그대로. **MainServer / AiServer 재빌드 불필요**.
+* Station1/Station2 검사 Start/Stop PUSHBUTTON rc 추가
+* MainServer `GuiRouter::extract_str` 백슬래시 카운팅 하드닝
+* MFC `ExtractDouble` NaN/Inf 차단
+
+### v0.15.3 — Station2 본격 가동 점검
+
+* 파싱/ACK/DB INSERT **5,000건 초과** 처리 무결성 확인 — 치명 오류 0건
+* Station2 `pred_mask` 미생성 현황 문서화 (이후 v0.15.4 에서 영구 확정)
+
+### v0.15.4 — Station2 YOLO11 단독 확정
+
+* **PatchCore 를 Station2 에서 제거** — 조립검사는 YOLO11 단독 운영
+* `config.json` `station2.patchcore_model_path = ""` 로 자동 skip
+* `PageModel` 콤보박스에서 "Station #2 — PatchCore" 항목 제거
+* DB/프로토콜 호환성 유지 (관련 dead 코드는 v0.16 에서 청소 예정)
+
+### v0.15.5 — 치명 Hotfix: Config 객체 배열 파서
+
+* **학습 PC LED 가 회색 고정** 되던 증상의 근본 원인
+* `MainServer/src/core/config.cpp` 의 객체 배열 파서에서 `idx++` 가 `consume(',')`
+  뒤에 있어 **마지막 원소가 카운트에서 빠지던** 버그 수정
+* 증상: `health_check.targets` 의 3번째 `ai_training` 이 values_ 에는 저장되지만
+  count=2 로 저장되어 `get_health_targets()` 가 영구 무시
+* 수정: 1 줄 이동 — `p.consume('}');` 직후 `idx++` 를 먼저 실행
+* 메인서버 리빌드 필수
+
+### v0.15.6 — Station2 YOLO detections 를 NG_PUSH 에 포함
+
+* **PageStation2 YOLO 리스트가 항상 비어있던** 증상의 원인
+* AI→DB 까지는 전달되던 `detections` 가 MainServer→MFC 구간에서 누락됨
+* `gui_notifier.cpp` 의 INSPECT_NG_PUSH(110) JSON 에 4개 필드 추가:
+  `detections`, `cap_ok`, `label_ok`, `fill_ok`
+* `AssemblyDao::extract_array/int` static 유틸 재사용 (최소 침습)
+* Station1 은 기본값 (`[]`/0) 주입으로 프로토콜 호환 유지
+
+### v0.15.7 — Station1 NG 이력 리스트 YOLO 컬럼 숨김 (최종)
+
+* Station1 은 PatchCore 이상탐지 — "클래스 / 신뢰도 / 판정" 은 의미 없는 `-` 표시였음
+* `CNgHistoryList::SetYoloColumnsVisible(bool)` 공용 플래그 추가
+* Station1: false → 5컬럼 (ID/스테이션/시각/결과/점수)
+* Station2 / Home: true 유지 → 8컬럼 그대로
+* MFC 리빌드만 필요, 서버측 무변경
 
 ### 상세 현황
 보안 수정 현황은 프로젝트 문서 참고

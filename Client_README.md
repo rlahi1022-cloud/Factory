@@ -54,7 +54,7 @@ mysql -u factorymanager -p1234 Factory -e \
 | 탭 | 클래스 | 기능 |
 |----|--------|------|
 | 종합 현황 | CPageHome | OK/NG 누적, 불량률, 스테이션별 현황, NG 이력 리스트 (Summary 값은 로그인 직후 `STATS_RES(131)` 수신 시 초기화) |
-| ① 입고 검사 | CPageStation1 | PatchCore 결과 (카메라뷰 + 히트맵 + 이상점수) + 검사 설정 정보 서버값 자동 갱신 (v0.15.0) |
+| ① 입고 검사 | CPageStation1 | PatchCore 결과 (카메라뷰 + 히트맵 + 이상점수) + 검사 설정 정보 서버값 자동 갱신 (v0.15.0). NG 이력 5컬럼 (v0.15.7: YOLO 컬럼 숨김) |
 | ② 조립 검사 | CPageStation2 | YOLO11 결과 (카메라뷰 + 디텍션 + 히트맵) |
 | 모델 관리 | CPageModel | 배포 모델 목록, 재학습 요청/진행률 (v0.15.0: 재학습 중복 클릭 차단, v0.15.4: Station2 PatchCore 옵션 제거 — YOLO11 단독 확정) |
 
