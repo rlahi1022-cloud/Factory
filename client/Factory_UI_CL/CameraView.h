@@ -123,9 +123,19 @@ public:
     void Clear();
     int  Count() const { return static_cast<int>(m_entries.size()); }
 
+    // v0.15.7: YOLO 컬럼(클래스/신뢰도/판정) 표시 여부 제어.
+    //   Station1 (PatchCore 이상탐지) 은 YOLO 개념이 없어 false 로 설정해 숨긴다.
+    //   Station2 / Home (혼합 이력) 은 기본값 true 유지.
+    //   호출 시점: PageStation1::OnInitDialog() 에서 SetYoloColumnsVisible(false).
+    void SetYoloColumnsVisible(bool visible) {
+        m_showYoloCols = visible;
+        if (GetSafeHwnd()) Invalidate(FALSE);
+    }
+
 protected:
     std::deque<Entry>  m_entries;   // deque: 앞뒤 삽입/제거 O(1), 이터레이터 안정
     CRITICAL_SECTION   m_cs;        // m_entries 스레드 보호
+    bool m_showYoloCols = true;     // v0.15.7: YOLO 3컬럼 표시 플래그 (기본 true)
     int m_maxEntries = 10;
     int m_rowH       = 36;           // v0.16.0b: 행 높이 확대 (28 → 36)
     int m_headerH    = 32;           // v0.16.0b: 헤더 높이 확대 (26 → 32)

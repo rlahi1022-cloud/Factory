@@ -64,6 +64,10 @@ BOOL CPageStation1::OnInitDialog() {
     if (CWnd* w = GetDlgItem(IDC_BTN_S1_START)) w->EnableWindow(FALSE);
     if (CWnd* w = GetDlgItem(IDC_BTN_S1_STOP))  w->EnableWindow(TRUE);
 
+    // v0.15.7: Station1 은 PatchCore 이상탐지 — YOLO "클래스/신뢰도/판정" 컬럼은
+    //   의미가 없으므로 NG 이력 리스트에서 숨긴다.
+    m_ngList.SetYoloColumnsVisible(false);
+
     Refresh();
     return TRUE;
 }

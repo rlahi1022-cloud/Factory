@@ -475,9 +475,12 @@ void CNgHistoryList::DrawHeader(CDC& dc, const CRect& rc) {
     cell(_T("결과"),     kColResW);
     cell(_T("점수"),     kColScoreW);
     // v0.16.0: Station2 YOLO 디텍션 컬럼
-    cell(_T("클래스"),   kColDetClsW);
-    cell(_T("신뢰도"),   kColDetConfW);
-    cell(_T("판정"),     kColDetOkW);
+    // v0.15.7: Station1 은 PatchCore 이상탐지 모델이라 클래스/신뢰도 개념 없음 → 숨김
+    if (m_showYoloCols) {
+        cell(_T("클래스"),   kColDetClsW);
+        cell(_T("신뢰도"),   kColDetConfW);
+        cell(_T("판정"),     kColDetOkW);
+    }
     dc.SelectObject(p_f);
 }
 
@@ -508,15 +511,18 @@ void CNgHistoryList::DrawRow(CDC& dc, const Entry& e, const CRect& rowRc) {
                                         cell(RGB(255, 130, 130), _T("NG"),     kColResW);
     s.Format(_T("%.2f"), e.score);      cell(RGB(240, 220, 160), s,            kColScoreW);
     // v0.16.0: YOLO 디텍션 컬럼 — Station1은 비어있으면 "-" 표시
-    if (!e.detClass.IsEmpty()) {
-                                        cell(RGB(160, 220, 180), e.detClass,   kColDetClsW);
-        s.Format(_T("%.2f"), e.detConf);cell(RGB(160, 220, 180), s,            kColDetConfW);
-                                        cell(e.detOk ? RGB(100,200,100) : RGB(255,100,100),
-                                             e.detOk ? _T("OK") : _T("NG"),   kColDetOkW);
-    } else {
-                                        cell(RGB(100, 100, 110), _T("-"),      kColDetClsW);
-                                        cell(RGB(100, 100, 110), _T("-"),      kColDetConfW);
-                                        cell(RGB(100, 100, 110), _T("-"),      kColDetOkW);
+    // v0.15.7: m_showYoloCols=false (Station1) 이면 YOLO 3컬럼 전부 생략
+    if (m_showYoloCols) {
+        if (!e.detClass.IsEmpty()) {
+                                            cell(RGB(160, 220, 180), e.detClass,   kColDetClsW);
+            s.Format(_T("%.2f"), e.detConf);cell(RGB(160, 220, 180), s,            kColDetConfW);
+                                            cell(e.detOk ? RGB(100,200,100) : RGB(255,100,100),
+                                                 e.detOk ? _T("OK") : _T("NG"),   kColDetOkW);
+        } else {
+                                            cell(RGB(100, 100, 110), _T("-"),      kColDetClsW);
+                                            cell(RGB(100, 100, 110), _T("-"),      kColDetConfW);
+                                            cell(RGB(100, 100, 110), _T("-"),      kColDetOkW);
+        }
     }
 
     dc.SelectObject(p_f);
