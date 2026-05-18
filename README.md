@@ -15,6 +15,61 @@ Edge AI 추론 서버와 이벤트 기반 Main Server를 통해
 
 ---
 
+## 설계 결정
+
+### 아키텍처
+* **3계층 아키텍처**: Handler → Service → DAO (SRP 적용)
+* **이벤트 기반**: EventBus + Worker Pool 4스레드 병렬 처리
+* **Hub-and-Spoke**: MainServer가 모든 통신의 중앙 허브
+* **관심사 분리**: 통신/로직/저장/세션/보안 계층 완전 분리
+
+### 신뢰성
+* **TCP Keepalive 공격적 튜닝**: 60초 유휴 → 10초 × 3회 probe → 90초 내 좀비 감지
+* **지수 백오프 재시도**: MODEL_RELOAD 1 → 5 → 30 → 120 → 300초 (5회 시도)
+* **Atomic File Write**: 임시파일 → fsync → rename (부분 파일 방지)
+* **Snapshot-then-Release**: broadcast 시 mutex 내 스냅샷만, send는 락 밖에서
+* **ConnectionPool 재연결**: mysql_ping 실패 시 자동 복구 + double-close 방지
+* **UI 연결 상태 실시간 동기화**: 1초 타이머로 소켓 상태 검증
+* **HealthChecker 동적 주기**: 모든 서버 정상 시 30초, 장애 발생 시 5초 주기로 전환
+
+### 데이터 흐름
+* NG 중심 전송 구조 (트래픽 최적화)
+* inspection_id 기반 end-to-end 추적
+* ACK / 재전송 기반 데이터 신뢰성 확보
+* **검증 즉시 ACK → 백그라운드 영속화** (INSPECTION_VALIDATED 이벤트)
+* 모델 바이너리 TCP 전송 (학습서버 → 메인서버 → 추론서버)
+* asyncio.Queue 기반 비동기 처리 (Backpressure 대응)
+
+### 보안 (Defense in Depth)
+* MariaDB Prepared Statement (SQL injection 원천 차단)
+* IP 화이트리스트 (내부망만 허용)
+* Input Validation + Output Escaping (JSON injection 방지)
+* bcrypt + Salt (/dev/urandom 기반 암호학적 난수)
+* Path Traversal 차단 (version 문자열 검증)
+
+---
+
+## 회고
+
+### 잘된 점
+* **검증과 영속화 분리로 ACK 지연 근본 해결**: 초기 구조에서는 NG 수신 → DB INSERT → 이미지 저장 → ACK 회신이 직렬로 묶여 있어 고부하 상황에서 AI 서버 측 ACK 타임아웃이 빈번하게 발생했다. validate_only + INSPECTION_VALIDATED 이벤트로 분리한 뒤 ACK 지연이 500ms+ 에서 수 ms 수준으로 떨어졌고, 초당 수십 건 NG 시나리오에서도 안정적으로 동작했다.
+* **server_type 기반 동적 매칭**: HealthChecker에서 IP를 하드코딩하지 않고 server_type 라벨로 식별하도록 바꾼 덕분에, 학습서버를 다른 PC로 옮기는 작업이 config 한 줄 수정으로 끝났다. 배포 유연성이 크게 향상되었다.
+* **Defense in Depth 적용**: prepared statement / IP 화이트리스트 / 입력 검증 / 출력 이스케이프 / bcrypt + salt를 계층적으로 쌓아, 단일 방어선이 뚫려도 다음 층에서 막히는 구조를 만들었다. 보안 수정 46/47 항목을 완료했다.
+* **통합 config.json**: 흩어져 있던 IP/포트/경로/하이퍼파라미터를 단일 파일로 통합해 운영 PC 교체나 포트 변경이 코드 수정 없이 가능해졌다.
+
+### 어려웠던 점
+* **broadcast 락 경합**: SessionManager가 모든 세션을 순회하며 send를 호출할 때 mutex를 잡고 있으니, 느린 클라이언트 한 명이 전체 broadcast를 지연시켰다. Snapshot-then-Release 패턴(락 안에서는 세션 포인터만 복사, 실제 send는 락 밖)으로 해결했다.
+* **DB 커넥션 재연결**: mysql_ping 실패 시 재연결을 시도하다가 double-close 버그가 두 차례 발생했다. 결국 close 직전 핸들을 nullptr 로 비우고 재할당하는 식으로 정리했다.
+* **TCP keepalive 튜닝**: 기본값으로는 끊긴 연결을 감지하는 데 2시간이 걸려, 좀비 세션이 누적되었다. 60초 유휴 + 10초 × 3회 probe로 공격적으로 튜닝해 90초 내 감지 가능하게 만들었다.
+* **C++ ↔ Python 프로토콜 동기화**: 양쪽에서 패킷 번호와 JSON 키 이름을 손으로 맞추다 보니 미묘한 오타가 자주 발생했다. 결국 프로토콜 상수 표를 별도로 관리하고 양쪽에서 동일하게 참조하는 방식으로 정리했다.
+
+### 배운 점
+* **이벤트 기반 분리는 단순한 비동기화가 아니다**: 입력 검증과 영속화를 분리하니 ACK 지연만 해결된 게 아니라, 부분 실패(ACK 송신 후 DB INSERT 실패) 시나리오에 대한 로깅/추적 전략까지 명확히 설계해야 한다는 걸 알게 되었다.
+* **분산 시스템의 시각 동기화**: NTP를 빠뜨렸을 때 inspection_id의 timestamp 부분이 흐트러져 end-to-end 로그 추적이 사실상 불가능해졌다. 운영 가이드의 NTP 항목은 그 경험에서 나왔다.
+* **보안은 한 번에 끝나지 않는다**: 처음에는 SQL injection만 막으면 된다고 생각했지만, 실제로는 JSON injection, path traversal, slow loris, IP 위조까지 고려해야 했다. Defense in Depth라는 단어를 몸으로 이해하게 된 시간이었다.
+
+---
+
 ## 시스템 구성
 
 ```
@@ -80,46 +135,9 @@ Camera → AI Server → Main Server → DB → MFC Client
 
 ---
 
-## 핵심 설계 특징
-
-### 아키텍처
-* **3계층 아키텍처**: Handler → Service → DAO (SRP 적용)
-* **이벤트 기반**: EventBus + Worker Pool 4스레드 병렬 처리
-* **Hub-and-Spoke**: MainServer가 모든 통신의 중앙 허브
-* **관심사 분리**: 통신/로직/저장/세션/보안 계층 완전 분리
-
-### 신뢰성
-* **TCP Keepalive 공격적 튜닝**: 60초 유휴 → 10초 × 3회 probe → 90초 내 좀비 감지
-* **지수 백오프 재시도**: MODEL_RELOAD 1 → 5 → 30 → 120 → 300초 (5회 시도)
-* **Atomic File Write**: 임시파일 → fsync → rename (부분 파일 방지)
-* **Snapshot-then-Release**: broadcast 시 mutex 내 스냅샷만, send는 락 밖에서
-* **ConnectionPool 재연결**: mysql_ping 실패 시 자동 복구 + double-close 방지
-* **UI 연결 상태 실시간 동기화**: 1초 타이머로 소켓 상태 검증
-* **HealthChecker 동적 주기**: 모든 서버 정상 시 30초, 장애 발생 시 5초 주기로 전환
-
-### 데이터 흐름
-* NG 중심 전송 구조 (트래픽 최적화)
-* inspection_id 기반 end-to-end 추적
-* ACK / 재전송 기반 데이터 신뢰성 확보
-* **검증 즉시 ACK → 백그라운드 영속화** (INSPECTION_VALIDATED 이벤트)
-* 모델 바이너리 TCP 전송 (학습서버 → 메인서버 → 추론서버)
-* asyncio.Queue 기반 비동기 처리 (Backpressure 대응)
-
-### 보안 (Defense in Depth)
-* MariaDB Prepared Statement (SQL injection 원천 차단)
-* IP 화이트리스트 (내부망만 허용)
-* Input Validation + Output Escaping (JSON injection 방지)
-* bcrypt + Salt (/dev/urandom 기반 암호학적 난수)
-* Path Traversal 차단 (version 문자열 검증)
-
-상세 설계 원칙은 [ARCHITECTURE_PRINCIPLES.txt](ARCHITECTURE_PRINCIPLES.txt) 참고
-
----
-
 ## 주요 기능
 
 ### NG 파이프라인 비동기 분리
-
 검증과 영속화를 분리하여 ACK 지연을 근본적으로 해결한 구조이다.
 
 ```
@@ -140,7 +158,6 @@ StationHandler
 * Sliced failure(ACK 송신 후 persist 실패) 케이스는 ERROR 레벨 로그로 운영자 추적
 
 ### 학습·배포 파이프라인 (멀티호스트)
-
 학습서버를 메인서버와 별도 PC에 배치할 수 있는 분리 구조.
 
 * `config.json` 의 `network.training_server_host` 키 — 학습서버 IP 분리 지정
@@ -151,7 +168,6 @@ StationHandler
   배포 PC 가 바뀌어도 설정 수정 불필요
 
 ### 클라이언트 학습 이미지 업로드
-
 클라이언트에서 직접 학습용 이미지를 업로드하여 학습 데이터를 교체할 수 있는 엔드투엔드 파이프라인.
 
 | 번호 | 이름 | 방향 | 역할 |
@@ -178,7 +194,6 @@ StationHandler
 - 메인 로컬 저장 실패해도 학습서버 중계는 계속 시도 (이중 저장 복구력)
 
 ### 검사 pause/resume 원격 제어
-
 클라이언트 메뉴에서 **실제 AI 추론서버의 grab 루프를 중단/재개** 하도록 연결.
 
 | 번호 | 이름 | 방향 |
@@ -297,8 +312,6 @@ Factory/
     └── Main/Login/Page* # UI
 ```
 
-상세 구조: `Directory_README.md` 참고
-
 ---
 
 ## 통신 구조
@@ -307,16 +320,12 @@ Factory/
 * JSON + Binary Image 패킷 구조: `[4byte BE length] + [JSON] + [이미지]`
 * ACK / RETRY / NACK 지원
 
-상세 프로토콜: `Protocol_README.md` 참고
-
 ---
 
 ## DB
 
 * MariaDB 사용
 * 5개 테이블: users, models, bottles, inspections, assemblies
-
-접속 정보: `DB_README.md` 참고
 
 ---
 
@@ -342,9 +351,7 @@ python -m Station2.Station2Main      # 조립 검사
 
 ---
 
-## 현재 상태
-
-### 완성
+## 구현 완료
 
 * AI 서버 전체 파이프라인 (카메라 grab → 추론 → TCP 송신 → ACK 수신)
 * 메인 서버 NG 검사 흐름 (수신 → 파싱 → DB INSERT → 이미지 저장 → ACK 회신)
@@ -368,28 +375,3 @@ python -m Station2.Station2Main      # 조립 검사
 
 ---
 
-## 향후 계획
-
-### 하드웨어 연동
-* Arduino 시리얼 통신 연동
-* NG 이미지 CameraView 실시간 렌더링 (클라이언트)
-
-### 확장 기능
-* 모델 정확도 개선 및 최적화
-
-### 실무 수준 확장예상
-* `logrotate` 설정 (장기 운영 디스크 관리)
-* Google Test + Mock DAO 기반 Service 레이어 단위 테스트
-* `IConnection` 인터페이스로 TCP/TLS 교체 가능 구조
-* 청크 단위 모델 전송 + Resume (GB급 PatchCore 모델 대응)
-
----
-
-## 📚 참고 문서
-
-* [Protocol_README.md](Protocol_README.md) — 프로토콜 상세 스펙
-* [DB_README.md](DB_README.md) — DB 스키마, 쿼리 예시
-* [AiServer_README.md](AiServer_README.md) — AI 서버 파이프라인
-* [Client_README.md](Client_README.md) — MFC 클라이언트 구조
-* [Directory_README.md](Directory_README.md) — 디렉터리 상세
-* [ARCHITECTURE_PRINCIPLES.txt](ARCHITECTURE_PRINCIPLES.txt) — SOLID/패턴 정리
